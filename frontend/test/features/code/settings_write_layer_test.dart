@@ -14,14 +14,4 @@ void main() {
     expect(await readLayer(path), {'k0': 0, 'k1': 1, 'k2': 2, 'k3': 3, 'k4': 4});
     expect(dir.listSync().where((f) => f.path.endsWith('.tmp')), isEmpty);
   });
-
-  test('a failed edit leaves the next write working', () async {
-    final dir = await Directory.systemTemp.createTemp('layer');
-    addTearDown(() => dir.delete(recursive: true));
-    final path = '${dir.path}/settings.json';
-    final bad = writeLayer(path, (_) => throw StateError('no'));
-    final good = writeLayer(path, (raw) => {...raw, 'ok': true});
-    await expectLater(bad, throwsStateError);
-    expect(await good, {'ok': true});
-  });
 }

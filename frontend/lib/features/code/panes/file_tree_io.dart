@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import '../../../core/process/supervisor.dart' show LaunchFailed, Launched, ProcessSupervisor;
 import 'file_tree.dart';
 
 Future<FolderListing> listFolder(String dir, int cap) async {
@@ -67,8 +68,11 @@ Future<String?> openAsText(String path) async {
     // Any execute bit.
     final cmd = textOpenCommand(path, os: Platform.operatingSystem, executable: stat.mode & 0x49 != 0);
     if (cmd == null) return "This file can't be opened as text here.";
-    await Process.start(cmd.exe, cmd.args, mode: ProcessStartMode.detached);
-    return null;
+    // Meant to outlive the app (the user's editor).
+    return switch (await ProcessSupervisor.instance.launchDetached(cmd.exe, cmd.args, label: 'open as text')) {
+      Launched() => null,
+      LaunchFailed(:final error) => "Couldn't open it: $error",
+    };
   } on Object catch (e) {
     return "Couldn't open it: $e";
   }

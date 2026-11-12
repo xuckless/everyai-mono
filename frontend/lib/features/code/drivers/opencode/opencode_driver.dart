@@ -10,6 +10,7 @@ import '../../harness/harness.dart';
 import '../driver.dart';
 import '../driver_env.dart';
 import '../driver_process.dart';
+import '../short_run.dart' show SingleFlight;
 import 'opencode_host.dart';
 import 'opencode_server.dart';
 import 'opencode_session.dart';
@@ -104,6 +105,12 @@ final class OpenCodeDriver
 
   final _live = <String, OpenCodeSession>{};
 
+  /// Opens under way, by session id: two at once would start two servers for one session.
+  final _attaching = SingleFlight<String, HarnessSession>();
+  final _detecting = SingleFlight<int, DriverStatus>();
+  final _listing = SingleFlight<int, List<DriverModel>>();
+  final _providing = SingleFlight<String, List<String>?>();
+
   /// Providers signed in with a login (a subscription), from the last
   /// provider list.
   Set<String>? _oauth;
@@ -141,7 +148,9 @@ final class OpenCodeDriver
   /// Signed in: at least one provider has a key or login
   /// (`opencode auth list`, which shows no secrets). No model is called.
   @override
-  Future<DriverStatus> detect() async {
+  Future<DriverStatus> detect() => _detecting.run(0, _detect);
+
+  Future<DriverStatus> _detect() async {
     if (_refusal case final why?) return DriverStatus(problem: why);
     final status = await _found();
     final path = status.path;
@@ -159,7 +168,9 @@ final class OpenCodeDriver
 
   /// Its enabled models as `provider/model`, with their variants as efforts.
   @override
-  Future<List<DriverModel>> models() async {
+  Future<List<DriverModel>> models() => _listing.run(0, _models);
+
+  Future<List<DriverModel>> _models() async {
     final exe = await _executable();
     final list = await _cli(exe, ['api', 'model.list', '--standalone']);
     if (list.exitCode != 0) return const [];
@@ -307,6 +318,11 @@ final class OpenCodeDriver
 
   Future<HarnessSession> _attach(String conversationId, DriverBriefing? briefing) async {
     if (_live[conversationId] case final s?) return s;
+    return _attaching.run(conversationId, () => _attachNow(conversationId, briefing));
+  }
+
+  Future<HarnessSession> _attachNow(String conversationId, DriverBriefing? briefing) async {
+    if (_live[conversationId] case final s?) return s;
     final dir = await _dataDir();
     final record = _decode(await readTextFile(_recordPath(dir, conversationId)) ?? '');
     final workingDir = record is Map ? record['workingDir'] : null;
@@ -370,8 +386,10 @@ final class OpenCodeDriver
     return session;
   }
 
-  /// The providers with a key or login, or null when the list can't be read.
-  Future<List<String>?> _providers(String exe) async {
+  /// The providers with a key or login, or null when the list can't be read (one ask at a time).
+  Future<List<String>?> _providers(String exe) => _providing.run(exe, () => _providersNow(exe));
+
+  Future<List<String>?> _providersNow(String exe) async {
     try {
       final res = await _cli(exe, ['auth', 'list', '--standalone', '--format', 'json']);
       final auth = openCodeAuth(res.exitCode == 0 ? _decode(res.stdout) : null);

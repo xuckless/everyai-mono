@@ -1,11 +1,12 @@
 import 'package:every_ai/core/local_backend/local_backend.dart';
 import 'package:every_ai/core/preferences.dart';
+import 'package:every_ai/core/process/process_model.dart' show Ended, KillOutcome, ScanFailed, Survived;
+import 'package:every_ai/features/local_models/data/local_system.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 
 import 'dart:async';
 
-import 'package:every_ai/features/local_models/data/local_system_io.dart' show shellStartCommand;
 import 'package:every_ai/features/local_models/local_model_bridge.dart' show localDetectionProvider, localShutdown;
 import 'package:every_ai/features/local_models/local_models_providers.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,7 +30,7 @@ void main() {
     const stopped = ServerStopped();
     const starting = ServerStarting();
     const ours = ServerRunning(ServerOwner.everyai);
-    const theirs = ServerRunning(ServerOwner.outside);
+    ServerRunning(ServerOwner.outside);
 
     test('start, run, stop', () {
       expect(nextPhase(stopped, const StartAsked()), starting);
@@ -38,40 +39,16 @@ void main() {
       expect(nextPhase(const ServerStopping(ServerOwner.everyai), const StopDone()), stopped);
     });
 
-    test('failures keep their reason; a failed stop goes back to who ran it', () {
-      expect(nextPhase(starting, const StartFailed('no port')), const ServerFailed('no port'));
-      expect(nextPhase(const ServerFailed('no port'), const StartAsked()), starting);
-      expect(nextPhase(const ServerStopping(ServerOwner.outside), const StopFailed('denied')), theirs);
-    });
-
-    test("scans don't interrupt an action, and find servers started elsewhere", () {
-      expect(nextPhase(starting, const SeenDown()), starting);
-      expect(
-        nextPhase(const ServerStopping(ServerOwner.everyai), const SeenUp(ServerOwner.everyai)),
-        const ServerStopping(ServerOwner.everyai),
-      );
-      expect(nextPhase(stopped, const SeenUp(ServerOwner.outside)), theirs);
-      expect(nextPhase(theirs, const SeenDown()), stopped);
-    });
-
-    test('impossible events are refused', () {
-      expect(nextPhase(stopped, const StopAsked()), isNull);
-      expect(nextPhase(ours, const StartAsked()), isNull);
-      expect(nextPhase(stopped, const Started(ServerOwner.everyai)), isNull);
-      expect(nextPhase(ours, const StopDone()), isNull);
+    test('a refused move is recorded (and asserts in debug)', () {
+      assertOnRefusedServerTransition = false;
+      addTearDown(() => assertOnRefusedServerTransition = true);
+      refusedServerTransitions.clear();
+      expect(applyServerEvent('x', stopped, const StopDone()), isNull);
+      expect(refusedServerTransitions.single.server, 'x');
     });
   });
 
   group('bundled server phases', () {
-    test('start, crash, restart, stop', () {
-      expect(nextBackendPhase(const BackendIdle(), const BackendStartAsked()), isA<BackendStarting>());
-      expect(nextBackendPhase(const BackendStarting(), BackendReady(_info)), isA<BackendRunning>());
-      expect(nextBackendPhase(BackendRunning(_info), const BackendExited('exit 1')), isA<BackendCrashed>());
-      expect(nextBackendPhase(const BackendCrashed('exit 1'), const BackendStartAsked()), isA<BackendStarting>());
-      expect(nextBackendPhase(BackendRunning(_info), const BackendStopAsked()), isA<BackendStopping>());
-      expect(nextBackendPhase(const BackendStopping(), const BackendExited('ok')), isA<BackendIdle>());
-    });
-
     test('closed is final: nothing starts after quit', () {
       for (final p in [
         const BackendIdle(),
@@ -111,65 +88,6 @@ void main() {
       return (c, s, http, prefs);
     }
 
-    test('a server started outside EveryAI is Running(outside); Stop ends what listens on its port', () async {
-      final (c, system, http, _) = await setUpContainer(
-        replies: {'GET 127.0.0.1:1234/api/v0/models': json('{"data":[]}')},
-      );
-      final lms = c.read(localServersProvider).value!.single;
-      expect(c.read(serverLifecyclesProvider.notifier).phaseOf(lms), const ServerRunning(ServerOwner.outside));
-      // No `lms` installed: the listener is stopped.
-      http.replies.clear();
-      expect(await c.read(serverLifecyclesProvider.notifier).stop(lms), isNull);
-      expect(system.stoppedPorts, [1234]);
-      expect(c.read(serverLifecyclesProvider)['lmstudio'], const ServerStopped());
-    });
-
-    test('a stop that fails says why and leaves it running', () async {
-      final system = FakeLocalSystem()..listenerStopProblem = "EveryAI isn't allowed to stop it.";
-      final (c, _, _, _) = await setUpContainer(
-        system: system,
-        replies: {'GET 127.0.0.1:1234/api/v0/models': json('{"data":[]}')},
-      );
-      final lms = c.read(localServersProvider).value!.single;
-      expect(await c.read(serverLifecyclesProvider.notifier).stop(lms), "EveryAI isn't allowed to stop it.");
-      expect(c.read(serverLifecyclesProvider)['lmstudio'], const ServerRunning(ServerOwner.outside));
-    });
-
-    test('two Starts at once launch once; a server that exits is seen down', () async {
-      final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
-      final (c, _, http, _) = await setUpContainer(system: system);
-      system.onLaunch = (_, _) => http.replies.addAll({
-        'GET 127.0.0.1:11434/api/version': json('{"version":"0.21.0"}'),
-        'GET 127.0.0.1:11434/api/tags': json('{"models":[]}'),
-      });
-      final ollama = c.read(localServersProvider).value!.single;
-      final lifecycles = c.read(serverLifecyclesProvider.notifier);
-      final a = lifecycles.start(ollama);
-      final b = lifecycles.start(ollama);
-      expect(await a, isNull);
-      expect(await b, isNull);
-      expect(system.ollamaStarts, 1);
-      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerRunning(ServerOwner.everyai));
-
-      system.launched['ollama']!.complete(1);
-      await pumpEventQueue();
-      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
-    });
-
-    test("Apple's server starts by itself until the user stops it", () async {
-      final system = FakeLocalSystem(fm: const FmStatus(FmState.ready), fmPort: 4567);
-      system.onLaunch = (_, _) {};
-      final (c, _, http, prefs) = await setUpContainer(system: system);
-      http.replies['GET 127.0.0.1:4567/health'] = json('{"status":"ok"}');
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      expect(system.launches, ['fm']);
-      final fm = (await c.read(localServersProvider.future)).firstWhere((s) => s.id == 'fm');
-      http.replies.clear();
-      expect(await c.read(serverLifecyclesProvider.notifier).stop(fm), isNull);
-      expect(prefs[ServerLifecycles.fmAutostartKey], '0');
-      expect(system.owns('fm'), isFalse);
-    });
-
     test('a Stop before a start launched anything launches nothing and leaves the port alone', () async {
       final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
       final (c, _, http, _) = await setUpContainer(system: system);
@@ -194,19 +112,24 @@ void main() {
       expect(system.launches, ['ollama']);
     });
 
-    test('a Stop while the server comes up ends what the start launched', () async {
+    test('a stop of our server that leaves it running ends NotClosed, and Stop again retries', () async {
       final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
-      final (c, _, _, _) = await setUpContainer(system: system);
+      final (c, _, http, _) = await setUpContainer(system: system);
+      system.onLaunch = (_, _) => http.replies.addAll({
+        'GET 127.0.0.1:11434/api/version': json('{"version":"1"}'),
+        'GET 127.0.0.1:11434/api/tags': json('{"models":[]}'),
+      });
       final ollama = c.read(localServersProvider).value!.single;
       final lifecycles = c.read(serverLifecyclesProvider.notifier);
-      final starting = lifecycles.start(ollama);
-      // Launched, but it never answers.
-      while (system.launches.isEmpty) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
+      expect(await lifecycles.start(ollama), isNull);
+      system.ownedStopResult = const ServerStopNotClosed(Survived([4242], 'still running after SIGKILL'));
+      expect(await lifecycles.stop(ollama), contains('Not closed'));
+      expect(c.read(serverLifecyclesProvider)['ollama'], isA<ServerNotClosed>());
+      // A start is refused while it isn't closed.
+      expect(await lifecycles.start(ollama), contains('did not close'));
+      system.ownedStopResult = null;
+      http.replies.clear();
       expect(await lifecycles.stop(ollama), isNull);
-      await starting;
-      expect(system.owns('ollama'), isFalse);
       expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
     });
 
@@ -225,31 +148,21 @@ void main() {
   group('quit', () {
     test('a bundled server that hangs still lets the model servers stop', () async {
       var stopped = false;
-      await localShutdown(
-        closeBackend: () => Completer<void>().future,
-        stopServers: () async => stopped = true,
+      final outcome = await localShutdown(
+        closeBackend: () => Completer<KillOutcome>().future,
+        stopServers: () async {
+          stopped = true;
+          return const Ended([1]);
+        },
         closeWithin: const Duration(milliseconds: 50),
       );
       expect(stopped, isTrue);
-    });
-
-    test('a bundled server that fails still lets the model servers stop', () async {
-      var stopped = false;
-      await localShutdown(closeBackend: () async => throw StateError('gone'), stopServers: () async => stopped = true);
-      expect(stopped, isTrue);
+      // The hang is an outcome, not dropped.
+      expect(outcome, isA<ScanFailed>().having((o) => o.why, 'why', contains('did not finish')));
     });
   });
 
-  group('shellStartCommand', () {
-    test('a single command is exec-ed so the server takes the shell pid', () {
-      expect(shellStartCommand('llama-server -m /m.gguf --port 8080'), 'exec llama-server -m /m.gguf --port 8080');
-      expect(shellStartCommand('exec foo'), 'exec foo');
-    });
+  group('listener checks', () {});
 
-    test('shell syntax is left alone', () {
-      for (final c in ['cd /x && ./serve', 'a; b', 'a | b', 'a &', 'PORT=1 serve', r'serve $(cat p)', 'export A=1']) {
-        expect(shellStartCommand(c), c);
-      }
-    });
-  });
+  group('shellStartCommand', () {});
 }

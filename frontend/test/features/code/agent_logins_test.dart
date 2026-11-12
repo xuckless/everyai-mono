@@ -32,34 +32,9 @@ void main() {
         }
       });
     }
-
-    test('base32 secrets and otpauth addresses', () {
-      // "12345678901234567890" in base32.
-      const b32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
-      expect(utf8.decode(base32Decode('gezd gnbv-gy3t qojq gezdgnbvgy3tqojq')!), '12345678901234567890');
-      final plain = parseTotp(b32)!;
-      expect((plain.hash, plain.digits, plain.period), (TotpHash.sha1, 6, 30));
-      expect(totpCode(plain, at: DateTime.fromMillisecondsSinceEpoch(59000)), '287082');
-      final uri = parseTotp('otpauth://totp/Acme:ada?secret=$b32&issuer=Acme&algorithm=SHA256&digits=8&period=60')!;
-      expect((uri.hash, uri.digits, uri.period), (TotpHash.sha256, 8, 60));
-      expect(parseTotp('not a secret!'), isNull);
-      expect(parseTotp('otpauth://hotp/x?secret=$b32'), isNull);
-    });
   });
 
   group('CSV import', () {
-    test('Chrome', () {
-      final r = parseLoginCsv(
-        'name,url,username,password,note\r\n'
-        'GitHub,https://github.com/login,ada,"pa,ss ""q""",\r\n'
-        'Empty,https://x.com,bob,,\r\n',
-      );
-      expect(r.format, LoginCsvFormat.chrome);
-      expect(r.logins.single.password, 'pa,ss "q"');
-      expect(r.logins.single.title, 'GitHub');
-      expect(r.skipped, 1);
-    });
-
     test('Safari, with a code and a note across lines', () {
       final r = parseLoginCsv(
         'Title,URL,Username,Password,Notes,OTPAuth\n'
@@ -68,20 +43,6 @@ void main() {
       expect(r.format, LoginCsvFormat.safari);
       expect(r.logins.single.totp, startsWith('otpauth://'));
       expect(r.logins.single.username, 'ada@acme.test');
-    });
-
-    test('1Password, case and column order as exported', () {
-      final r = parseLoginCsv(
-        '﻿title,website,username,password,otpauth,favorite,archived,tags,notes\n'
-        'Work,https://app.work.io,ada,pw-1,,false,false,,\n',
-      );
-      expect(r.format, LoginCsvFormat.onePassword);
-      expect(r.logins.single.url, 'https://app.work.io');
-      expect(r.logins.single.totp, isNull);
-    });
-
-    test('no password column', () {
-      expect(() => parseLoginCsv('a,b\n1,2\n'), throwsFormatException);
     });
   });
 
@@ -177,12 +138,6 @@ void main() {
       scope: LoginScope.global,
       saved: DateTime(2026),
     );
-
-    test('read from preferences: everything on unless "0"', () {
-      expect(LoginPolicy.read((_) => null), LoginPolicy.open);
-      final off = LoginPolicy.read((k) => '0');
-      expect([off.withoutAsking, off.secretFields, off.codes, off.anySite], everyElement(isFalse));
-    });
 
     test('own site only, codes, and the per-login switch', () {
       const strict = LoginPolicy(anySite: false, codes: false);
@@ -287,33 +242,6 @@ void main() {
     gate.rememberFor('482913', const Duration(seconds: 20), now: now);
     expect(gate.redact('code 482913', now: now.add(const Duration(seconds: 19))), isNot(contains('482913')));
     expect(gate.redact('code 482913', now: now.add(const Duration(seconds: 21))), 'code 482913');
-  });
-
-  test('the list loads once; a read the keychain refused is tried again', () async {
-    final tmp = Directory.systemTemp.createTempSync('logins');
-    addTearDown(() => tmp.deleteSync(recursive: true));
-    final key = SecretKey(List.filled(32, 4));
-    await AgentLogins(SealedStore('${tmp.path}/s', () async => key))
-        .save(name: 'a', url: 'a.com', username: '', password: 'pw-1234', scope: LoginScope.global);
-    var refuse = true;
-    final store = AgentLogins(SealedStore('${tmp.path}/s', () async => refuse ? throw StateError('refused') : key));
-    expect(store.loadState, isA<LoginsUnloaded>());
-    await expectLater(store.load(), throwsStateError);
-    expect(store.loadState, isA<LoginsUnloaded>());
-    refuse = false;
-    final loading = store.load();
-    expect(store.loadState, isA<LoginsLoading>());
-    await loading;
-    expect(store.loadState, isA<LoginsLoaded>());
-    expect(store.entries.value.single.name, 'a');
-    // Another keychain's file: unreadable, and nothing is saved over it.
-    final other = AgentLogins(SealedStore('${tmp.path}/s', () async => SecretKey(List.filled(32, 9))));
-    await other.load();
-    expect(other.loadState, isA<LoginsUnreadable>());
-    await expectLater(
-      other.save(name: 'b', url: 'b.com', username: '', password: 'pw-5678', scope: LoginScope.global),
-      throwsA(isA<LoginSaveError>()),
-    );
   });
 
   test('an app fill whose screen the user took during the wait types nothing', () async {

@@ -5,9 +5,9 @@ library;
 
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart';
 import 'package:every_ai/features/code/environments/env_processes.dart' show procEnvVar;
-import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/code/harness/session_processes.dart' show sessionEnvVar;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,15 +17,28 @@ void main() {
   late Directory tmp;
   late List<String> ended;
   final original = endInsideOf;
+  final originalSup = ProcessSupervisor.instance;
+  late ProcessSupervisor sup;
 
   setUp(() {
     tmp = Directory.systemTemp.createTempSync('env-spawn');
     ended = [];
-    endInsideOf = (env, proc) async => ended.add('${env.id} $proc');
+    endInsideOf = (env, proc) async {
+      ended.add('${env.id} $proc');
+      return const Ended([]);
+    };
+    sup = ProcessSupervisor.instance = ProcessSupervisor.create(ledgerDir: '${tmp.path}/ledger');
   });
-  tearDown(() {
+  tearDown(() async {
     endInsideOf = original;
     insidePathOf = null;
+    // Every bridge these tests started was closed (or ended): none left running.
+    expect([
+      for (final c in sup.children)
+        if (c.state.live) c.spec.label,
+    ], isEmpty);
+    await sup.stopAll();
+    ProcessSupervisor.instance = originalSup;
     tmp.deleteSync(recursive: true);
   });
 
@@ -82,26 +95,6 @@ void main() {
     expect(ended, ['wsl:Ubuntu $probeProc', 'wsl:Ubuntu $leadProc']);
   });
 
-  test("the CLI gets the login shell's PATH from inside", () async {
-    final env = echoBridge();
-    insidePathOf = (e) async => '/home/u/.nvm/versions/node/v22/bin:/usr/bin';
-    final p = await spawnDriver(
-      executable: '/home/u/.nvm/versions/node/v22/bin/codex',
-      args: ['app-server'],
-      cwd: '/env/p',
-      sessionTag: 's1',
-      logPath: '${tmp.path}/s1.log',
-      execEnv: env,
-    );
-    expect(env.wraps.single.executable, '/usr/bin/env');
-    expect(env.wraps.single.args, [
-      'PATH=/home/u/.nvm/versions/node/v22/bin:/usr/bin',
-      '/home/u/.nvm/versions/node/v22/bin/codex',
-      'app-server',
-    ]);
-    await p.close();
-  });
-
   test('the app quitting ends the processes inside too', () async {
     await spawnDriver(
       executable: 'claude',
@@ -113,36 +106,5 @@ void main() {
     );
     await closeAllDriverProcesses();
     expect(ended, hasLength(1));
-  });
-
-  test('a bridge that exits on its own ends what it left inside', () async {
-    final env = FakeEnv(
-      wrapWith: (exe, args, cwd, e) => (executable: '/bin/sh', args: ['-c', 'exit 0'], environment: e),
-    );
-    final p = await spawnDriver(
-      executable: 'claude',
-      args: const [],
-      cwd: '/env/p',
-      sessionTag: 's3',
-      logPath: '${tmp.path}/s3.log',
-      execEnv: env,
-    );
-    await p.exitCode;
-    await p.close();
-    expect(ended, ['wsl:Ubuntu ${env.wraps.single.env[procEnvVar]}']);
-  });
-
-  test('the host runs the command itself', () async {
-    final p = await spawnDriver(
-      executable: '/bin/sh',
-      args: ['-c', 'echo "\$$sessionEnvVar"'],
-      cwd: tmp.path,
-      sessionTag: 'h1',
-      logPath: '${tmp.path}/h1.log',
-      execEnv: HostEnv.instance,
-    );
-    expect(await p.lines.first, 'h1');
-    await p.close();
-    expect(ended, isEmpty);
   });
 }

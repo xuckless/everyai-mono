@@ -9,6 +9,8 @@ import '../../../../core/preferences.dart';
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/every_icons.dart';
+import '../../../processes/process_providers.dart' show OwnedScanFailed, ownedBySessionProvider;
+import '../../../processes/ui/processes_section.dart' show OwnedSessionGroup;
 import '../../domain/code_session.dart';
 import '../../domain/local_ports.dart';
 import '../../panes/panes_providers.dart';
@@ -27,9 +29,9 @@ class ProcessesPane extends ConsumerWidget {
 
   final CodeSessionInfo session;
 
-  void _kill(BuildContext context, WidgetRef ref, SessionProcess p, {bool force = false}) {
-    final ok = killProcess(p.pid, force: force);
-    showAdaptiveToast(context, ok ? '${force ? 'Killed' : 'Stopped'} ${p.name} (${p.pid})' : "Couldn't stop ${p.pid}");
+  Future<void> _kill(BuildContext context, WidgetRef ref, SessionProcess p, {bool force = false}) async {
+    final out = await killProcess(p.pid, force: force, expectedStart: p.start);
+    if (context.mounted) showAdaptiveToast(context, killToast(out, p.name, p.pid, force: force));
     ref.invalidate(sessionProcessesProvider(session.id));
   }
 
@@ -91,7 +93,9 @@ class ProcessesPane extends ConsumerWidget {
     final done = finishedShells(groups);
     final doneOpen = !ref.watch(processesDoneFoldedProvider);
     final others = otherProcesses(groups, list);
-    final empty = groups.isEmpty && others.isEmpty && containers.isEmpty;
+    final owned = ref.watch(ownedBySessionProvider(session.id));
+    final empty =
+        groups.isEmpty && others.isEmpty && containers.isEmpty && owned.rows.isEmpty && owned is! OwnedScanFailed;
     Widget header(String text) => KitLabel(text, padding: const EdgeInsets.fromLTRB(4, 14, 4, 4));
     Widget shellRow(ShellGroup g) => _ShellRow(
       group: g,
@@ -110,7 +114,9 @@ class ProcessesPane extends ConsumerWidget {
             children: [
               Expanded(
                 child: Text(
-                  snapshot.isLoading && snapshot.value == null && shells.isEmpty
+                  snapshot.error is ProcessesUnreadableError
+                      ? "Couldn't read processes"
+                      : snapshot.isLoading && snapshot.value == null && shells.isEmpty
                       ? 'Looking…'
                       : '${running.length + others.length} running · '
                             '${list.fold(0, (n, p) => n + p.ports.length)} listening',
@@ -142,6 +148,8 @@ class ProcessesPane extends ConsumerWidget {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(10, 0, 10, 12),
                   children: [
+                    // What the supervisor owns for this session, in its true state (a child not closed shows here).
+                    OwnedSessionGroup(sessionId: session.id),
                     if (running.isNotEmpty) ...[header('Running'), for (final g in running) shellRow(g)],
                     if (others.isNotEmpty) ...[
                       header(running.isEmpty ? 'Running' : 'Other processes'),

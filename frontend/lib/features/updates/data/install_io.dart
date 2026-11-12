@@ -9,6 +9,7 @@ import 'dart:ui' show AppExitType;
 
 import 'package:http/http.dart' as http;
 
+import '../../../core/process/supervisor.dart';
 import '../domain/releases.dart';
 import '../update_key.dart';
 import 'install.dart';
@@ -62,8 +63,20 @@ Future<void> stageAppImage(Release release, {required http.Client client, void F
         .pipe(sink);
     final digest = await hash.sha256.bind(part.openRead()).first;
     if (digest.toString() != expected) throw const UpdateError("The download doesn't match the signed checksum.");
-    final chmod = await Process.run('chmod', ['755', part.path]);
-    if (chmod.exitCode != 0) throw UpdateError('Could not make the update executable: ${chmod.stderr}');
+    final chmod = await ProcessSupervisor.instance.runBounded(
+      'chmod',
+      ['755', part.path],
+      timeout: const Duration(seconds: 10),
+      owner: const ProbeOwner('updater'),
+    );
+    switch (chmod) {
+      case Finished(:final code, :final stderr) when code != 0:
+        throw UpdateError('Could not make the update executable: $stderr');
+      case Finished():
+        break;
+      case TimedOut() || Cancelled() || StartFailed() || Refused():
+        throw UpdateError('Could not make the update executable: $chmod');
+    }
     await part.rename(target);
   } on FileSystemException catch (e) {
     throw UpdateError("Can't write next to the AppImage in ${dir.path} (${e.osError?.message ?? e.message}).");
@@ -77,13 +90,15 @@ Future<void> stageAppImage(Release release, {required http.Client client, void F
 Future<void> restartAppImage() async {
   final target = Platform.environment['APPIMAGE'];
   if (target == null) return;
-  await Process.start('/bin/sh', [
+  // It must outlive this app (and carries no EVERYAI_* tags, so this run's watchdog leaves the new one alone).
+  final launched = await ProcessSupervisor.instance.launchDetached('/bin/sh', [
     '-c',
     'while kill -0 "\$1" 2>/dev/null; do sleep 0.3; done; exec "\$2"',
     'sh',
     '$pid',
     target,
-  ], mode: ProcessStartMode.detached);
+  ], label: 'AppImage restart');
+  if (launched case LaunchFailed(:final error)) throw UpdateError("The update couldn't restart EveryAI: $error");
   await ServicesBinding.instance.exitApplication(AppExitType.cancelable);
 }
 

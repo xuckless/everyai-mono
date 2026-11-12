@@ -5,10 +5,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' show sha256;
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/process/supervisor.dart'
+    show AppOwner, Ended, Finished, KillOutcome, ProbeOwner, ProcessSupervisor, SessionOwner;
 import '../../../models/domain/local_routes.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart';
@@ -53,7 +55,8 @@ bool gitBashMissing() => Platform.isWindows && findGitBash(Platform.environment,
 /// permissions and approvals are shared), but the loop, the tools and the
 /// history are ours: questions block inside the call, tool results can be cut
 /// to size, and a session can be forked from another's history.
-final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents {
+final class EveryAIHarness
+    implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents, ForgetsSessions {
   EveryAIHarness({required this.dataDir, required this.gatewayKey, this.client}) {
     // A Chrome for Testing the Preview downloaded earlier, for the browser tool.
     unawaited(loadDownloadedChrome());
@@ -68,6 +71,10 @@ final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, A
   final http.Client? client;
 
   final _sessions = <String, EveryAISession>{};
+
+  /// Drops a deleted session (its processes were ended first); an attach later loads it from disk, if still there.
+  @override
+  void forget(String conversationId) => _sessions.remove(conversationId);
 
   Future<Directory> _dirFor(String id) async =>
       Directory('${await dataDir()}/everyai-sessions/$id')..createSync(recursive: true);
@@ -181,6 +188,7 @@ final class EveryAISession
         HasContextParts,
         ReportsMcpTools,
         StopsHelpers,
+        KillsOwnProcesses,
         TakesMessagesMidRun {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
@@ -243,6 +251,7 @@ final class EveryAISession
 
   /// The session's language servers (the diagnostics tool, and the hint after edits), started on first use.
   late final _lsp = LspHub(
+    owner: _spec.procTag.isEmpty ? const AppOwner() : SessionOwner(_spec.procTag),
     root: _spec.workingDir,
     toolsDir: '${_dir.parent.parent.path}/tools',
     environment: () async => (await ShellEnv.load()).env,
@@ -286,6 +295,7 @@ final class EveryAISession
       if (config.isEmpty) return;
       _mcp = await McpTools.start(
         config,
+        owner: _spec.procTag.isEmpty ? const AppOwner() : SessionOwner(_spec.procTag),
         reserved: {...actionKinds.keys, ...clientTools},
         prefixed: {if (host != null) everyaiServerName},
         // Ours: a user's server can't take the name (the host entry replaces it).
@@ -1159,10 +1169,29 @@ final class EveryAISession
   ];
 
   @override
-  Future<void> stopBackground(String id) async => _shell.backgroundShell(id)?.kill();
+  Future<KillOutcome> stopBackground(String id) async => await _shell.backgroundShell(id)?.kill() ?? const Ended([]); // no such shell: nothing of it runs
 
-  /// Kills what the session's shell is still running.
-  Future<void> killProcesses() => _shell.killAll();
+  /// Ends what the session's shell is still running and its MCP and language servers (a Stop: they start again on
+  /// the next use), verified: the merged outcome.
+  @override
+  Future<KillOutcome> killProcesses() async {
+    _idleTimer?.cancel();
+    final shells = await _shell.killAll();
+    final lsp = await _lsp.close();
+    final ready = _mcpReady;
+    _mcpReady = null;
+    if (ready != null) {
+      try {
+        await ready;
+      } on Object catch (e) {
+        debugPrint('MCP servers of session $id failed to start before the stop: $e');
+      }
+      final running = _mcp;
+      _mcp = McpTools.empty;
+      return KillOutcome.merge([shells, lsp, await running.close()]);
+    }
+    return KillOutcome.merge([shells, lsp]);
+  }
 
   // ------------------------------------------------------------------ loop
 
@@ -2192,10 +2221,17 @@ bool runsInParallel(LlmToolCall call) {
 /// of git status and diffs in [dir]'s repository, through the clone-local
 /// `info/exclude` so nothing the user commits changes. Not a repo: nothing.
 Future<void> excludeScratch(String dir) async {
+  final res = await ProcessSupervisor.instance.runBounded(
+    'git',
+    ['rev-parse', '--git-path', 'info/exclude'],
+    timeout: const Duration(seconds: 10),
+    cwd: dir,
+    owner: const ProbeOwner('git-exclude'),
+    maxOutputBytes: 64 * 1024,
+  );
+  if (res is! Finished || res.code != 0) return; // not git, git missing, or it hung: the files show as untracked
   try {
-    final res = await Process.run('git', ['rev-parse', '--git-path', 'info/exclude'], workingDirectory: dir);
-    if (res.exitCode != 0) return;
-    var path = (res.stdout as String).trim();
+    var path = res.stdout.trim();
     if (!path.startsWith('/')) path = '$dir/$path';
     final file = File(path);
     final current = file.existsSync() ? file.readAsStringSync() : '';

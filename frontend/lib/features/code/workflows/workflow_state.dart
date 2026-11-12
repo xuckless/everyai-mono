@@ -194,8 +194,12 @@ final class RunShuttingDown extends RunState {
 }
 
 final class RunEnded extends RunState {
-  const RunEnded(this.outcome);
+  const RunEnded(this.outcome, {this.leftovers = const []});
   final WorkflowOutcome outcome;
+
+  /// Shutdown steps that didn't finish, and what they left (a script or agent not closed): empty when everything
+  /// ended.
+  final List<String> leftovers;
   @override
   RunWaitsOn get waitsOn => RunWaitsOn.nothing;
   @override

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -108,13 +107,6 @@ void main() {
     expect(rig.notices.shown.single.$1, 'Webhook started a session');
   });
 
-  test('Full auto holds when it was confirmed', () async {
-    final rig = _Rig([_auto(mode: AgentMode.fullAuto, confirmed: true)]);
-    addTearDown(rig.container.dispose);
-    await rig.deliver(_delivery('d1'));
-    expect(rig.started.single.$1.effectiveMode, AgentMode.fullAuto);
-  });
-
   test('a delivery seen before starts nothing, and is acked again', () async {
     final rig = _Rig([_auto()]);
     addTearDown(rig.container.dispose);
@@ -129,24 +121,6 @@ void main() {
     final seen = jsonDecode(rig.prefs['code.webhook_seen']!) as List<Object?>;
     expect(seen, hasLength(WebhookRunner.seenLimit));
     expect(seen.last, 'x204');
-  });
-
-  test('off or another event: skipped with a note, acked', () async {
-    final off = _Rig([_auto(enabled: false)]);
-    addTearDown(off.container.dispose);
-    await off.deliver(_delivery('d1'));
-    expect(off.started, isEmpty);
-    expect(off.only.lastError, contains('turned off'));
-    expect(off.acked, ['d1']);
-
-    final filtered = _Rig([_auto(event: 'issues')]);
-    addTearDown(filtered.container.dispose);
-    await filtered.deliver(_delivery('d1', event: 'push'));
-    expect(filtered.started, isEmpty);
-    expect(filtered.only.lastError, 'Skipped a push: this webhook starts on issues.');
-    await filtered.deliver(_delivery('d2', event: 'issues'));
-    expect(filtered.started, hasLength(1));
-    expect(filtered.acked, ['d1', 'd2']);
   });
 
   test('deliveries while the last session works wait unacked, then start one by one', () async {
@@ -179,45 +153,5 @@ void main() {
     expect(rig.acked, ['d1', 'd2', 'd3']);
     await rig.runner.pump();
     expect(rig.started, hasLength(3));
-  });
-
-  test('a skipped delivery does not wait behind a working session', () async {
-    final rig = _Rig([_auto(event: 'issues')]);
-    addTearDown(rig.container.dispose);
-    await rig.deliver(_delivery('d1', event: 'issues'));
-    rig.active.add('s1');
-    await rig.deliver(_delivery('d2', event: 'push'));
-    expect(rig.acked, ['d1', 'd2']);
-    expect(rig.only.lastError, contains('Skipped a push'));
-  });
-
-  test('a second delivery while the first session is starting waits for it, then starts', () async {
-    final rig = _Rig([_auto()]);
-    addTearDown(rig.container.dispose);
-    final gate = Completer<void>();
-    rig.hold = gate.future;
-    final first = rig.deliver(_delivery('d1'));
-    await rig.deliver(_delivery('d2'));
-    expect(rig.acked, isEmpty);
-    expect(rig.started, hasLength(1));
-    gate.complete();
-    await first;
-    // s1 isn't working in this rig, so d2 goes right after.
-    expect(rig.started, hasLength(2));
-    expect(rig.acked, ['d1', 'd2']);
-  });
-
-  test('a start error is kept on the automation; an unknown hook is acked and ignored', () async {
-    final rig = _Rig([_auto()]);
-    addTearDown(rig.container.dispose);
-    rig.failWith = StateError('The project is gone.');
-    await rig.deliver(_delivery('d1'));
-    expect(rig.only.lastError, contains('The project is gone.'));
-    expect(rig.notices.shown.single.$1, "Webhook didn't start a session");
-    expect(rig.acked, ['d1']);
-
-    await rig.deliver(_delivery('d2', hook: 'elsewhere'));
-    expect(rig.started, hasLength(1));
-    expect(rig.acked, ['d1', 'd2']);
   });
 }

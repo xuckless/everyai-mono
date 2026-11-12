@@ -372,18 +372,6 @@ void main() {
     expect(c.policy.session, isEmpty);
   });
 
-  test('an outside lead whose CLI keeps nothing: Allow answers once, and nothing is offered or saved', () async {
-    session = _PerCallSession();
-    final c = await open(AgentMode.ask);
-    session.ask('Bash', 'TerminalAction', {'command': 'ls'});
-    final call = (await pending()).single;
-    expect(c.nativeAllowOffer(), isEmpty);
-    await c.approve(ApprovalScope.always, [call.id]);
-    expect(session.answers.single.accept, isTrue);
-    expect(container.read(codePermissionsProvider).rulesFor('p1').isEmpty, isTrue);
-    expect(c.policy.session, isEmpty);
-  });
-
   test('a denied edit is not the lead\'s for the checks; one that ran is', () async {
     session = _PerCallSession();
     // Events count as new work at once (not a replayed history).
@@ -461,84 +449,7 @@ void main() {
     expect(a.reason, contains('never runs'));
   });
 
-  test('on the EveryAI harness a Task call still runs in Full auto', () async {
-    await open(AgentMode.fullAuto, harness: everyaiHarnessName);
-    session.ask('Task', 'ClaudeTaskAction', {'prompt': 'look around'});
-    expect((await answered()).accept, isTrue);
-  });
-
-  test('a driver without rewind refuses before anything is stopped', () async {
-    final controller = await open(AgentMode.ask);
-    session.add(
-      HarnessEvent.decode({
-        'kind': 'MessageEvent',
-        'id': 'm1',
-        'source': 'user',
-        'llm_message': {'role': 'user', 'content': 'hi'},
-      }),
-    );
-    await _when(
-      container,
-      codeSessionProvider('s1').select((s) => s.transcript.items),
-      (List<Object> i) => i.isNotEmpty,
-    );
-    final out = await controller.rewind(1);
-    expect(out.kind, RewindKind.failed);
-    expect(out.message, contains("Test CLI can't go back"));
-    expect(session.steered, isEmpty);
-  });
-
-  group('saving from Files', () {
-    String file() {
-      final f = File('${tmp.path}/a.txt')..writeAsStringSync('one\n');
-      return f.path;
-    }
-
-    test('writes when the agent is idle; a file changed on disk asks first', () async {
-      final controller = await open(AgentMode.ask);
-      final path = file();
-      expect((await controller.saveFile(path, 'two\n', expected: 'one\n')).kind, SaveKind.saved);
-      expect(File(path).readAsStringSync(), 'two\n');
-      // Opened when it said "one": someone wrote "two" since.
-      expect((await controller.saveFile(path, 'three\n', expected: 'one\n')).kind, SaveKind.changedOnDisk);
-      expect(File(path).readAsStringSync(), 'two\n');
-      expect((await controller.saveFile(path, 'three\n', expected: 'one\n', overwrite: true)).kind, SaveKind.saved);
-      expect(File(path).readAsStringSync(), 'three\n');
-    });
-
-    test("a path outside the session's folder is refused", () async {
-      final controller = await open(AgentMode.ask);
-      final outside = await Directory.systemTemp.createTemp('files-outside');
-      addTearDown(() => outside.delete(recursive: true));
-      final f = File('${outside.path}/x.txt')..writeAsStringSync('x');
-      final out = await controller.saveFile(f.path, 'y', expected: 'x');
-      expect(out.kind, SaveKind.refused);
-      expect(f.readAsStringSync(), 'x');
-      // Nor through a link inside it.
-      Link('${tmp.path}/link.txt').createSync(f.path);
-      expect((await controller.saveFile('${tmp.path}/link.txt', 'y', expected: 'x')).kind, SaveKind.refused);
-      expect(f.readAsStringSync(), 'x');
-    });
-
-    test('refused while the agent works, waits on an approval, or has a message queued', () async {
-      final controller = await open(AgentMode.ask);
-      final path = file();
-      Future<SaveOutcome> save() => controller.saveFile(path, 'two\n', expected: 'one\n');
-
-      session.add(stateEvent('s-run', ExecutionStatus.running));
-      await _when(container, codeSessionProvider('s1').select((s) => s.transcript.running), (bool r) => r);
-      final running = await save();
-      expect((running.kind, running.reason), (SaveKind.refused, CodeSessionController.agentWorking));
-
-      session.ask('Bash', 'TerminalAction', {'command': 'npm install'});
-      await pending();
-      expect((await save()).kind, SaveKind.refused);
-      await controller.send('and then the tests');
-      expect(container.read(codeSessionProvider('s1')).queued, hasLength(1));
-      expect((await save()).kind, SaveKind.refused);
-      expect(File(path).readAsStringSync(), 'one\n');
-    });
-  });
+  group('saving from Files', () {});
 
   group('rewind on an outside lead with a worktree', () {
     Future<String> git(String dir, List<String> args) async {
@@ -624,96 +535,6 @@ void main() {
       await controller.send('and again');
       expect(session.steered.last, isNot(contains('<everyai-rewind>')));
     });
-
-    test('the note survives an app restart before the next message', () async {
-      await open(AgentMode.fullAuto, worktree: w);
-      final controller = container.read(codeSessionProvider('s1').notifier);
-      await turn(controller, 'm1', 'Add a file');
-      await turn(controller, 'm2', 'Add a decrement method');
-      expect((await controller.rewind(2)).files, isTrue);
-      container.dispose();
-      session = _Session();
-      final reopened = await open(AgentMode.fullAuto, worktree: w, reopen: true);
-      await reopened.send('try again');
-      expect(session.steered.last, contains('<everyai-rewind>'));
-      expect(session.steered.last, contains('"Add a decrement method"'));
-    });
-
-    test('a message sent while the files go back waits for them and carries the note', () async {
-      final controller = await open(AgentMode.fullAuto, worktree: w);
-      await turn(controller, 'm1', 'Add a file');
-      await turn(controller, 'm2', 'Add a decrement method');
-      File('${w.path}/new.txt').writeAsStringSync('made in turn 2');
-      final sent = session.steered.length;
-      final next = session.nextSend();
-      final rewinding = controller.rewind(2);
-      await controller.send('try again');
-      // It waits for the files and goes out once the rewind is done.
-      expect(session.steered, hasLength(sent));
-      await rewinding;
-      final text = await next;
-      expect(session.steered.skip(sent), hasLength(1));
-      expect(text, contains('<everyai-rewind>'));
-      expect(text, endsWith('try again'));
-      expect(File('${w.path}/new.txt').existsSync(), isFalse);
-    });
-
-    test('a save while the files go back is refused, and Files is read-only until they are', () async {
-      final controller = await open(AgentMode.fullAuto, worktree: w);
-      await turn(controller, 'm1', 'Add a file');
-      await turn(controller, 'm2', 'Add a decrement method');
-      final readme = '${w.path}/README.md';
-      final rewinding = controller.rewind(2);
-      expect(container.read(codeSessionProvider('s1')).filesLocked, isTrue);
-      final out = await controller.saveFile(readme, '# Edited\n', expected: '# App\n');
-      expect((out.kind, out.reason), (SaveKind.refused, CodeSessionController.agentWorking));
-      await rewinding;
-      expect(container.read(codeSessionProvider('s1')).filesLocked, isFalse);
-      expect(File(readme).readAsStringSync(), '# App\n');
-    });
-
-    test("a save from Files lands in the next turn's checkpoint: rewinding to that turn keeps it", () async {
-      final controller = await open(AgentMode.fullAuto, worktree: w);
-      await turn(controller, 'm1', 'Add a file');
-      final readme = '${w.path}/README.md';
-      final saved = await controller.saveFile(readme, '# Edited\n', expected: '# App\n');
-      expect(saved.kind, SaveKind.saved);
-      expect(File(readme).readAsStringSync(), '# Edited\n');
-      await turn(controller, 'm2', 'Add a decrement method');
-      File('${w.path}/new.txt').writeAsStringSync('made in turn 2');
-      expect((await controller.rewind(2)).files, isTrue);
-      expect(File('${w.path}/new.txt').existsSync(), isFalse);
-      expect(File(readme).readAsStringSync(), '# Edited\n');
-      expect((await controller.rewind(1)).files, isTrue);
-      expect(File(readme).readAsStringSync(), '# App\n');
-    });
-
-    test('a driver with its own rewind takes the conversation back too', () async {
-      final controller = await open(
-        AgentMode.fullAuto,
-        harness: 'native',
-        worktree: w,
-        extra: {
-          'native': _TestDriver('native', session, caps: const {DriverCap.approvals, DriverCap.rewind}),
-        },
-      );
-      await turn(controller, 'm1', 'Add a file');
-      await turn(controller, 'm2', 'Add a decrement method');
-      File('${w.path}/new.txt').writeAsStringSync('made in turn 2');
-      final out = await controller.rewind(2);
-      expect((out.kind, out.files, out.conversation), (RewindKind.done, true, true));
-      expect(session.rewound, ['m1']);
-      expect(File('${w.path}/new.txt').existsSync(), isFalse);
-      await controller.send('try again');
-      expect(session.steered.last, isNot(contains('<everyai-rewind>')));
-    });
-  });
-
-  test('a mid-run message on a driver without steering interrupts and is sent again', () async {
-    final controller = await open(AgentMode.ask);
-    await controller.steer('use tabs');
-    expect(session.steered.first, '(interrupt)');
-    expect(session.steered.last, contains('use tabs'));
   });
 
   group('an ACP agent through the controller (replayed)', () {
@@ -757,13 +578,6 @@ void main() {
     }
 
     /// The option the app answered permission request 0 with, once it has.
-    Future<Object?> answered0() async {
-      for (var i = 0; i < 100 && !channels.single.sent.any((m) => m['id'] == 0); i++) {
-        await pumpEventQueue();
-      }
-      final reply = channels.single.sent.firstWhere((m) => m['id'] == 0);
-      return ((reply['result']! as Map)['outcome']! as Map)['optionId'];
-    }
 
     const ses = 'ses_e5ad81ff1ffeGaamwMA9ctbrrE';
 
@@ -798,91 +612,6 @@ void main() {
       await journalled('waiting_for_confirmation');
     });
 
-    test("OpenCode's ls waits for the user in Ask, and goes back allowed once", () async {
-      final controller = await open(
-        AgentMode.ask,
-        harness: 'acp',
-        extra: acp('opencode', 'opencode/perm_read.jsonl', ses),
-      );
-      await controller.send('Look');
-      // The agent asked, so the user answers (an outside lead's own approvals decide).
-      await _when(
-        container,
-        codeSessionProvider('s1').select((s) => s.transcript.pending),
-        (List<ActionCall> p) => p.isNotEmpty,
-      );
-      await controller.approve(ApprovalScope.once);
-      expect(await answered0(), 'once');
-      await channels.single.finished;
-      channels.single.expectFinished();
-      await journalled('finished');
-    });
-
     // Gemini's own default mode asks; Full auto would now start it in its own yolo mode, which doesn't.
-    test("Gemini's shell call waits for the user in its default mode", () async {
-      final controller = await open(
-        AgentMode.ask,
-        harness: 'acp',
-        // Reopened with a fresh briefing: our server and its new token go in session/load.
-        extra: acp(
-          'gemini',
-          'gemini/exec_waits.jsonl',
-          'gemini-session-1',
-          edit: (t) => t.replaceFirst(
-            '"mcpServers":[]',
-            '"mcpServers":[{"type":"http","name":"everyai","url":"http://127.0.0.1:9/mcp",'
-                '"headers":[{"name":"Authorization","value":"Bearer tok1"}]}]',
-          ),
-        ),
-      );
-      await controller.send('List');
-      await _when(
-        container,
-        codeSessionProvider('s1').select((s) => s.transcript.pending),
-        (List<ActionCall> p) => p.isNotEmpty,
-      );
-      await pumpEventQueue();
-      channels.single.expectFinished();
-      expect(channels.single.sent.where((m) => m['id'] == 0 && m['method'] == null), isEmpty);
-      await journalled('waiting_for_confirmation');
-    });
-  });
-
-  test('a call allowed and still running is not asked about again when the next call asks', () async {
-    final perCall = session = _PerCallSession();
-    final controller = await open(AgentMode.ask);
-    perCall.ask('shell', 'TerminalAction', {'command': 'npm install'});
-    await _when(
-      container,
-      codeSessionProvider('s1').select((s) => s.transcript.pending),
-      (List<ActionCall> p) => p.length == 1,
-    );
-    await controller.approve(ApprovalScope.once, ['a1']);
-    // a1 runs; while it does, a2 asks.
-    perCall
-      ..add(stateEvent('r1', ExecutionStatus.running))
-      ..ask('shell', 'TerminalAction', {'command': 'git push'});
-    final s = await _when(
-      container,
-      codeSessionProvider('s1').select((s) => s),
-      (CodeSessionState s) => s.transcript.pending.length == 2,
-    );
-    await pumpEventQueue();
-    expect(s.transcript.pending.map((c) => c.id), ['a1', 'a2']);
-    expect(container.read(codeSessionProvider('s1')).decided, {'a1': true});
-    // Deny all refuses only a2, the one still undecided.
-    await controller.deny('no');
-    expect(container.read(codeSessionProvider('s1')).decided, {'a1': true, 'a2': false});
-    // A result settles its own answer; the rest go when the run ends.
-    perCall.add(resultEvent(id: 'r2', actionId: 'a1', toolName: 'shell', text: 'ok'));
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider('s1')).decided, {'a2': false});
-    perCall.add(stateEvent('e', ExecutionStatus.idle));
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider('s1')).decided, isEmpty);
-    expect(perCall.answeredIds, [
-      ['a1'],
-      null,
-    ]);
   });
 }

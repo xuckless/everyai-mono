@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/process/supervisor.dart' show KillOutcome;
 import '../../domain/agent_mode.dart';
 import '../../domain/floor_advice.dart' show floorAdviceLead, floorAdviceSubject;
 import '../../domain/permissions.dart' show typedReason;
@@ -14,9 +15,11 @@ import '../briefing/briefing_types.dart';
 import '../briefing/recipes.dart' show acpMcpServer;
 import '../driver.dart';
 import '../driver_events.dart';
+import '../driver_link.dart';
 import '../driver_policy.dart' show hostRunTools, rewindRefusal;
 import '../event_journal.dart';
 import '../json_rpc.dart';
+import '../short_run.dart' show SingleFlight;
 import '../usage_limit.dart';
 import 'acp_agents.dart';
 import 'acp_cursor.dart';
@@ -155,7 +158,8 @@ AgentMode acpModePolicy(AcpProfile profile, String id) {
   return AgentMode.ask;
 }
 
-final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
+final class AcpSession
+    implements HarnessSession, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes, ClosesVerified {
   AcpSession({
     required this.id,
     required this.dir,
@@ -215,8 +219,17 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
   /// What the turns used, guessed from the text that went by, for agents that report nothing (Cursor).
   final _estimate = AcpUsageEstimate();
   String? _acpSessionId;
-  JsonRpcPeer? _peer;
-  Future<void>? _connecting;
+
+  /// The agent's process, as a JSON-RPC peer on its stdio ([LinkState]); the session is closed when it is.
+  late final _link = DriverLink<JsonRpcPeer>('$_label session $id', (p) => p.close());
+  JsonRpcPeer? get _peer => _link.live;
+
+  /// The peer the link last made live: still set after a [DriverLink.drop] (which clears [_peer]), so that peer's
+  /// end still runs [_gone]'s cleanup.
+  JsonRpcPeer? _lastPeer;
+
+  /// The connect under way (start and handshake), one at a time.
+  final _connecting = SingleFlight<int, void>();
   Map<String, Object?> _agentCaps = const {};
   List<Object?> _authMethods = const [];
   List<Object?>? _config;
@@ -242,7 +255,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
   var _cancelled = false;
   var _parked = false;
   var _paused = false;
-  var _closed = false;
+  bool get _closed => _link.isClosed;
   double? _cost;
   final _text = StringBuffer();
   final _reasoning = StringBuffer();
@@ -355,24 +368,32 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
 
   Future<void> _ensureConnected({bool fresh = false}) {
     if (_peer case final p? when !p.isClosed) return Future.value();
-    return _connecting ??= _connect(fresh: fresh).whenComplete(() => _connecting = null);
+    return _connecting.run(0, () => _connect(fresh: fresh));
   }
 
   Future<void> _connect({required bool fresh}) async {
-    final exe = await _launcher.resolve();
     final delivery = await _delivery();
     final cmd = _launcher.command;
-    final channel = await _launcher.connect(
-      executable: exe,
-      args: addArgs(cmd.args, delivery?.args ?? const []),
-      cwd: cwd,
-      sessionTag: sessionTag,
-      logPath: '$dir/stderr.log',
-      env: _profile.env(delivery),
+    // A close while it starts stops what starts (the link never makes it live); nothing starts after a close.
+    final peer = await _link.ensure(
+      () async {
+        final exe = await _launcher.resolve();
+        final channel = await _launcher.connect(
+          executable: exe,
+          args: addArgs(cmd.args, delivery?.args ?? const []),
+          cwd: cwd,
+          sessionTag: sessionTag,
+          logPath: '$dir/stderr.log',
+          env: _profile.env(delivery),
+        );
+        return JsonRpcPeer(channel, onRequest: _onRequest, onNotify: _onNotify);
+      },
+      onLive: (peer) {
+        _lastPeer = peer;
+        unawaited(peer.done.then((_) => _gone(peer)));
+      },
     );
-    final peer = JsonRpcPeer(channel, onRequest: _onRequest, onNotify: _onNotify);
-    _peer = peer;
-    unawaited(peer.done.then((_) => _gone(peer)));
+    final channel = peer.channel;
     try {
       final init = _map(
         await peer.request('initialize', {
@@ -454,13 +475,13 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
       await _startMode();
       if (_llm case final l?) await _applyLlm(l.model, l.effort, strict: false);
     } on TimeoutException {
-      await peer.close();
+      await _link.drop();
       throw HarnessError(
         "$_label didn't start. If it asks you to sign in, run `${cmd.executable}` in a terminal once, then try again.",
       );
     } on JsonRpcError catch (e) {
       final closed = peer.isClosed;
-      await peer.close();
+      await _link.drop();
       // Exited for want of a terminal (Grok started from the Dock): once more under one.
       if (closed &&
           _profile.ttyFallback &&
@@ -470,7 +491,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
       }
       throw HarnessError(_errorText(e, closed: closed));
     } on Object {
-      await peer.close();
+      await _link.drop();
       rethrow;
     }
   }
@@ -496,8 +517,11 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
 
   /// The agent went away: nothing it asked about can be answered now.
   void _gone(JsonRpcPeer peer) {
-    if (!identical(_peer, peer)) return;
-    _peer = null;
+    // A newer peer is live: this one's end was handled when it was replaced.
+    if (!identical(_lastPeer, peer)) return;
+    // Its output ended: the process is stopped (verified) before another starts (the link logs a stop that isn't
+    // proven, and the next connect waits for it). After a drop the link stops it already.
+    if (identical(_peer, peer)) unawaited(_link.gone(peer));
     for (final a in _asking.values) {
       if (!a.reply.isCompleted) a.reply.complete(_cancelledOutcome);
       _cancelledResult(a.callId);
@@ -949,7 +973,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
     await turn.timeout(
       const Duration(seconds: 15),
       onTimeout: () async {
-        await _peer?.close();
+        await _link.drop();
         _setStatus(ExecutionStatus.paused);
       },
     );
@@ -1599,15 +1623,21 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
   }
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
+  Future<void> close() => closeVerified();
+
+  /// [close], with what the stop of the agent proved (one still starting is stopped when it lands).
+  @override
+  Future<KillOutcome> closeVerified() => _closing ??= _closeNow();
+  Future<KillOutcome>? _closing;
+
+  Future<KillOutcome> _closeNow() async {
+    final stopped = _link.close();
     _quietTimer?.cancel();
     for (final a in _asking.values) {
       a.reply.complete(_cancelledOutcome);
     }
     _asking.clear();
-    await _peer?.close();
+    final outcome = await stopped;
     // After the agent is gone, so nothing is sent to it.
     _endExtWaits(HostEnd.sessionClosed);
     await _journal.close();
@@ -1618,6 +1648,7 @@ final class AcpSession implements HarnessSession, PerCallApprovals, AllowsRememb
     _commands.close();
     _modeFeed.close();
     _launcher.closed(id);
+    return outcome;
   }
 
   static Map<String, Object?> _map(Object? v) => v is Map<String, Object?> ? v : const {};

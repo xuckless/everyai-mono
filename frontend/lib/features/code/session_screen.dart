@@ -138,12 +138,16 @@ mixin _SessionScreen on Notifier<CodeSessionState> {
 
   Future<HostResult> _screenCall(HostCall call, CodeSessionInfo info) async {
     final a = ref.read(screenAccessProvider);
-    return switch (call.name) {
-      screenshotTool => _screenshot(call, info, a),
-      browserTool => _browse(call, info, a),
-      appTool => _appCall(call, info, a),
-      _ => _runApp(call, info, a),
-    };
+    try {
+      return await switch (call.name) {
+        screenshotTool => _screenshot(call, info, a),
+        browserTool => _browse(call, info, a),
+        appTool => _appCall(call, info, a),
+        _ => _runApp(call, info, a),
+      };
+    } on SessionPidsUnreadable catch (e) {
+      return (text: 'Error: $e', isError: true);
+    }
   }
 
   /// Shows a card with [questions] for host call [call]; its answers, or

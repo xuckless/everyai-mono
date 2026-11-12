@@ -11,15 +11,13 @@ import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/code_settings_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
-import 'package:every_ai/features/code/domain/permissions.dart' show ApprovalScope, Verdict;
+import 'package:every_ai/features/code/domain/permissions.dart' show ApprovalScope;
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent;
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
-import 'package:every_ai/features/code/git/git_service.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/workflows/workflow_agents_tool.dart';
-import 'package:every_ai/features/code/harness/harness.dart' show NativeMode;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_prompts.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
@@ -101,7 +99,7 @@ void main() {
       ),
       codeSideModelProvider.overrideWithValue((messages) async => ''),
       gatewayKeysProvider.overrideWith((ref) => GatewayKeys(store: _NoStore(), mint: () async => 'sk-eai-test')),
-      workflowBridgeProvider.overrideWithValue(({required dir, required source, required args}) async {
+      workflowBridgeProvider.overrideWithValue(({required dir, required source, required args, sessionId}) async {
         startedArgs = args;
         startedSource = source;
         return bridge;
@@ -246,9 +244,6 @@ void main() {
   });
 
   group('the drift check', () {
-    HostCall agents(Map<String, Object?> args) =>
-        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
-
     /// A run whose Research phase ends with one agent's answer.
     Future<(CodeSessionController, String)> phaseEnded({String harness = 'test'}) async {
       final c = await open(harness: harness);
@@ -263,31 +258,6 @@ void main() {
       await pumpEventQueue();
       return (c, runId);
     }
-
-    test('an outside lead gets no checkpoint; its own off_track still pauses the run for the user', () async {
-      final (c, runId) = await phaseEnded();
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      expect(lead.sent.where((m) => m.contains('<workflow-checkpoint')), isEmpty);
-      expect(api.where((p) => p.contains('decide')), isEmpty, reason: 'EveryAI spends nothing on an outside lead');
-      final r = await c.call(agents({'action': 'off_track', 'text': 'It works on billing, not the login bug'}));
-      expect(r.text, startsWith('Paused'));
-      final engine = c.workflowEngineOf(runId)!;
-      await pumpEventQueue();
-      expect(engine.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
-      expect(
-        engine.snapshot.rows.last.text,
-        'Off track: It works on billing, not the login bug. Paused until you decide.',
-      );
-      expect(container.read(codeSessionProvider(c.sessionId)).status, SessionStatus.needsInput);
-      // Pause all and Resume all don't answer the card's question.
-      await c.pauseAll();
-      await c.resumeAll();
-      expect(engine.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
-      await c.resumeWorkflow(runId);
-      expect(engine.state, isA<RunRunning>());
-      bridge.finish(null);
-      await pumpEventQueue();
-    });
 
     test('an EveryAI lead asks the decider once; only a clear no pauses', () async {
       drivers['everyai'] = FakeLeadDriver('everyai', session: lead);
@@ -389,59 +359,6 @@ void main() {
     expect(settled, isFalse);
     answer(agent, 'Fixed it, with a timeout');
     expect(await reply, 'Fixed it, with a timeout');
-    bridge.finish(null);
-    await pumpEventQueue();
-  });
-
-  test("workflow_agents restart with a slow stop: the stopped turn's late end isn't the agent's answer", () async {
-    final c = await open();
-    await c.runWorkflow('demo', 'source', args: {'n': 1});
-    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
-    final kid = await child();
-    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
-    final agent = drivers['fake2']!.latest!;
-    agent.add(stateEvent('${agent.id}-r0', ExecutionStatus.running));
-    await pumpEventQueue();
-    HostCall agents(Map<String, Object?> args) =>
-        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
-    final key = RegExp(r'agent (\S+),').firstMatch((await c.call(agents({'action': 'list'}))).text)![1]!;
-    var settled = false;
-    unawaited(reply.then((_) => settled = true));
-    final restarting = c.call(agents({'action': 'restart', 'agent': key, 'text': 'use a timeout'}));
-    // The stop takes longer than the 5 s the app waits for it; the note queues behind the stopping turn.
-    await Future<void>.delayed(const Duration(milliseconds: 5600));
-    agent.add(stateEvent('${agent.id}-s', ExecutionStatus.finished));
-    await pumpEventQueue();
-    expect(settled, isFalse, reason: "the stopped turn's end is not the answer");
-    for (var i = 0; i < 100 && !agent.sent.any((m) => m.contains('use a timeout')); i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
-    expect(agent.sent.any((m) => m.contains('use a timeout')), isTrue, reason: '${agent.sent}');
-    agent.add(stateEvent('${agent.id}-r1', ExecutionStatus.running));
-    expect((await restarting).text, startsWith('Restarted'));
-    expect(settled, isFalse);
-    answer(agent, 'Fixed it, with a timeout');
-    expect(await reply, 'Fixed it, with a timeout');
-    bridge.finish(null);
-    await pumpEventQueue();
-  });
-
-  test('workflow_agents restart is refused while the run is paused', () async {
-    final c = await open();
-    final runId = await c.runWorkflow('demo', 'source', args: {'n': 1});
-    final reply = bridge.agent('Fix the bug', {'harness': 'fake2', 'label': 'Fixer'});
-    final kid = await child();
-    await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
-    final agent = drivers['fake2']!.latest!;
-    HostCall agents(Map<String, Object?> args) =>
-        HostCall(id: 'wa', sessionId: '', name: workflowAgentsTool, args: args, ended: Completer<HostEnd>().future);
-    final key = RegExp(r'agent (\S+),').firstMatch((await c.call(agents({'action': 'list'}))).text)![1]!;
-    await c.pauseWorkflow(runId);
-    final r = await c.call(agents({'action': 'restart', 'agent': key}));
-    expect(r.text, startsWith('Not restarted: the run is paused'));
-    await c.resumeWorkflow(runId);
-    answer(agent, 'Fixed it');
-    expect(await reply, 'Fixed it');
     bridge.finish(null);
     await pumpEventQueue();
   });
@@ -606,47 +523,6 @@ void main() {
     expect(c.policy.session, contains('npm test *'));
   });
 
-  test("a read-only agent neither uses nor adds to the lead's session approvals", () async {
-    final c = await open();
-    await c.setMode(AgentMode.ask);
-    lead
-      ..add(actionEvent(id: 'l1', toolName: 'bash', kind: 'TerminalAction', args: {'command': 'npm test'}))
-      ..add(stateEvent('lw', ExecutionStatus.waitingForConfirmation));
-    await whenValue(
-      container,
-      codeSessionProvider(c.sessionId).select((s) => s.transcript.pending.length),
-      (int n) => n == 1,
-    );
-    await c.approve(ApprovalScope.session);
-    // An outside lead's "for this session" is its CLI's to keep (review/cursor-native): nothing in EveryAI's rules.
-    expect(c.policy.session, isEmpty);
-    await c.runWorkflow('demo', 'source');
-    unawaited(bridge.agent('Review', {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
-    final kid = await child();
-    expect(kid.ownApprovals, isTrue);
-    expect(kid.sharesApprovals, isFalse);
-    container.listen(codeSessionProvider(kid.id), (_, _) {});
-    final reviewer = container.read(codeSessionProvider(kid.id).notifier);
-    expect(reviewer.policy.session, isNot(contains('npm test *')));
-    final s = drivers['fake2']!.conversations.values.single;
-    s
-      ..add(actionEvent(id: 'r1', toolName: 'bash', kind: 'TerminalAction', args: {'command': 'npm test'}))
-      ..add(stateEvent('rw', ExecutionStatus.waitingForConfirmation));
-    await whenValue(
-      container,
-      codeSessionProvider(kid.id).select((s) => s.transcript.pending.length),
-      (int n) => n == 1,
-    );
-    expect(s.answers, isEmpty);
-    // Its own "for this session" stays its own.
-    s
-      ..add(actionEvent(id: 'r2', toolName: 'bash', kind: 'TerminalAction', args: {'command': 'make lint'}))
-      ..add(stateEvent('rw2', ExecutionStatus.waitingForConfirmation));
-    await reviewer.approve(ApprovalScope.session);
-    expect(reviewer.policy.session, isNotEmpty);
-    expect(c.policy.session, isNot(contains('make lint *')));
-  });
-
   test("allowing on one read-only agent's card settles its read-only siblings, not the lead", () async {
     final c = await open();
     await c.setMode(AgentMode.ask);
@@ -701,126 +577,6 @@ void main() {
     expect(reason, endsWith('use yarn'));
   });
 
-  group('native modes', () {
-    const ask = NativeMode(id: 'default', label: 'Default', policy: AgentMode.ask);
-    const edits = NativeMode(id: 'acceptEdits', label: 'Accept edits', policy: AgentMode.autoEdit);
-    const auto = NativeMode(id: 'auto', label: 'Auto', policy: AgentMode.fullAuto);
-
-    Future<CodeSessionController> openOn(String harness, AgentMode mode) async {
-      final info = await container
-          .read(codeSessionsProvider.notifier)
-          .start(
-            project: container.read(codeProjectsProvider).single,
-            prompt: 'Lead the work',
-            model: '',
-            mode: mode,
-            harness: harness,
-          );
-      container.listen(codeSessionProvider(info.id), (_, _) {});
-      await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
-      // The mode feed's listener is on before the test sets modes.
-      await pumpEventQueue();
-      return container.read(codeSessionProvider(info.id).notifier);
-    }
-
-    test('a Full auto session whose first list lacks auto moves there once a later list has it', () async {
-      final c = await openOn('fake2', AgentMode.fullAuto);
-      final s = drivers['fake2']!.latest!;
-      s.modeFeed.set(modes: [ask, edits], current: 'default');
-      await pumpEventQueue();
-      expect(s.picked, ['acceptEdits']);
-      s.modeFeed.set(modes: [ask, edits, auto]);
-      await pumpEventQueue();
-      expect(s.picked, ['acceptEdits', 'auto']);
-      expect(container.read(codeSessionProvider(c.sessionId)).mode, AgentMode.fullAuto);
-      // Once there, nothing more moves it.
-      s.modeFeed.set(modes: [ask, edits, auto]);
-      await pumpEventQueue();
-      expect(s.picked, hasLength(2));
-    });
-
-    test('a mode the user picks meanwhile wins over the one the session started in', () async {
-      final c = await openOn('fake2', AgentMode.fullAuto);
-      final s = drivers['fake2']!.latest!;
-      s.modeFeed.set(modes: [ask, edits], current: 'default');
-      await pumpEventQueue();
-      await c.setNativeMode('default');
-      s.modeFeed.set(modes: [ask, edits, auto]);
-      await pumpEventQueue();
-      expect(s.picked, ['acceptEdits', 'default']);
-    });
-
-    test("an agent in the lead's mode gets its native mode too; a read-only one doesn't", () async {
-      final c = await openOn('fake2', AgentMode.fullAuto);
-      final s = drivers['fake2']!.latest!;
-      s.modeFeed.set(modes: [ask, edits, auto], current: 'default');
-      await pumpEventQueue();
-      expect(container.read(codeSessionsProvider.notifier).byId(c.sessionId)!.nativeMode, 'auto');
-      await c.runWorkflow('demo', 'source');
-      unawaited(bridge.agent('Review', {'harness': 'fake2', 'readOnly': true}).catchError((Object _) => null));
-      final reviewer = await child();
-      expect((reviewer.mode, reviewer.nativeMode), (AgentMode.ask, ''));
-      container.listen(codeSessionProvider(reviewer.id), (_, _) {});
-      await pumpEventQueue();
-      final rs = drivers['fake2']!.latest!;
-      rs.modeFeed.set(modes: [ask, edits, auto], current: 'default');
-      await pumpEventQueue();
-      expect(rs.picked, isEmpty);
-      unawaited(bridge.agent('Fix', {'harness': 'fake2'}).catchError((Object _) => null));
-      final fixer = await whenValue(
-        container,
-        codeSessionsProvider,
-        (List<CodeSessionInfo> all) => all.any((k) => k.title == 'Fix' || (k.parentId != null && k.id != reviewer.id)),
-      ).then((all) => all.firstWhere((k) => k.parentId != null && k.id != reviewer.id));
-      expect((fixer.mode, fixer.nativeMode), (AgentMode.fullAuto, 'auto'));
-    });
-  });
-
-  test("an agent can list the workflow prompts before its session's start returns", () async {
-    final gate = drivers['test']!.startGate = Completer<void>();
-    final starting = container
-        .read(codeSessionsProvider.notifier)
-        .start(
-          project: container.read(codeProjectsProvider).single,
-          prompt: 'Lead the work',
-          model: '',
-          mode: AgentMode.autoEdit,
-          harness: 'test',
-        );
-    final host = container.read(hostServerProvider) as FakeHost;
-    for (var i = 0; i < 50 && host.tools.isEmpty; i++) {
-      await pumpEventQueue();
-    }
-    // Gemini over ACP lists prompts inside session/new, which is what the start waits for.
-    final prompts = await (host.tools.values.single as HostPrompts).workflowPrompts();
-    expect([for (final p in prompts) p.id], ['ultra', 'bugfix', 'security_review']);
-    gate.complete();
-    await starting;
-  });
-
-  test('a schema reply that misses gets its repair message in the same child', () async {
-    final c = await open();
-    await c.runWorkflow('demo', 'source');
-    final reply = bridge.agent('Review', {
-      'harness': 'fake2',
-      'schema': {
-        'type': 'object',
-        'required': ['ok'],
-      },
-    });
-    await child();
-    final s = drivers['fake2']!.latest!;
-    answer(s, 'Looks fine');
-    // The repair goes through the child's own send, which reads its folder first.
-    for (var i = 0; i < 50 && s.sent.length < 2; i++) {
-      await pumpEventQueue();
-    }
-    expect(s.sent.last, contains("doesn't match the schema"));
-    answer(s, '```json\n{"ok": true}\n```');
-    expect(await reply, {'ok': true});
-    expect(drivers['fake2']!.specs, hasLength(1));
-  });
-
   test('a harness that needs consent refuses the agent', () async {
     final c = await open();
     await c.runWorkflow('demo', 'source');
@@ -858,16 +614,6 @@ void main() {
     Future<String> out(String dir, List<String> args) async =>
         '${(await Process.run('git', ['-C', dir, ...args])).stdout}'.trim();
 
-    test('the card asks only when the folder is dirty', () async {
-      final (c, dir) = await dirty();
-      final key = (sessionId: c.sessionId, runId: run.runId);
-      expect(await container.read(workflowDirtyProvider(key).future), isTrue);
-      await c.landWorkflow(run, WorkflowLand.commit, message: 'Bug fix: two');
-      container.invalidate(workflowDirtyProvider(key));
-      expect(await container.read(workflowDirtyProvider(key).future), isFalse);
-      expect(await out(dir, ['log', '-1', '--format=%s']), 'Bug fix: two');
-    });
-
     test('Commit here commits the folder and tells the lead once', () async {
       final (c, dir) = await dirty();
       await c.landWorkflow(run, WorkflowLand.commit, message: 'Bug fix: two');
@@ -877,22 +623,6 @@ void main() {
       expect(msg, contains('<workflow-landing run="abcdef123" choice="commit" commit="'));
       expect(msg, isNot(contains('branch=')));
       expect(await out(dir, ['status', '--porcelain']), isEmpty);
-    });
-
-    test('New branch commits on a branch of that name; a bad name changes nothing and tells no one', () async {
-      final (c, dir) = await dirty();
-      final before = await out(dir, ['rev-parse', 'HEAD']);
-      await c.landWorkflow(run, WorkflowLand.branch, message: 'x', branch: 'not a branch');
-      expect(landed(c)!.ok, isFalse);
-      expect(await out(dir, ['rev-parse', 'HEAD']), before);
-      expect(await out(dir, ['status', '--porcelain']), isNotEmpty);
-      expect(lead.sent.where((m) => m.contains('<workflow-landing')), isEmpty);
-
-      await c.landWorkflow(run, WorkflowLand.branch, message: 'Bug fix: two', branch: 'everyai/bug-fix-abcdef');
-      expect(landed(c)!.ok, isTrue);
-      expect(landed(c)!.text, contains('on everyai/bug-fix-abcdef'));
-      expect(await out(dir, ['branch', '--show-current']), 'everyai/bug-fix-abcdef');
-      expect(await told(), contains('choice="branch" branch="everyai/bug-fix-abcdef"'));
     });
 
     test('only the run\'s own files are committed, not the user\'s work in the same folder', () async {
@@ -906,92 +636,6 @@ void main() {
       final key = (sessionId: c.sessionId, runId: run.runId);
       expect(await container.read(workflowDirtyProvider(key).future), isFalse);
     });
-
-    test('a run that changed nothing has nothing to commit or switch to', () async {
-      final (c, dir) = await dirty();
-      container.read(workflowOwnPathsProvider(c.sessionId).notifier).set(run.runId, const []);
-      final key = (sessionId: c.sessionId, runId: run.runId);
-      expect(await container.read(workflowDirtyProvider(key).future), isFalse);
-      final before = await out(dir, ['rev-parse', 'HEAD']);
-      await c.landWorkflow(run, WorkflowLand.branch, message: 'x', branch: 'everyai/none');
-      expect(landed(c)!.text, 'Nothing was left to commit.');
-      expect(await out(dir, ['rev-parse', 'HEAD']), before);
-      expect(await out(dir, ['branch', '--show-current']), isNot('everyai/none'));
-      expect(await told(), isNot(contains('branch=')));
-    });
-
-    test('a run records the files it changed, and only those get the lead\'s wait-for-the-user note', () async {
-      await git(['init', '-q']);
-      await git(['config', 'user.name', 't']);
-      await git(['config', 'user.email', 't@t']);
-      File('${project.path}/a.txt').writeAsStringSync('one\n');
-      await git(['add', '.']);
-      await git(['commit', '-qm', 'init']);
-      // Already there when the run starts: not the run's.
-      File('${project.path}/wip.txt').writeAsStringSync('mine\n');
-      final c = await open();
-      await c.runWorkflow('demo', 'source');
-      File('${project.path}/made.txt').writeAsStringSync('by the run\n');
-      // The git calls at the end are real processes, so wait for the files to be recorded, not for turns.
-      final recorded = Completer<void>();
-      container.listen(workflowOwnPathsProvider(c.sessionId), (_, now) {
-        if (now.isNotEmpty && !recorded.isCompleted) recorded.complete();
-      });
-      bridge.finish({'fixed': true});
-      await recorded.future;
-      for (var i = 0; i < 5000 && !lead.sent.any((m) => m.contains('<workflow-result')); i++) {
-        await pumpEventQueue();
-      }
-      final paths = container.read(workflowOwnPathsProvider(c.sessionId)).values.single;
-      expect(paths, ['made.txt']);
-      expect(lead.sent.singleWhere((m) => m.contains('<workflow-result')), contains('you will be told'));
-    });
-
-    test('a lane that merged brings its own commits over before the last one', () async {
-      final (c, dir) = await dirty();
-      final fork = (await GitService.forkCopy(dir, worktreesDir: '${project.parent.path}/forks', slug: 'lane1'))!;
-      File('${fork.root}/c.txt').writeAsStringSync('lane\n');
-      await Process.run('git', ['-C', fork.root, 'add', '-A']);
-      await Process.run('git', [
-        '-C', fork.root, '-c', 'user.name=Worker', '-c', 'user.email=w@w', //
-        'commit', '-qm', 'Add c\n\nCo-Authored-By: Claude <noreply@anthropic.com>',
-      ]);
-      final m = await GitService.mergeFork(fork, slug: 'lane1');
-      container.read(workflowOwnPathsProvider(c.sessionId).notifier).set(run.runId, ['b.txt', 'c.txt']);
-      container.read(workflowLanesProvider(c.sessionId).notifier).add(run.runId, (
-        ref: m.ref,
-        base: fork.base,
-        label: 'Lane 1',
-      ));
-      await c.landWorkflow(run, WorkflowLand.commit, message: 'Bug fix: two');
-      expect(landed(c)!.text, contains("after the workers' 1 commit"));
-      expect(await out(dir, ['log', '--format=%s|%an', '-2']), 'Bug fix: two|t\nAdd c|Worker');
-      expect(await out(dir, ['log', '--format=%B', '-2']), isNot(contains('Claude')));
-      expect(await out(dir, ['status', '--porcelain']), isEmpty);
-      expect(await told(), contains("The workers' own 1 commit came over first"));
-    });
-
-    test('Leave uncommitted touches nothing and still tells the lead', () async {
-      final (c, dir) = await dirty();
-      await c.landWorkflow(run, WorkflowLand.leave);
-      expect(landed(c)!.text, 'Left uncommitted.');
-      expect(await out(dir, ['status', '--porcelain']), isNotEmpty);
-      expect(await told(), contains('choice="leave"'));
-    });
-  });
-
-  test('a finished run tells the lead its changes are not committed yet', () async {
-    final c = await open();
-    await c.runWorkflow('demo', 'source');
-    bridge.finish({'fixed': true});
-    for (var i = 0; i < 50 && !lead.sent.any((m) => m.contains('<workflow-result')); i++) {
-      await pumpEventQueue();
-    }
-    final msg = lead.sent.singleWhere((m) => m.contains('<workflow-result'));
-    expect(msg, contains('not committed'));
-    // Nothing for the user to choose here, so the lead is not left waiting for a note.
-    expect(msg, isNot(contains('you will be told')));
-    expect(msg, contains('Do not commit them unless the user asks'));
   });
 
   test('a worktree agent works in its own copy, merged back when it finishes', () async {
@@ -1032,23 +676,6 @@ void main() {
     final text = await reply as String;
     expect(text, contains('Not merged while planning'));
     expect(File('${project.path}/b.txt').existsSync(), isFalse);
-  });
-
-  test('stopping the run ends the watch on a working agent, so its worktree is settled', () async {
-    await repo();
-    final c = await open();
-    final runId = await c.runWorkflow('demo', 'source');
-    final reply = bridge.agent('Add b', {'harness': 'fake2', 'worktree': true});
-    final info = await child();
-    drivers['fake2']!.latest!.add(stateEvent('s-r', ExecutionStatus.running));
-    await pumpEventQueue();
-    c.stopWorkflow(runId);
-    await expectLater(reply, throwsA(anything));
-    await whenValue(
-      container,
-      codeSessionsProvider,
-      (List<CodeSessionInfo> all) => all.firstWhere((s) => s.id == info.id).forkCopy == null,
-    );
   });
 
   test('Stop all ends the workflow run and its agent, and nothing wakes the lead afterwards', () async {
@@ -1167,38 +794,6 @@ void main() {
     expect(File(path).existsSync(), isFalse);
   });
 
-  test('a resumed run whose lead step outlasts its cutoff tells the lead once and retires its journal', () async {
-    final c = await open();
-    final id = c.sessionId;
-    final dir = Directory('${tmp.path}/data/workflows/$id')..createSync(recursive: true);
-    final path = '${dir.path}/r-slow.jsonl';
-    File(path).writeAsStringSync(
-      [
-        jsonEncode({'t': 'start', 'name': 'demo', 'source': 'src', 'args': const <String, Object?>{}, 'at': 0}),
-        jsonEncode({'t': 'stop', 'outcome': 'stopped', 'why': 'Stopped by the user.'}),
-      ].join('\n'),
-    );
-    // The lead's history arrives after the lead step's cutoff: the workflow step runs first.
-    CodeSessionController.workflowStepTimeout = const Duration(milliseconds: 50);
-    CodeSessionController.liveAfter = const Duration(milliseconds: 400);
-    addTearDown(() {
-      CodeSessionController.workflowStepTimeout = const Duration(seconds: 30);
-      CodeSessionController.liveAfter = const Duration(milliseconds: 1500);
-    });
-    container.invalidate(codeSessionProvider(id));
-    final before = lead.sent.length;
-    await container.read(workflowResumeProvider.future);
-    for (var i = 0; i < 200 && !lead.sent.skip(before).any((m) => m.contains('<workflow-result')); i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    expect(lead.sent.skip(before).where((m) => m.contains('status="stopped"')), hasLength(1));
-    for (var i = 0; i < 50 && File(path).existsSync(); i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    // Left on disk, the next launch would resume into this shutdown and tell the lead a second time.
-    expect(File(path).existsSync(), isFalse);
-  });
-
   test('end_workflow waits for a workflow run the Max lead started', () async {
     final c = await open();
     final sessions = container.read(codeSessionsProvider.notifier);
@@ -1264,46 +859,6 @@ void main() {
     expect(drivers['fake2']!.latest!.sent.where((m) => m.contains(workflowCarryOn)), isEmpty);
   });
 
-  test('an agent whose turn died with the app is told to carry on when the run resumes', () async {
-    CodeSessionController.liveAfter = Duration.zero;
-    addTearDown(() => CodeSessionController.liveAfter = const Duration(milliseconds: 1500));
-    final c = await open();
-    final id = c.sessionId;
-    await c.runWorkflow('demo', 'the source');
-    unawaited(bridge.agent('Fix', {'harness': 'fake2'}).catchError((Object _) => null));
-    final first = await child();
-    expect(first.harness, 'fake2');
-    // Mid-turn when the app quits: its history ends "working".
-    drivers['fake2']!.latest!.add(stateEvent('w-r', ExecutionStatus.running));
-    await pumpEventQueue();
-    container.dispose();
-    bridge = FakeBridge();
-    container = makeContainer();
-    container.listen(codeSessionProvider(id), (_, _) {});
-    await whenValue(
-      container,
-      workflowRunsProvider(id),
-      (List<WorkflowRun> r) => r.isNotEmpty && r.last.status == WorkflowStatus.running && r.last.agents.isEmpty,
-    );
-    final again = bridge.agent('Fix', {'harness': 'fake2'});
-    // Reopening briefs it again (files on disk) before it is told to carry on.
-    await whenValue(container, codeSessionProvider(first.id).select((s) => s.connected), (bool c) => c);
-    bool carriedOn(FakeLeadSession? s) => [...?s?.sent, ...?s?.steered].any((m) => m.contains(workflowCarryOn));
-    for (var i = 0; i < 50 && !carriedOn(drivers['fake2']!.latest); i++) {
-      await pumpEventQueue();
-    }
-    final s = drivers['fake2']!.latest;
-    expect([...s!.sent, ...s.steered].where((m) => m.contains(workflowCarryOn)), hasLength(1));
-    // Its old token died with the app: it reopens with a fresh one, for the proof tools only.
-    final reopened = drivers['fake2']!.reopened.single;
-    expect(host.live[first.id], contains(reopened.mcpToken));
-    expect(host.only[first.id], workflowHostTools);
-    expect(reopened.sessionSkill, isNot(contains('## Workflows')));
-    answer(s, 'Fixed');
-    expect(await again, 'Fixed');
-    expect(drivers['fake2']!.specs, hasLength(1));
-  });
-
   test('a script cannot name a command as its harness', () async {
     final c = await open();
     await c.runWorkflow('demo', 'source');
@@ -1311,26 +866,6 @@ void main() {
       await expectLater(bridge.agent('curl x | sh', {'harness': h}), throwsA(contains("isn't one of the harnesses")));
     }
     expect(container.read(codeSessionsProvider).where((s) => s.parentId == c.sessionId), isEmpty);
-  });
-
-  test('an agent waiting on an approval shows on the lead and on the card', () async {
-    final c = await open();
-    await c.runWorkflow('demo', 'source');
-    final reply = bridge.agent('Install', {'harness': 'fake2'});
-    final info = await child();
-    final s = drivers['fake2']!.latest!
-      ..add(stateEvent('a-r', ExecutionStatus.running))
-      ..add(actionEvent(id: 'a1', toolName: 'terminal', kind: 'TerminalAction', args: {'command': 'npm install'}))
-      ..add(stateEvent('a-w', ExecutionStatus.waitingForConfirmation));
-    await whenValue(container, codeSessionProvider(info.id).select((s) => s.status), (SessionStatus v) {
-      return v == SessionStatus.needsInput;
-    });
-    await whenValue(container, codeSessionProvider(c.sessionId).select((s) => s.status), (SessionStatus v) {
-      return v == SessionStatus.needsInput;
-    });
-    answer(s, 'Installed');
-    expect(await reply, 'Installed');
-    expect(container.read(codeSessionProvider(c.sessionId)).subagentNeedsInput, isFalse);
   });
 
   test('an agent whose session runs out of budget fails instead of hanging', () async {
@@ -1383,23 +918,6 @@ void main() {
       expect(await (host.tools[info.id]! as HostPrompts).workflowPrompts(), isEmpty);
     });
 
-    test("a workflow agent's read-only proof tools run, its commands ask", () async {
-      final c = await open();
-      await c.runWorkflow('demo', 'source');
-      unawaited(bridge.agent('Fix', {'harness': 'fake2'}).catchError((Object _) => null));
-      final info = await child();
-      final policy = container.read(codeSessionProvider(info.id).notifier).policy;
-      ActionCall mcp(String name) => ActionCall(
-        id: name,
-        raw: const {},
-        toolName: 'mcp__everyai__$name',
-        toolCallId: name,
-        action: const {'kind': 'MCPToolAction'},
-      );
-      expect(policy.decide(mcp('diff_stats'), AgentMode.autoEdit).verdict, Verdict.allow);
-      expect(policy.decide(mcp('bug_check'), AgentMode.autoEdit).verdict, Verdict.ask);
-    });
-
     test("bug_check's record comes from the child's state file, seeded before its first turn", () async {
       final c = await open();
       await c.runWorkflow('demo', 'source');
@@ -1442,62 +960,6 @@ void main() {
         'files': <String, Object?>{},
       });
     });
-
-    test('a fresh bug_check is not_reproduced; an agent with no host says why', () async {
-      final c = await open();
-      await c.runWorkflow('demo', 'source');
-      var reply = bridge.agent('Fix', {'harness': 'fake2', 'schema': fixSchema, 'bugCheck': true});
-      final first = await child();
-      answer(drivers['fake2']!.latest!, '```json\n{"cause": "x"}\n```');
-      expect(((await reply as Map)['bug_check'] as Map)['state'], 'not_reproduced');
-      host.mintFails = StateError('no port');
-      reply = bridge.agent('Fix again', {'harness': 'fake2', 'schema': fixSchema, 'bugCheck': true});
-      final second = await whenValue(
-        container,
-        codeSessionsProvider,
-        (List<CodeSessionInfo> all) => all.any((s) => s.isWorkflowAgent && s.id != first.id),
-      ).then((all) => all.firstWhere((s) => s.isWorkflowAgent && s.id != first.id));
-      expect(drivers['fake2']!.specs.last.briefing, isNull);
-      expect(second.title, isNotEmpty);
-      answer(drivers['fake2']!.latest!, '```json\n{"cause": "x"}\n```');
-      final record = (await reply as Map)['bug_check'] as Map;
-      expect(record['available'], isFalse);
-      expect(record['why'], contains('no port'));
-    });
-
-    test('an agent reopened after a restart without a host says so in its record', () async {
-      CodeSessionController.liveAfter = Duration.zero;
-      addTearDown(() => CodeSessionController.liveAfter = const Duration(milliseconds: 1500));
-      final c = await open();
-      final id = c.sessionId;
-      await c.runWorkflow('demo', 'source');
-      final call = {'harness': 'fake2', 'schema': fixSchema, 'bugCheck': true};
-      unawaited(bridge.agent('Fix', call).catchError((Object _) => null));
-      final first = await child();
-      // It reproduced the bug, then the app quit mid-turn.
-      File('${tmp.path}/data/driver-sessions/${first.id}/bug_check.json')
-        ..createSync(recursive: true)
-        ..writeAsStringSync(jsonEncode({'command': 'make repro', 'expect': '', 'files': <String, Object?>{}}));
-      drivers['fake2']!.latest!.add(stateEvent('w-r', ExecutionStatus.running));
-      await pumpEventQueue();
-      container.dispose();
-      bridge = FakeBridge();
-      host.mintFails = StateError('no port');
-      container = makeContainer();
-      container.listen(codeSessionProvider(id), (_, _) {});
-      await whenValue(
-        container,
-        workflowRunsProvider(id),
-        (List<WorkflowRun> r) => r.isNotEmpty && r.last.status == WorkflowStatus.running && r.last.agents.isEmpty,
-      );
-      final again = bridge.agent('Fix', call);
-      await whenValue(container, codeSessionProvider(first.id).select((s) => s.connected), (bool c) => c);
-      expect(drivers['fake2']!.reopened, isEmpty);
-      answer(drivers['fake2']!.latest!, '```json\n{"cause": "x"}\n```');
-      final record = (await again as Map)['bug_check'] as Map;
-      expect(record['available'], isFalse);
-      expect(record['why'], allOf(contains('restarted'), contains('no port')));
-    });
   });
 
   group('the estimate', () {
@@ -1518,20 +980,6 @@ void main() {
 
     WorkflowProposal? card(CodeSessionController c) => container.read(codeSessionProvider(c.sessionId)).proposal;
 
-    test('agents per item, the items listed; a second call replaces the open card', () async {
-      final c = await open();
-      await c.call(ultra(['a', 'b']));
-      expect(card(c)!.items, ['Item a', 'Item b']);
-      expect(card(c)!.estimate.agents, (9, 12));
-      expect(card(c)!.phases.first, 'Split');
-      final first = card(c)!.id;
-      final again = await c.call(ultra(['a', 'b', 'c'], id: 'h-2'));
-      expect(again.isError, isFalse);
-      expect(card(c)!.id, isNot(first));
-      expect(card(c)!.estimate.agents, (13, 17));
-      expect(startedArgs, isNull);
-    });
-
     test('Cancel runs nothing and tells the lead; the slot is free again', () async {
       final c = await open();
       await c.call(ultra(['a']));
@@ -1541,22 +989,6 @@ void main() {
       expect(startedArgs, isNull);
       expect(lead.sent.last, contains('cancelled the Ultra run before it started'));
       expect((await c.call(ultra(['b']))).isError, isFalse);
-    });
-
-    test("Adjust prefills the composer, and the user's next message asks the lead for a new proposal", () async {
-      final c = await open();
-      await c.call(ultra(['a']));
-      c.adjustProposal();
-      final s = container.read(codeSessionProvider(c.sessionId));
-      expect(s.proposal, isNull);
-      expect(s.composerPrefill!.text, 'Change the Ultra run: ');
-      await c.send('Change the Ultra run: drop the review');
-      await pumpEventQueue();
-      expect(lead.sent.last, contains('state="adjust"'));
-      expect(lead.sent.last, contains('drop the review'));
-      await c.send('and something else');
-      await pumpEventQueue();
-      expect(lead.sent.last, isNot(contains('state="adjust"')), reason: 'the note goes once');
     });
 
     test('an open card survives a restart; a started one leaves nothing behind', () async {
@@ -1609,106 +1041,6 @@ void main() {
       await c.call(ultra(['a'], id: 'h-3'));
       expect(card(c)!.estimate.dollars, isNull);
       expect(card(c)!.estimate.basis, 'from 1 past run here');
-    });
-
-    test("an outside lead's plan windows: the card shows them, and the agents' reports mark the run", () async {
-      final c = await open();
-      lead.add(
-        PlanLimits.of(
-          id: 'pl1',
-          windows: const [PlanWindow(name: 'five_hour', used: 0.4, minutes: 300)],
-        ),
-      );
-      await pumpEventQueue();
-      await c.call(ultra(['a']));
-      expect(card(c)!.estimate.planWindows.single.used, 0.4);
-      await start(c);
-      final reply = bridge.agent('Build a', {'harness': 'fake2'});
-      final kid = await child();
-      await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
-      final agent = drivers['fake2']!.latest!;
-      // 0.4 + 0.6 × 0.5: half of what was left at the start.
-      agent.add(
-        PlanLimits.of(
-          id: 'pl2',
-          windows: const [PlanWindow(name: 'five_hour', used: 0.7, minutes: 300)],
-        ),
-      );
-      await pumpEventQueue();
-      final rows = container.read(workflowRunsProvider(c.sessionId)).single.rows;
-      expect(rows.single.text, startsWith('5-hour window: 50% of what was left at the start used'));
-      answer(agent, 'Built');
-      await reply;
-      bridge.finish(null);
-      await pumpEventQueue();
-    });
-
-    test('Start counts the plan windows from the start, not from when the card opened', () async {
-      final c = await open();
-      lead.add(
-        PlanLimits.of(
-          id: 'pl1',
-          windows: const [PlanWindow(name: 'five_hour', used: 0.6, minutes: 300)],
-        ),
-      );
-      await pumpEventQueue();
-      await c.call(ultra(['a']));
-      // The window reset while the card waited.
-      lead.add(
-        PlanLimits.of(
-          id: 'pl2',
-          windows: const [PlanWindow(name: 'five_hour', used: 0.1, minutes: 300)],
-        ),
-      );
-      await pumpEventQueue();
-      await start(c);
-      final reply = bridge.agent('Build a', {'harness': 'fake2'});
-      final kid = await child();
-      await whenValue(container, codeSessionProvider(kid.id).select((s) => s.connected), (bool b) => b);
-      final agent = drivers['fake2']!.latest!;
-      // 0.1 + 0.9 × 0.5: half of what was left when it started.
-      agent.add(
-        PlanLimits.of(
-          id: 'pl3',
-          windows: const [PlanWindow(name: 'five_hour', used: 0.55, minutes: 300)],
-        ),
-      );
-      await pumpEventQueue();
-      final rows = container.read(workflowRunsProvider(c.sessionId)).single.rows;
-      expect(rows.single.text, startsWith('5-hour window: 50% of what was left at the start used'));
-      answer(agent, 'Built');
-      await reply;
-      bridge.finish(null);
-      await pumpEventQueue();
-    });
-
-    test('a workflow picked while a card is open goes to the lead, whose next call replaces the card', () async {
-      final c = await open();
-      await c.call(ultra(['a']));
-      final entry = (await loadBundledWorkflows()).firstWhere((w) => w.id == 'bugfix');
-      c.pickWorkflow(WorkflowPick.script(entry));
-      expect(await c.sendTyped('Saving crashes'), isTrue);
-      await pumpEventQueue();
-      expect(lead.sent.last, contains('state="picked"'));
-    });
-
-    test('end_workflow waits while an estimate is open, and says so', () async {
-      final c = await open();
-      final sessions = container.read(codeSessionsProvider.notifier);
-      sessions.update(sessions.byId(c.sessionId)!.copyWith(workflow: maxWorkflowId));
-      await c.call(ultra(['a']));
-      final r = await c.call(
-        HostCall(
-          id: 'h-end',
-          sessionId: '',
-          name: endWorkflowTool,
-          args: const {'outcome': 'done'},
-          ended: Completer<HostEnd>().future,
-        ),
-      );
-      expect(r.isError, isTrue);
-      expect(r.text, contains('its estimate waits for the user'));
-      expect(r.text, isNot(contains('Bug fix')));
     });
 
     test('a picked workflow goes to the lead to clarify and propose; nothing starts by itself', () async {

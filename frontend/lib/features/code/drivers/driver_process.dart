@@ -5,12 +5,14 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:uuid/uuid.dart';
 
+import '../../../core/process/supervisor.dart';
 import '../environments/env_processes.dart';
 import '../environments/exec_env.dart';
 import '../harness/session_processes.dart' show sessionEnvVar;
 import 'driver.dart';
 import 'driver_process_stub.dart' if (dart.library.io) 'driver_process_io.dart' as impl;
 import 'json_rpc.dart';
+import 'short_run.dart';
 
 /// A coding CLI the app runs for a session: stdout as lines (JSON-RPC or
 /// ndjson), stdin as lines, stderr appended to the session's log.
@@ -32,6 +34,10 @@ abstract interface class DriverProcess implements LineChannel {
 /// under that marker ([endInside]), since a bridge's death doesn't reach the
 /// processes behind it. Not the session's tag: other CLIs of the session
 /// (a subagent, a /usage probe) share it.
+///
+/// The process is the supervisor's ([ProcessSupervisor]): owned by [driverOwner] of [sessionTag], in a session of
+/// its own, and closing it is the supervisor's verified stop (its input closed first unless [closeInputFirst] is
+/// off, for a server that doesn't read it).
 Future<DriverProcess> spawnDriver({
   required String executable,
   required List<String> args,
@@ -40,6 +46,7 @@ Future<DriverProcess> spawnDriver({
   required String logPath,
   Map<String, String> env = const {},
   ExecEnv execEnv = HostEnv.instance,
+  bool closeInputFirst = true,
 }) async {
   if (execEnv.isHost) {
     return impl.spawnDriver(
@@ -49,6 +56,7 @@ Future<DriverProcess> spawnDriver({
       sessionTag: sessionTag,
       logPath: logPath,
       env: env,
+      closeInputFirst: closeInputFirst,
     );
   }
   final proc = const Uuid().v4();
@@ -72,18 +80,29 @@ Future<DriverProcess> spawnDriver({
     sessionTag: sessionTag,
     logPath: logPath,
     env: w.environment,
+    closeInputFirst: closeInputFirst,
   );
   return _InsideProcess(process, execEnv, proc);
 }
+
+/// Tags of short-lived probes (a model list, a sign-in check): their processes belong to no session.
+const probeSessionTags = {'claude-models', 'codex-probe'};
+
+/// Who owns a driver process started under [sessionTag]: the session, or a probe ([probeSessionTags], ACP's
+/// `models-…`).
+ProcessOwner driverOwner(String sessionTag) => probeSessionTags.contains(sessionTag) || sessionTag.startsWith('models-')
+    ? ProbeOwner(sessionTag)
+    : SessionOwner(sessionTag);
 
 /// The login shell's PATH inside an environment (its scan), or null to keep
 /// the bridge's. Set by Code's controller; unset, CLIs get the bridge's.
 Future<String?> Function(ExecEnv env)? insidePathOf;
 
 /// Ends what runs in [env] under one process's marker ([procEnvVar]) once
-/// its bridge is closed or gone (tests replace it).
+/// its bridge is closed or gone, verified ([endInsideChecked]; tests replace it).
 @visibleForTesting
-Future<void> Function(ExecEnv env, String proc) endInsideOf = (env, proc) => endInside(env, proc, variable: procEnvVar);
+Future<KillOutcome> Function(ExecEnv env, String proc) endInsideOf = (env, proc) =>
+    endInsideChecked(env, proc, variable: procEnvVar);
 
 /// A CLI behind an environment's bridge: the bridge process, plus an end of
 /// the processes inside under its own marker when it is closed or exits. Tracked for the app's
@@ -91,21 +110,20 @@ Future<void> Function(ExecEnv env, String proc) endInsideOf = (env, proc) => end
 final class _InsideProcess implements DriverProcess {
   _InsideProcess(this._bridge, this._env, this._proc) {
     trackDriverClose(close);
+    // The bridge's own end (it exited): what it left inside is ended too.
     unawaited(_bridge.exitCode.then((_) => _end(), onError: (Object _) => _end()));
   }
 
   final DriverProcess _bridge;
   final ExecEnv _env;
   final String _proc;
-  Future<void>? _ended;
+  Future<KillOutcome>? _ended;
+  Future<KillOutcome>? _closing;
 
-  Future<void> _end() => _ended ??= () async {
+  /// What still runs inside under its marker, ended (TERM, a look, KILL, a look), once.
+  Future<KillOutcome> _end() => _ended ??= () async {
     untrackDriverClose(close);
-    try {
-      await endInsideOf(_env, _proc);
-    } on Object {
-      // Nothing left to end, or the environment is gone.
-    }
+    return stopChecked('processes inside ${_env.label} ($_proc)', () => endInsideOf(_env, _proc));
   }();
 
   @override
@@ -123,11 +141,12 @@ final class _InsideProcess implements DriverProcess {
   @override
   Future<int> get exitCode => _bridge.exitCode;
 
+  /// The bridge's verified stop, then what runs inside: both outcomes, merged.
   @override
-  Future<void> close() async {
-    await _bridge.close();
-    await _end();
-  }
+  Future<KillOutcome> close() => _closing ??= () async {
+    final bridge = await _bridge.close();
+    return KillOutcome.merge([bridge, await _end()]);
+  }();
 }
 
 /// [spawnDriver] for a CLI that needs a terminal of its own (Grok Build
@@ -152,15 +171,28 @@ Future<DriverProcess> spawnDriverTty({
   env: env,
 );
 
-final _closers = <Future<void> Function()>{};
+/// Closes that do more than the supervisor's stop (a CLI inside an environment, a terminal CLI's pipes, a terminal
+/// session, the host's browser handle): run when the app quits. Plain driver processes need none: the supervisor
+/// lists them.
+final _closers = <Future<Object?> Function()>{};
 
-/// Registers [close] to run when the app quits (processes that don't come from [spawnDriver], e.g. a pty).
-void trackDriverClose(Future<void> Function() close) => _closers.add(close);
-void untrackDriverClose(Future<void> Function() close) => _closers.remove(close);
+/// Registers [close] to run when the app quits.
+void trackDriverClose(Future<Object?> Function() close) => _closers.add(close);
+void untrackDriverClose(Future<Object?> Function() close) => _closers.remove(close);
 
-/// Ends every driver process still running (the app is quitting).
-Future<void> closeAllDriverProcesses() =>
-    Future.wait([impl.closeAllDriverProcesses(), for (final c in _closers.toList()) c()]);
+/// Ends every driver process still running (the app is quitting): every coding CLI the supervisor lists, and the
+/// registered closes. What each stop proved, merged (a close that returns no outcome counts as nothing ended).
+Future<KillOutcome> closeAllDriverProcesses() async {
+  final outcomes = await Future.wait<Object?>([
+    impl.closeAllDriverProcesses(),
+    for (final c in _closers.toList())
+      c().then<Object?>(
+        (v) => v,
+        onError: (Object e) => logStop('a driver close at quit', ScanFailed("couldn't close: $e")),
+      ),
+  ]);
+  return KillOutcome.merge(outcomes.whereType<KillOutcome>());
+}
 
 /// Looks for [command] on the login shell's PATH plus the usual install
 /// directories (an app started from the Dock doesn't have the user's; no

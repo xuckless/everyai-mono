@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show listEquals, visibleForTesting;
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/process/supervisor.dart' show KillOutcome;
 import '../../domain/agent_mode.dart';
 import '../../environments/exec_env.dart';
 import '../../git/git_service.dart';
@@ -15,10 +16,12 @@ import '../briefing/briefing_types.dart';
 import '../driver.dart';
 import '../driver_env.dart';
 import '../driver_events.dart';
+import '../driver_link.dart';
 import '../driver_policy.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart' show EndsInput, LineChannel;
+import '../short_run.dart';
 import 'claude_files.dart';
 import 'claude_wire.dart';
 
@@ -162,7 +165,9 @@ final class ClaudeDriver
   /// status` reads local state only (no model call); only `loggedIn` is
   /// kept, never the account fields it prints with it.
   @override
-  Future<DriverStatus> detect() async {
+  Future<DriverStatus> detect() => _detecting.run(0, _detect);
+
+  Future<DriverStatus> _detect() async {
     // Inside an environment: what its scan found (no sign-in check yet).
     if (!execEnv.isHost) return find!('claude');
     final found = await detectCli('claude', which: which);
@@ -192,6 +197,14 @@ final class ClaudeDriver
   @override
   Future<List<DriverModel>> models() async {
     if (_models case final m?) return m;
+    // One probe process at a time, however many ask.
+    return _modelsProbe.run(0, _probeModels);
+  }
+
+  final _modelsProbe = SingleFlight<int, List<DriverModel>>();
+  final _detecting = SingleFlight<int, DriverStatus>();
+
+  Future<List<DriverModel>> _probeModels() async {
     try {
       final dir = await _dir();
       await makeDir(dir);
@@ -213,7 +226,7 @@ final class ClaudeDriver
         _learnAutoModes(init);
         if (modelsOf(init) case final m?) return _models = m;
       } finally {
-        await c.close();
+        logStop('Claude Code model list', await c.close());
       }
     } on Object {
       // Fall back below.
@@ -555,7 +568,8 @@ final class ClaudeSession
         NativeModes,
         AnswersSideQuestion,
         ReportsPlanUsage,
-        TakesSkillOverrides {
+        TakesSkillOverrides,
+        ClosesVerified {
   ClaudeSession._(this._driver, this.id, this._dir, this._meta, this._briefing, this._journal)
     : _commands = NativeCommandList(_meta.commands),
       _modes = NativeModeFeed((modes: claudeModes(autoMode: _meta.autoMode), current: _meta.permissionMode));
@@ -575,10 +589,10 @@ final class ClaudeSession
   void setSkillsOff(Set<String> off) {
     if (off.length == _skillsOff.length && off.containsAll(_skillsOff)) return;
     _skillsOff = off;
-    if (_closed) return;
+    if (_link.isClosed) return;
     // Still starting: it was launched with the old set.
-    if (_channel == null) {
-      if (_starting != null) _respawn = true;
+    if (_link.live == null) {
+      if (_link.isSpawning) _respawn = true;
       return;
     }
     // A new process would end the subagents working in the background: it waits for the next turn's end.
@@ -594,9 +608,11 @@ final class ClaudeSession
   final _history = <HarnessEvent>[];
   final _events = StreamController<HarnessEvent>.broadcast();
   final _decoder = ClaudeDecoder();
-  LineChannel? _channel;
+
+  /// The CLI's process ([LinkState]: none, starting, live, stopping, closed); the session is closed when it is.
+  late final _link = DriverLink<LineChannel>('Claude Code session $id', (c) => c.close());
+  LineChannel? get _channel => _link.live;
   StreamSubscription<String>? _sub;
-  Future<LineChannel>? _starting;
   var _requests = 0;
 
   /// Where the CLI's main thread is (see [ClaudeTurn]); [_running] while it isn't idle.
@@ -628,7 +644,7 @@ final class ClaudeSession
 
   /// The process runs with an old effort or briefing: replaced once the turn ends.
   var _respawn = false;
-  var _closed = false;
+  bool get _closed => _link.isClosed;
   var _status = ExecutionStatus.idle;
 
   /// Calls waiting for an answer, by call id.
@@ -853,7 +869,10 @@ final class ClaudeSession
     }
     if (restart && _channel != null) {
       // Background subagents live in this process: the restart waits for them too.
-      if (!_running && !_decoder.hasBackground) return _drop();
+      if (!_running && !_decoder.hasBackground) {
+        await _drop();
+        return;
+      }
       _respawn = true;
       return;
     }
@@ -865,29 +884,38 @@ final class ClaudeSession
       throw HarnessError(rewindRefusal(_driver.info, _driver.caps) ?? "Claude Code can't go back.");
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
+  Future<void> close() => closeVerified();
+
+  /// [close], with what the stop of the CLI proved (a CLI still starting is stopped when it lands).
+  @override
+  Future<KillOutcome> closeVerified() => _closing ??= _closeNow();
+  Future<KillOutcome>? _closing;
+
+  Future<KillOutcome> _closeNow() async {
+    if (_channel != null) _orphaned();
+    _respawn = false;
+    final stopped = _link.close();
     _wakeTimer?.cancel();
     _wakeStopped?.cancel();
     _driver._live.remove(id);
-    await _drop();
+    await _sub?.cancel();
+    final outcome = await stopped;
     // The record's last write (a mode the CLI moved to) lands before the session is gone.
     await _saving.catchError((Object _) {});
     await _journal.close();
     await _events.close();
     _commands.close();
     _modes.close();
+    return outcome;
   }
 
-  /// Ends the CLI's process quietly; the next turn starts it again.
-  Future<void> _drop() async {
-    final c = _channel;
-    if (c != null) _orphaned();
-    _channel = null;
+  /// Ends the CLI's process quietly (verified); the next turn starts it again, once this one is gone.
+  Future<KillOutcome> _drop() async {
+    if (_channel != null) _orphaned();
     _respawn = false;
+    final stopped = _link.drop();
     await _sub?.cancel();
-    await c?.close();
+    return stopped;
   }
 
   /// `/usage`: Claude Code's own report of the plan's windows, from a short
@@ -912,7 +940,7 @@ final class ClaudeSession
     } on TimeoutException {
       throw const HarnessError('Claude Code took too long to report your plan usage.');
     } finally {
-      await c.close();
+      logStop('Claude Code /usage', await c.close());
     }
   }
 
@@ -952,16 +980,13 @@ final class ClaudeSession
     } on TimeoutException {
       throw const HarnessError('Claude Code took too long to answer.');
     } finally {
-      await c.close();
+      logStop('Claude Code /btw', await c.close());
     }
   }
 
   /// The CLI's process, started when missing: a new conversation under our
   /// id, or the old one continued.
-  Future<LineChannel> _ensure() async {
-    if (_channel case final c?) return c;
-    return _starting ??= _open().whenComplete(() => _starting = null);
-  }
+  Future<LineChannel> _ensure() => _link.ensure(_open, onLive: _bind);
 
   Future<LineChannel> _open() async {
     final launch = claudeLaunch(
@@ -975,20 +1000,22 @@ final class ClaudeSession
       briefing: _briefing?.call(_skillsOff),
       skillsOff: _skillsOff,
     );
-    final c = await _driver._spawn(
+    return _driver._spawn(
       launch.args,
       cwd: _meta.cwd,
       env: launch.env,
       sessionTag: _meta.sessionTag,
       logPath: '$_dir/$id.log',
     );
-    _channel = c;
+  }
+
+  /// A new process is live (the link is, before anyone sends to it).
+  void _bind(LineChannel c) {
     _requests = 0; // Ids count per process.
     _initListed = false;
     _sub = c.lines.listen(_line, onDone: () => _gone(c));
     // Before any message; the CLI reads its stdin in order.
     _request({'subtype': 'initialize'});
-    return c;
   }
 
   /// Sends a control request to a running CLI (one that isn't running
@@ -1172,12 +1199,13 @@ final class ClaudeSession
     }
   }
 
-  /// The process ended: a turn it was running failed; the next message
-  /// starts it again.
+  /// Its output ended (the process exited, or closed its stdout): it is stopped, verified, before the next message
+  /// starts another (the link waits for that stop); a turn it was running failed.
   void _gone(LineChannel c) {
     if (!identical(_channel, c)) return;
     _orphaned();
-    _channel = null;
+    // The link logs a stop that isn't proven; the next start waits for it.
+    unawaited(_link.gone(c));
     unawaited(_sub?.cancel());
     _held.clear();
     _waiting = false;

@@ -6,12 +6,12 @@ import 'dart:typed_data' show BytesBuilder;
 import 'dart:math' show Random;
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 
-import '../../../../core/process/child_processes.dart';
+import '../../../../core/process/supervisor.dart';
 import 'lsp.dart';
-import 'shell_io.dart' show descendantsOf, killTree;
 import 'research_sites.dart' show secretPath;
 
 export 'lsp.dart';
@@ -36,7 +36,7 @@ final class LspClient {
     _process.stderr.drain<void>();
   }
 
-  final Process _process;
+  final SupervisedProcess _process;
   final String root;
   final _buffer = BytesBuilder(copy: false);
   final _pending = <int, Completer<Object?>>{};
@@ -59,15 +59,30 @@ final class LspClient {
     required String root,
     Map<String, String>? environment,
     Map<String, Object?>? initializationOptions,
+    ProcessOwner owner = const AppOwner(),
   }) async {
-    final Process p;
+    // Its polite stop (shutdown, then exit) needs the client, made once the process is.
+    LspClient? self;
+    final SupervisedProcess p;
     try {
-      p = await Process.start(command.exe, command.args, workingDirectory: root, environment: environment);
+      p = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: owner,
+          kind: ProcessKind.lsp,
+          exe: command.exe,
+          args: command.args,
+          cwd: root,
+          env: environment ?? const {},
+          label: 'Language server ${command.exe.split('/').last}',
+          politeStop: PoliteStop((_) async => self?._shutdown(), grace: const Duration(milliseconds: 1500)),
+        ),
+      );
     } on ProcessException {
       return null;
+    } on SupervisorClosed {
+      return null; // the app quits
     }
-    ChildProcesses.track(p.pid, label: 'Language server ${command.exe}', executable: command.exe, exited: p.exitCode);
-    final c = LspClient._(p, root);
+    final c = self = LspClient._(p, root);
     try {
       final init = await c
           ._request('initialize', {
@@ -279,44 +294,48 @@ final class LspClient {
   /// Whether a check is under way (an eviction waits for it).
   bool get busy => !_closed && (_inflight.isNotEmpty || _pending.isNotEmpty);
 
-  /// Asks the server to shut down and waits for it to exit, then ends whatever is left of its tree. Killing it
-  /// right after `exit` (as before) left the TypeScript server's tsserver children running, ~0.5–1 GB each. The tree
-  /// is listed first: once the server exits its children belong to init, and its own pid may already be another
-  /// process's, so only a server still running is killed by pid. [quick] (the app quits) skips the polite part.
-  Future<void> close({bool quick = false}) async {
-    final pid = _process.pid;
-    var exited = false;
-    unawaited(_process.exitCode.then((_) => exited = true, onError: (Object _) => exited = true));
-    final tree = await lspDescendants(pid);
-    if (!_closed && !quick) {
-      try {
-        await _request('shutdown', const {}).timeout(const Duration(milliseconds: 1500));
-        _notify('exit', const {});
-        await _process.exitCode.timeout(const Duration(milliseconds: 1500));
-      } on Object {
-        // Ended below.
-      }
-    }
-    _gone();
-    if (!exited) {
-      await lspKillTree(pid);
-    }
-    // Children left running after the server went (they were listed while it ran).
-    for (final p in tree) {
-      lspKillPid(p);
+  var _quick = false;
+
+  /// The polite step of its stop: `shutdown`, then `exit` (skipped when [close] is quick, or it already went).
+  Future<void> _shutdown() async {
+    if (_closed || _quick) return;
+    try {
+      await _request('shutdown', const {}).timeout(const Duration(milliseconds: 1500));
+      _notify('exit', const {});
+    } on TimeoutException {
+      debugPrint('Language server ${_process.pid} did not answer shutdown; it is stopped.');
     }
   }
 
+  /// Asks the server to shut down (the supervisor's polite step), then ends it and whatever is left of its group
+  /// and tree, verified: the TypeScript server's tsserver children (~0.5–1 GB each) go with it. The supervisor
+  /// follows the tree while the server runs, so children it left behind when it exited are ended too, and a reused
+  /// pid is never signalled. [quick] (the app quits) skips the polite part. What came of it: [KillOutcome].
+  Future<KillOutcome> close({bool quick = false}) async {
+    _quick = _quick || quick;
+    final out = await _process.stop();
+    _gone();
+    if (out is! Ended) debugPrint('NOT CLOSED: language server ${_process.pid}: $out');
+    return out;
+  }
+
   /// The server's process id (tests).
-  int get processId => _process.pid;
+  int get processId => _process.pid!;
+
+  /// Its supervisor record (tests).
+  @visibleForTesting
+  SupervisedChild get child => _process;
 }
 
 /// A session's language servers, one per language, started on first use: the project's own install, else the
 /// user's PATH, else a pinned download ([lspPinned]). Used by the diagnostics tool and the hint after edits.
 final class LspHub {
-  LspHub({required this.root, required this.toolsDir, this.environment});
+  LspHub({required this.root, required this.toolsDir, this.environment, this.owner = const AppOwner()});
 
   final String root;
+
+  /// Whose servers these are (the session's): the supervisor ends them with it.
+  final ProcessOwner owner;
 
   /// Where pinned servers are installed (app data `tools/`).
   final String toolsDir;
@@ -340,9 +359,17 @@ final class LspHub {
   /// [l]'s phase in this hub (tests, diagnostics).
   LspPhase phaseOf(LspLanguage l) => _slots[l]?.phase ?? LspPhase.notStarted;
 
+  /// Moves [slot] by [e]; a move the table refuses is a bug in the hub: recorded ([refusedLspTransitions]), logged,
+  /// and an assert in debug builds.
   void _move(_LspSlot slot, LspEvent e) {
     final next = nextLspPhase(slot.phase, e);
-    if (next != null) slot.phase = next;
+    if (next != null) {
+      slot.phase = next;
+      return;
+    }
+    refusedLspTransitions.add((language: slot.language, from: slot.phase, event: e));
+    debugPrint('Refused language-server transition (${slot.language.label}): ${slot.phase} + $e');
+    assert(!assertOnRefusedLspTransition, 'Refused language-server transition: ${slot.phase} + $e');
   }
 
   Future<LspClient?> _client(LspLanguage l) async {
@@ -353,9 +380,13 @@ final class LspHub {
           _touch(slot);
           return slot.client;
         case LspPhase.ready:
-          // It died on its own: started again below.
+          // It died on its own (its output closed): what is left of it and its tree is ended, then it is started
+          // again below.
           _move(slot, LspEvent.died);
           _pool.remove((this, l));
+          final dead = slot.client;
+          slot.client = null;
+          if (dead != null) await dead.close(quick: true);
         case LspPhase.starting:
           return slot.starting;
         case LspPhase.stopping:
@@ -388,7 +419,7 @@ final class LspHub {
     }
     // Closed while it started: this server isn't wanted any more.
     if (generation != slot.generation) {
-      await c?.close();
+      await c?.close(quick: true);
       return null;
     }
     slot.starting = null;
@@ -414,12 +445,12 @@ final class LspHub {
     });
   }
 
-  /// Ends [slot]'s server (idle, evicted, or the hub closes); a stop under way is joined.
-  Future<void> _stop(_LspSlot slot, {LspEvent why = LspEvent.idle, bool quick = false}) async {
+  /// Ends [slot]'s server (idle, evicted, or the hub closes), verified; a stop under way is joined.
+  Future<KillOutcome> _stop(_LspSlot slot, {LspEvent why = LspEvent.idle, bool quick = false}) async {
     slot.idle?.cancel();
     switch (slot.phase) {
       case LspPhase.stopping:
-        return slot.stopping;
+        return slot.stopping ?? const Ended([]);
       case LspPhase.starting:
         // The start that lands is closed by its generation check; waiting for it means its process is gone too.
         slot.generation++;
@@ -428,7 +459,7 @@ final class LspHub {
         _move(slot, why);
         _move(slot, LspEvent.gone);
         if (late != null) await late;
-        return;
+        return const Ended([]);
       case LspPhase.ready:
         _move(slot, why);
         _pool.remove((this, slot.language));
@@ -436,14 +467,14 @@ final class LspHub {
         slot.client = null;
         // Still counts against the cap until its process is gone.
         _stoppingNow++;
-        final done = (c?.close(quick: quick) ?? Future<void>.value()).whenComplete(() {
+        final done = (c?.close(quick: quick) ?? Future.value(const Ended([]))).whenComplete(() {
           _stoppingNow--;
           _move(slot, LspEvent.gone);
         });
         slot.stopping = done;
         return done;
       case LspPhase.notStarted || LspPhase.stopped || LspPhase.failed:
-        return;
+        return const Ended([]);
     }
   }
 
@@ -496,8 +527,9 @@ final class LspHub {
   /// Hubs that started a server and haven't closed (for [closeAll]).
   static final _hubs = <LspHub>{};
 
-  /// Ends every session's servers (the app quits).
-  static Future<void> closeAll() => Future.wait([for (final h in _hubs.toList()) h.close(quick: true)]);
+  /// Ends every session's servers (the app quits): the merged outcome.
+  static Future<KillOutcome> closeAll() async =>
+      KillOutcome.merge(await Future.wait([for (final h in _hubs.toList()) h.close(quick: true)]));
 
   /// How many servers run now, across sessions (tests, diagnostics).
   static int get runningServers => _pool.length;
@@ -516,6 +548,7 @@ final class LspHub {
       command,
       root: root,
       environment: env,
+      owner: owner,
       initializationOptions: ts == null
           ? lspInitOptions(l)
           : {
@@ -572,25 +605,26 @@ final class LspHub {
     try {
       File('${tmp.path}/package.json').writeAsStringSync(manifest);
       File('${tmp.path}/package-lock.json').writeAsStringSync(lock);
-      final proc = await Process.start(
+      final r = await ProcessSupervisor.instance.runBounded(
         npm,
         ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error'],
-        workingDirectory: tmp.path,
-        environment: env,
+        timeout: const Duration(minutes: 5),
+        cwd: tmp.path,
+        env: env,
+        owner: owner,
+        kind: ProcessKind.helper,
+        maxOutputBytes: 1024 * 1024,
+        label: 'npm ci ($id)',
       );
-      final err = StringBuffer();
-      unawaited(proc.stdout.drain<void>());
-      final errDone = proc.stderr.transform(utf8.decoder).forEach(err.write);
-      final code = await proc.exitCode.timeout(
-        const Duration(minutes: 5),
-        onTimeout: () {
-          proc.kill();
-          return -1;
-        },
-      );
-      await errDone.timeout(const Duration(seconds: 2), onTimeout: () {});
-      if (code != 0) {
-        throw code == -1 ? 'npm ci took over 5 minutes (offline?)' : '${'$err'.trim().split('\n').last} (npm ci)';
+      switch (r) {
+        case Finished(code: 0):
+          break;
+        case Finished(:final stderr):
+          throw '${stderr.trim().split('\n').last} (npm ci)';
+        case TimedOut(:final kill):
+          throw 'npm ci took over 5 minutes (offline?)${kill is Ended ? '' : '; it is not closed: $kill'}';
+        case Cancelled() || StartFailed() || Refused():
+          throw 'npm ci: $r';
       }
       File('${tmp.path}/.installed').writeAsStringSync('');
       if (File('$dir/.installed').existsSync()) return dir;
@@ -656,14 +690,16 @@ final class LspHub {
     return out;
   }
 
-  /// Ends every server; the next use starts them again (a language that failed is tried again too).
-  Future<void> close({bool quick = false}) async {
-    await Future.wait([for (final slot in _slots.values) _stop(slot, why: LspEvent.close, quick: quick)]);
+  /// Ends every server (verified; the merged outcome); the next use starts them again (a language that failed is
+  /// tried again too).
+  Future<KillOutcome> close({bool quick = false}) async {
+    final out = await Future.wait([for (final slot in _slots.values) _stop(slot, why: LspEvent.close, quick: quick)]);
     for (final slot in _slots.values) {
       if (slot.phase == LspPhase.failed) slot.phase = LspPhase.notStarted;
     }
     missing.clear();
     _hubs.remove(this);
+    return KillOutcome.merge(out);
   }
 }
 
@@ -854,21 +890,18 @@ final class _LspSlot {
   /// Bumped by every start and stop: a start that lands under another one was stopped meanwhile.
   var generation = 0;
   Future<LspClient?>? starting;
-  Future<void>? stopping;
+  Future<KillOutcome>? stopping;
   LspClient? client;
   DateTime lastUsed = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? idle;
 }
 
-/// Ends a server's process tree; tests replace it.
-Future<void> Function(int pid) lspKillTree = killTree;
+/// One refused move of a language server's phase, kept for tests and diagnostics.
+typedef RefusedLspTransition = ({LspLanguage language, LspPhase from, LspEvent event});
 
-/// Lists a server's descendants before it is shut down; tests replace it.
-Future<List<int>> Function(int pid) lspDescendants = descendantsOf;
+/// Every refused move since start.
+final refusedLspTransitions = <RefusedLspTransition>[];
 
-/// Ends one leftover child; tests replace it.
-void Function(int pid) lspKillPid = _killPid;
-
-void _killPid(int pid) {
-  Process.killPid(pid, ProcessSignal.sigkill);
-}
+/// Whether a refused move asserts (debug builds); tests that check refusals turn it off.
+@visibleForTesting
+bool assertOnRefusedLspTransition = true;

@@ -453,7 +453,7 @@ class FmRow extends ConsumerWidget {
 DotStatus _dotOf(ServerPhase p) => switch (p) {
   ServerRunning() => DotStatus.done,
   ServerStarting() || ServerStopping() => DotStatus.running,
-  ServerFailed() => DotStatus.failed,
+  ServerFailed() || ServerNotClosed() => DotStatus.failed,
   ServerStopped() => DotStatus.idle,
 };
 
@@ -463,6 +463,7 @@ String _phaseLine(ServerPhase p) => switch (p) {
   ServerStarting() => 'Starting…',
   ServerStopping() => 'Stopping…',
   ServerFailed(:final reason) => reason,
+  ServerNotClosed(:final reason) => 'Not closed · $reason',
   ServerStopped() => 'Stopped',
 };
 
@@ -499,9 +500,9 @@ class ServerControls extends ConsumerWidget {
     ref.watch(serverLifecyclesProvider);
     final phase = ref.read(serverLifecyclesProvider.notifier).phaseOf(server);
     return switch (phase) {
-      ServerRunning() || ServerStopping() => AdaptiveButton(
+      ServerRunning() || ServerStopping() || ServerNotClosed() => AdaptiveButton(
         key: ValueKey('local.server.${server.id}.stop'),
-        label: 'Stop',
+        label: phase is ServerNotClosed ? 'Stop again' : 'Stop',
         emphasis: ButtonEmphasis.secondary,
         busy: phase is ServerStopping,
         onPressed: phase is ServerStopping ? null : () => stopServer(context, ref, server),
@@ -546,7 +547,14 @@ class _ServerRow extends ConsumerWidget {
               icon: EveryIcon.close,
               tooltip: 'Remove',
               size: 14,
-              onPressed: phase.busy ? null : () => ref.read(manualServersProvider.notifier).remove(s.id),
+              onPressed: phase.busy
+                  ? null
+                  : () async {
+                      final problem = await ref.read(manualServersProvider.notifier).remove(s.id);
+                      if (problem != null && context.mounted) {
+                        showAdaptiveToast(context, "Couldn't remove ${s.label}: $problem");
+                      }
+                    },
             ),
           ],
         ],

@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import '../../../../core/process/supervisor.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../../harness/session_processes.dart' show registerDriverRoot;
@@ -24,6 +25,7 @@ final class TerminalDriver implements HarnessDriver {
     this.startPty = startProgram,
     this.readText = text.readSessionText,
     this.settle,
+    this._supervisor,
   });
 
   final String id;
@@ -34,14 +36,22 @@ final class TerminalDriver implements HarnessDriver {
   /// Replaces the PATH lookup (tests).
   final Future<String?> Function(String command)? which;
 
-  /// Replaces the pty start (tests).
+  /// Replaces the pty start (tests). It starts the CLI and has [sup] adopt it for [owner] under [label] (once:
+  /// the session stops it through `ShellPty.child`).
   final Future<ShellPty?> Function({
     required String executable,
     required List<String> args,
     required String workingDir,
     required String sessionTag,
+    ProcessOwner? owner,
+    ProcessSupervisor? sup,
+    String? label,
   })
   startPty;
+
+  /// The supervisor the CLI's process is adopted by (tests give their own); the app's when null.
+  final ProcessSupervisor? _supervisor;
+  ProcessSupervisor get supervisor => _supervisor ?? ProcessSupervisor.instance;
 
   /// Replaces the wait before Return (tests).
   final Future<void> Function()? settle;
@@ -66,7 +76,17 @@ final class TerminalDriver implements HarnessDriver {
     final status = await detect();
     final path = status.path;
     if (!status.installed || path == null) throw HarnessError("$label isn't installed.");
-    final pty = await startPty(executable: path, args: args, workingDir: spec.workingDir, sessionTag: spec.procTag);
+    // The pty layer starts it with the session's tags and the supervisor adopts it there (by its start time); a
+    // start while the app quits ends it at once and throws SupervisorClosed.
+    final pty = await startPty(
+      executable: path,
+      args: args,
+      workingDir: spec.workingDir,
+      sessionTag: spec.procTag,
+      owner: SessionOwner(spec.procTag),
+      sup: supervisor,
+      label: '$label (terminal)',
+    );
     if (pty == null) throw HarnessError('A terminal session needs a desktop computer.');
     registerDriverRoot(spec.procTag, pty.pid);
     final skillDir = spec.briefing?.skillDir;

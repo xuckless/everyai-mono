@@ -4,17 +4,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:flutter_pty/flutter_pty.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
-import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
+import '../../../core/process/pty_spawn_io.dart' show spawnPty;
+import '../../../core/process/supervisor.dart';
+import '../harness/everyai/shell_io.dart' show ShellEnv;
 import '../harness/harness.dart' show HarnessError;
 import '../harness/session_processes.dart' show registerDriverRoot, sessionEnvVar, unregisterDriverRoot;
 import 'driver.dart';
 import 'detection/cli_scan.dart' show findCli;
 import 'driver_process.dart';
 import 'json_rpc.dart' show EndsInput;
-import '../../../core/process/child_processes.dart';
+import 'short_run.dart';
 
 Future<DriverProcess> spawnDriver({
   required String executable,
@@ -23,46 +24,58 @@ Future<DriverProcess> spawnDriver({
   required String sessionTag,
   required String logPath,
   Map<String, String> env = const {},
+  bool closeInputFirst = true,
 }) async {
   final shell = await ShellEnv.load();
   // Before the start: it is the working directory of an environment's bridge.
   File(logPath).parent.createSync(recursive: true);
-  final process = await Process.start(
-    executable,
-    args,
-    workingDirectory: cwd,
-    environment: {...shell.env, ...env, sessionEnvVar: sessionTag},
+  final child = await ProcessSupervisor.instance.spawn(
+    SpawnSpec(
+      owner: driverOwner(sessionTag),
+      kind: ProcessKind.leadCli,
+      exe: executable,
+      args: args,
+      env: {...shell.env, ...env, sessionEnvVar: sessionTag},
+      cwd: cwd,
+      label: 'Driver ${_name(executable)}',
+      detail: sessionTag,
+      // A CLI on stdio ends by itself when its input closes (claude -p, codex app-server, ACP agents).
+      politeStop: closeInputFirst ? _closeInput : null,
+    ),
   );
-  registerDriverRoot(sessionTag, process.pid);
-  // Only for the watchdog (a crash or Force Quit): a normal quit closes drivers through closeAllDriverProcesses.
-  ChildProcesses.track(process.pid, label: 'Driver $executable', executable: executable, exited: process.exitCode);
-  return _Process(process, sessionTag, File(logPath).openWrite(mode: FileMode.append));
+  registerDriverRoot(sessionTag, child.pid!);
+  return _Process(child, sessionTag, File(logPath).openWrite(mode: FileMode.append));
 }
 
-final _live = <DriverProcess>{};
+const _closeInput = PoliteStop(_endInput, grace: Duration(milliseconds: 500));
 
-/// Ends a driver process's tree on close; tests watch it.
-@visibleForTesting
-Future<void> Function(int pid) killDriverTree = killTree;
+Future<void> _endInput(SupervisedChild child) async {
+  if (child is SupervisedProcess) {
+    try {
+      await child.stdin.close();
+    } on Object catch (e) {
+      // Its stdin is gone with it: the stop goes on to SIGTERM.
+      debugPrint('EveryAI processes: closing ${child.spec.label}\'s input failed ($e); it is stopped by signal.');
+    }
+  }
+}
 
-Future<void> closeAllDriverProcesses() => Future.wait([for (final p in _live.toList()) p.close()]);
+String _name(String executable) => executable.substring(executable.lastIndexOf(RegExp(r'[\\/]')) + 1);
 
 /// A program started under a terminal: its pid, exit code and what it
 /// wrote to the terminal.
 typedef TtyProgram = ({int pid, Future<int> exitCode, Stream<List<int>> output});
 
-/// Starts [executable] [args] in [cwd] with [env] (exactly) under a pty;
-/// tests start it with plain pipes.
-typedef TtyStart = Future<TtyProgram> Function(
-  String executable,
-  List<String> args,
-  String cwd,
-  Map<String, String> env,
+/// Starts [spec] (its env exactly, plus the owner's tags) under a pty and has [supervisor] adopt it, once; tests
+/// start it with plain pipes. Throws [SupervisorClosed] while the app quits (after ending what it started).
+typedef TtyStart = Future<({TtyProgram program, SupervisedChild child})> Function(
+  ProcessSupervisor supervisor,
+  SpawnSpec spec,
 );
 
-Future<TtyProgram> _ptyStart(String executable, List<String> args, String cwd, Map<String, String> env) async {
-  final pty = Pty.start(executable, arguments: args, workingDirectory: cwd, environment: env);
-  return (pid: pty.pid, exitCode: pty.exitCode, output: pty.output);
+Future<({TtyProgram program, SupervisedChild child})> _ptyStart(ProcessSupervisor supervisor, SpawnSpec spec) async {
+  final p = spawnPty(supervisor, spec);
+  return (program: (pid: p.pty.pid, exitCode: p.pty.exitCode, output: p.pty.output), child: p.child);
 }
 
 /// The shell line that runs the CLI ("$0" "$@") on the pipes named in the
@@ -93,33 +106,48 @@ Future<DriverProcess> spawnDriverTty({
   for (final f in [input, output]) {
     if (FileSystemEntity.typeSync(f, followLinks: false) != FileSystemEntityType.notFound) File(f).deleteSync();
   }
-  final made = await Process.run('mkfifo', [input, output]);
-  if (made.exitCode != 0) throw HarnessError("Couldn't make the pipes for the agent: ${'${made.stderr}'.trim()}");
+  final made = await runShort(
+    'mkfifo',
+    [input, output],
+    timeout: const Duration(seconds: 10),
+    owner: driverOwner(sessionTag),
+  );
+  if (runProblem('mkfifo', made) case final why?) throw HarnessError("Couldn't make the pipes for the agent: $why");
   final shell = await ShellEnv.load();
+  final supervisor = ProcessSupervisor.instance;
+  final owner = driverOwner(sessionTag);
   // Only what this run writes counts as its last words.
   final logStart = _length(logPath);
   final TtyProgram program;
+  final SupervisedChild child;
   try {
-    program = await start(
-      '/bin/sh',
-      ['-c', _onPipes, executable, ...args],
-      cwd,
-      {
-        ...shell.env,
-        ...env,
-        sessionEnvVar: sessionTag,
-        'EVERYAI_ACP_IN': input,
-        'EVERYAI_ACP_OUT': output,
-        'EVERYAI_ACP_LOG': logPath,
-      },
+    (:program, :child) = await start(
+      supervisor,
+      SpawnSpec(
+        owner: owner,
+        kind: ProcessKind.leadCli,
+        exe: '/bin/sh',
+        args: ['-c', _onPipes, executable, ...args],
+        env: {
+          ...shell.env,
+          ...env,
+          sessionEnvVar: sessionTag,
+          'EVERYAI_ACP_IN': input,
+          'EVERYAI_ACP_OUT': output,
+          'EVERYAI_ACP_LOG': logPath,
+        },
+        includeParentEnvironment: false,
+        cwd: cwd,
+        label: 'Driver ${_name(executable)} (terminal)',
+        detail: sessionTag,
+      ),
     );
   } on Object {
     _removePipes(input, output);
     rethrow;
   }
   registerDriverRoot(sessionTag, program.pid);
-  ChildProcesses.track(program.pid, label: 'Driver $executable', executable: executable, exited: program.exitCode);
-  return _TtyProcess(program, sessionTag, logPath, logStart, input, output);
+  return _TtyProcess(program, child, sessionTag, logPath, logStart, input, output);
 }
 
 int _length(String path) {
@@ -145,8 +173,11 @@ void _removePipes(String input, String output) {
 /// IO threads, so the UI never blocks. When the CLI is gone, each pipe is
 /// held open read-write (which never waits) until our own open is through,
 /// so nothing waits on a CLI that never opened its side.
+///
+/// Its process is the supervisor's (adopted): [close] stops it there, verified, before the pipes and the terminal
+/// are let go (a SIGHUP from closing the terminal first raced the stop and orphaned what the CLI started).
 final class _TtyProcess implements DriverProcess {
-  _TtyProcess(this._program, this._tag, this._logPath, this._logStart, this._input, this._output) {
+  _TtyProcess(this._program, this._child, this._tag, this._logPath, this._logStart, this._input, this._output) {
     // Whatever it writes to the terminal, so a full pty buffer can't stall it.
     // Its own file: sh appends the CLI's stderr to the log, which a second
     // writer without O_APPEND would overwrite.
@@ -160,11 +191,10 @@ final class _TtyProcess implements DriverProcess {
     for (final f in [_reader, _writer]) {
       unawaited(f.then((_) {}, onError: (Object _) {}));
     }
-    _live.add(this);
+    trackDriverClose(close);
     unawaited(
       _program.exitCode.then((_) async {
-        _exited = true;
-        _live.remove(this);
+        _exitSeen = true;
         unregisterDriverRoot(_tag, pid);
         await _unblock();
         await _release();
@@ -173,6 +203,7 @@ final class _TtyProcess implements DriverProcess {
   }
 
   final TtyProgram _program;
+  final SupervisedChild _child;
   final String _tag;
   final String _logPath;
   final String _input;
@@ -186,8 +217,16 @@ final class _TtyProcess implements DriverProcess {
   Future<void>? _unblocking;
   Future<void>? _releasing;
   var _released = false;
-  var _closed = false;
-  var _exited = false;
+
+  /// The close, once asked (a second close joins it).
+  Future<KillOutcome>? _closing;
+
+  /// The pty reaped the program (its exit code came).
+  var _exitSeen = false;
+
+  /// Lines may still be sent: not closed, and the pty hasn't seen its program end (not the supervisor's view: a
+  /// child its check disowned is still ours while the pty holds it).
+  bool get _open => _closing == null && !_exitSeen;
 
   @override
   late final Stream<String> lines = _read()
@@ -236,7 +275,7 @@ final class _TtyProcess implements DriverProcess {
 
   @override
   void send(String line) {
-    if (_closed || _exited) return;
+    if (!_open) return;
     _writes = _writes.then((_) async {
       try {
         await (await _writer).writeString('$line\n');
@@ -276,22 +315,22 @@ final class _TtyProcess implements DriverProcess {
     _removePipes(_input, _output);
   }();
 
+  /// Stops the CLI and what it started (verified; a CLI that already exited is checked by its start time, never
+  /// signalled by its pid alone), then lets go of the pipes.
   @override
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
-    _live.remove(this);
+  Future<KillOutcome> close() => _closing ??= () async {
+    untrackDriverClose(close);
     unregisterDriverRoot(_tag, pid);
-    // Not once it has exited: its pid may be another program's by now.
-    if (!_exited) await killDriverTree(pid);
+    final outcome = await stopChecked(_child.spec.label, _child.stop);
     await _unblock();
     await _release();
-  }
+    return outcome;
+  }();
 }
 
 final class _Process implements DriverProcess, EndsInput {
-  _Process(this._process, this._tag, this._log) {
-    _process.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen((s) {
+  _Process(this._child, this._tag, this._log) {
+    _child.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen((s) {
       _log.write(s);
       _tail.write(s);
       if (_tail.length > 4000) {
@@ -302,59 +341,65 @@ final class _Process implements DriverProcess, EndsInput {
       }
     }, onDone: () => unawaited(_log.close()));
     // A write after the CLI died fails on the pipe; nobody else listens.
-    unawaited(_process.stdin.done.catchError((Object _) {}));
-    _live.add(this);
-    unawaited(
-      _process.exitCode.then((_) {
-        _exited = true;
-        _live.remove(this);
-        unregisterDriverRoot(_tag, pid);
-      }),
-    );
+    unawaited(_child.stdin.done.then((_) {}, onError: (Object _) {}));
+    unawaited(_child.exitCode.then((_) => unregisterDriverRoot(_tag, pid)));
   }
 
-  final Process _process;
+  final SupervisedProcess _child;
   final String _tag;
   final IOSink _log;
   final _tail = StringBuffer();
-  var _closed = false;
-  var _exited = false;
+
+  /// The close, once asked (a second close joins it).
+  Future<KillOutcome>? _closing;
+
+  /// Lines may still be sent: not closed, and its process hasn't been seen to end.
+  bool get _open => _closing == null && _child.state.live;
 
   @override
-  late final Stream<String> lines = _process.stdout
+  late final Stream<String> lines = _child.stdout
       .transform(const Utf8Decoder(allowMalformed: true))
       .transform(const LineSplitter())
       .asBroadcastStream();
 
   @override
-  int get pid => _process.pid;
+  int get pid => _child.pid!;
 
   @override
-  Future<int> get exitCode => _process.exitCode;
+  Future<int> get exitCode => _child.exitCode;
 
   @override
   String get lastError => _tail.toString();
 
   @override
   void send(String line) {
-    if (!_closed && !_exited) _process.stdin.writeln(line);
+    if (_open) _child.stdin.writeln(line);
   }
 
   @override
   void endInput() {
-    if (!_closed && !_exited) unawaited(_process.stdin.close().catchError((Object _) {}));
+    if (_open) unawaited(_child.stdin.close().then((_) {}, onError: (Object _) {}));
   }
 
+  /// The supervisor's verified stop of the CLI and what it started (its input closed first; one that exited
+  /// already is checked by start time, never signalled by pid alone).
   @override
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
-    _live.remove(this);
+  Future<KillOutcome> close() => _closing ??= () async {
     unregisterDriverRoot(_tag, pid);
-    // Not once it has exited: its pid may be another program's by now.
-    if (!_exited) await killDriverTree(pid);
-  }
+    return stopChecked(_child.spec.label, _child.stop);
+  }();
 }
+
+/// Each `[command] --version` check runs once at a time (a second asker gets the same answer).
+final _versionChecks = SingleFlight<String, DriverStatus>();
+
+/// Every coding CLI the supervisor lists, stopped (verified).
+Future<KillOutcome> closeAllDriverProcesses() async => KillOutcome.merge(
+  await Future.wait([
+    for (final c in ProcessSupervisor.instance.children)
+      if (c.spec.kind == ProcessKind.leadCli) stopChecked(c.spec.label, c.stop),
+  ]),
+);
 
 Future<DriverStatus> detectCli(
   String command, {
@@ -363,23 +408,43 @@ Future<DriverStatus> detectCli(
 }) async {
   final path = await (which ?? findCli)(command);
   if (path == null) return const DriverStatus();
+  return _versionChecks.run('$path\x00${versionArgs.join('\x00')}', () => _version(command, path, versionArgs));
+}
+
+Future<DriverStatus> _version(String command, String path, List<String> versionArgs) async {
+  final ShellEnv shell;
   try {
-    final shell = await ShellEnv.load();
-    final process = await Process.start(path, versionArgs, environment: shell.env);
-    unawaited(process.stderr.drain<void>());
-    final out = process.stdout.transform(const Utf8Decoder(allowMalformed: true)).join();
-    try {
-      await process.exitCode.timeout(versionTimeout);
-    } on TimeoutException {
-      // A CLI that waits on a prompt (an update offer) would stay running.
-      process.kill(ProcessSignal.sigkill);
-      return DriverStatus(installed: true, path: path, problem: "$command didn't say its version.");
-    }
-    final first = (await out).trim().split('\n').first.trim();
-    return DriverStatus(installed: true, path: path, version: first.isEmpty ? null : first);
+    shell = await ShellEnv.load();
   } on Object catch (e) {
     return DriverStatus(installed: true, path: path, problem: "Couldn't run $command: $e");
   }
+  // A CLI that waits on a prompt (an update offer) is stopped when the time runs out, with what it started.
+  final r = await runShort(
+    path,
+    versionArgs,
+    timeout: versionTimeout,
+    env: shell.env,
+    owner: ProbeOwner('version-$command'),
+  );
+  return switch (r) {
+    Finished(:final stdout) => DriverStatus(
+      installed: true,
+      path: path,
+      version: switch (stdout.trim().split('\n').first.trim()) {
+        '' => null,
+        final first => first,
+      },
+    ),
+    TimedOut(:final kill) => DriverStatus(
+      installed: true,
+      path: path,
+      problem:
+          "$command didn't say its version.${logStop('$command --version', kill) is Ended ? '' : ' (still running?)'}",
+    ),
+    Cancelled() => DriverStatus(installed: true, path: path, problem: "$command's check was cancelled."),
+    StartFailed(:final error) ||
+    Refused(reason: final error) => DriverStatus(installed: true, path: path, problem: "Couldn't run $command: $error"),
+  };
 }
 
 /// How long `--version` may take before the check gives up on it.

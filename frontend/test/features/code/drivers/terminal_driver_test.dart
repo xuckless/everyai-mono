@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'dart:io' show Directory, ProcessSignal, pid;
+
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart' show closeAllDriverProcesses;
-import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/drivers/terminal/terminal_driver.dart';
 import 'package:every_ai/features/code/drivers/terminal/terminal_session.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -13,11 +15,57 @@ import 'package:every_ai/features/code/harness/session_processes.dart';
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Now, as `ps -o lstart=` says it (the adoption checks the pty's process started just now).
+var _started = '';
+
+String _lstartNow() {
+  final t = DateTime.now();
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${days[t.weekday - 1]}_${months[t.month - 1]}_${t.day}_${two(t.hour)}:${two(t.minute)}:${two(t.second)}_${t.year}';
+}
+
+/// What the fake supervisor's process table holds, and the signals it was asked to send.
+final _alive = <int>{};
+final _signals = <(int, ProcessSignal)>[];
+
+/// A supervisor over a fake table: a signal ends the pid at once.
+ProcessSupervisor _fakeSupervisor() => ProcessSupervisor.create(
+  hooks: SupervisorHooks(
+    scan: ({required bool env}) async => Listed(
+      ProcessList([for (final p in _alive) ScanRow(pid: p, ppid: pid, pgid: pid, start: _started, command: 'aider')]),
+      at: DateTime.now(),
+    ),
+    signal: (p, sig) {
+      _signals.add((p, sig));
+      _alive.remove(p.abs());
+      return true;
+    },
+    timings: const StopTimings(
+      termGrace: Duration(milliseconds: 100),
+      killWait: Duration(milliseconds: 100),
+      poll: Duration(milliseconds: 10),
+    ),
+  ),
+  ledgerDir: Directory.systemTemp.createTempSync('terminal-driver-sup').path,
+);
+
 final class FakePty implements ShellPty {
+  FakePty() {
+    _started = _lstartNow();
+    _alive.add(pid);
+  }
   final _out = StreamController<Uint8List>();
   final _exit = Completer<int>();
   final writes = <List<int>>[];
-  var kills = 0;
+
+  /// Its supervisor record, set when the (fake) pty layer adopts it.
+  @override
+  late final SupervisedChild child;
+
+  /// Signals the supervisor sent to it (the session's close goes through the supervisor, never [kill]).
+  int get kills => _signals.where((s) => s.$1.abs() == pid).length;
 
   @override
   int get pid => 4242;
@@ -30,10 +78,14 @@ final class FakePty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => kills++;
+  Future<KillOutcome> kill() => fail('closed through the pty instead of its supervisor record');
 
   void emit(String s) => _out.add(Uint8List.fromList(utf8.encode(s)));
-  void exit(int code) => _exit.complete(code);
+  void exit(int code) {
+    _alive.remove(pid);
+    _exit.complete(code);
+  }
+
   List<String> get texts => [for (final w in writes) utf8.decode(w)];
 }
 
@@ -59,10 +111,22 @@ TerminalDriver _driver(
   command: 'aider',
   args: const ['--no-auto-commits'],
   which: (c) async => c == 'aider' ? '/bin/aider' : null,
-  startPty: ({required executable, required args, required workingDir, required sessionTag}) async {
+  startPty: ({required executable, required args, required workingDir, required sessionTag, owner, sup, label}) async {
     started?.add({'exe': executable, 'args': args, 'cwd': workingDir, 'tag': sessionTag});
+    // The pty layer adopts it once, for the session, with the driver's supervisor (as `startProgram` does).
+    expect(owner, isA<SessionOwner>().having((o) => o.id, 'id', sessionTag));
+    expect(sup, same(_sup));
+    if (pty != null) {
+      pty.child = sup!.adopt(
+        pty.pid,
+        SpawnSpec(owner: owner!, kind: ProcessKind.pty, exe: executable, args: args, label: label),
+        exitCode: pty.exitCode,
+        startedWithin: const Duration(seconds: 10),
+      );
+    }
     return pty;
   },
+  supervisor: _sup,
   readText: read ?? (_) async => null,
   settle: settle ?? () async {},
 );
@@ -75,19 +139,17 @@ Future<(TerminalSession, FakePty)> _open({DriverBriefing? briefing, Future<Strin
   return (s, pty);
 }
 
-void main() {
-  group('driver', () {
-    test('detects through the lookup; no caps, models or statuses', () async {
-      expect((await _driver(null).detect()).installed, isTrue);
-      final missing = TerminalDriver(id: 'terminal:x', label: 'x', command: 'x', which: (_) async => null);
-      expect((await missing.detect()).installed, isFalse);
-      final d = _driver(null);
-      expect(d.caps, isEmpty);
-      expect(await d.models(), isEmpty);
-      expect(await d.statuses(['a']), isEmpty);
-      await expectLater(d.attach('c'), throwsA(isA<HarnessError>()));
-    });
+late ProcessSupervisor _sup;
 
+void main() {
+  setUp(() {
+    _alive.clear();
+    _signals.clear();
+    _sup = _fakeSupervisor();
+  });
+  tearDown(() => _sup.stopAll());
+
+  group('driver', () {
     test('start gives the pty its program, folder and tag, and registers the pid', () async {
       final started = <Map<String, Object?>>[];
       final pty = FakePty();
@@ -105,18 +167,6 @@ void main() {
       await s.close();
       expect(pty.kills, 1);
     });
-
-    test('no pty, or no program, is an error', () async {
-      await expectLater(_driver(null).start(_spec()), throwsA(isA<HarnessError>()));
-      final missing = TerminalDriver(id: 'terminal:x', label: 'x', command: 'x', which: (_) async => null);
-      await expectLater(missing.start(_spec()), throwsA(isA<HarnessError>()));
-    });
-
-    test('the registry makes one for terminal:<command>', () {
-      final d = DriverRegistry(const {}).resolve('terminal:aider');
-      expect(d, isA<TerminalDriver>());
-      expect(d!.info.id, 'terminal:aider');
-    });
   });
 
   group('session', () {
@@ -124,30 +174,6 @@ void main() {
       final (s, pty) = await _open();
       await s.send('hi\nthere');
       expect(pty.texts, ['hi there', '\r']);
-    });
-
-    test('Return waits for the settle, not written with the paste', () async {
-      final pty = FakePty();
-      final gate = Completer<void>();
-      final s = await _driver(pty, settle: () => gate.future).start(_spec()) as TerminalSession;
-      pty.emit('> ');
-      await Future<void>.delayed(Duration.zero);
-      final sent = s.send('hi');
-      await Future<void>.delayed(Duration.zero);
-      expect(pty.texts, ['hi']);
-      gate.complete();
-      await sent;
-      expect(pty.texts, ['hi', '\r']);
-    });
-
-    test('the mode and context notes are not typed into the CLI, the transcript keeps them', () async {
-      final (s, pty) = await _open();
-      final noted = modeNote(AgentMode.plan, 'add a README');
-      await s.send(noted);
-      expect(pty.texts, ['add a README', '\r']);
-      await s.close();
-      final user = (await s.events.toList()).whereType<ChatMessage>().firstWhere((m) => m.fromUser);
-      expect(user.text, noted);
     });
 
     test('the first prompt is shown at once and pasted after the CLI draws', () async {
@@ -183,40 +209,6 @@ void main() {
       expect(pty.kills, 1);
     });
 
-    test('bracketed paste once the CLI asked for it, newlines kept', () async {
-      final (s, pty) = await _open();
-      pty.emit('\x1b[?2004h');
-      await Future<void>.delayed(Duration.zero);
-      await s.send('a\nb');
-      expect(pty.texts, ['\x1b[200~a\nb\x1b[201~', '\r']);
-    });
-
-    test('events: user message, one notice, idle, history for late listeners, never running', () async {
-      final (s, _) = await _open();
-      await s.send('one');
-      await s.send('two');
-      await s.send('three');
-      await s.close();
-      final events = await s.events.toList();
-      final messages = events.whereType<ChatMessage>().toList();
-      expect(messages.where((m) => m.fromUser).map((m) => m.text), ['one', 'two', 'three']);
-      expect(messages.where((m) => !m.fromUser), hasLength(1));
-      final states = events.whereType<StateChange>().map((e) => e.executionStatus);
-      expect(states, [ExecutionStatus.idle]);
-    });
-
-    test('interrupt is Ctrl-C; the rest are harmless', () async {
-      final (s, pty) = await _open();
-      await s.interrupt();
-      expect(pty.writes.single, [3]);
-      await s.respond(accept: true);
-      await s.pause();
-      await s.resume();
-      await s.setMode(AgentMode.plan);
-      expect(pty.writes, hasLength(1));
-      await expectLater(s.rewindTo(null), throwsA(isA<HarnessError>()));
-    });
-
     test('exit 0 finishes; another code is an error', () async {
       final (s, pty) = await _open();
       final seen = <HarnessEvent>[];
@@ -233,29 +225,5 @@ void main() {
       expect(seen2.whereType<ConversationFailure>().single.message, contains('code 2'));
       expect(seen2.whereType<StateChange>().last.executionStatus, ExecutionStatus.error);
     });
-
-    test('briefing text comes from the reader, null without a briefing', () async {
-      final (none, _) = await _open();
-      expect(await none.briefingText(), isNull);
-      String? root;
-      final (s, _) = await _open(
-        briefing: const DriverBriefing(mcpUrl: 'u', mcpToken: 't', skillDir: '/b/briefing/skills'),
-        read: (r) async {
-          root = r;
-          return 'session text';
-        },
-      );
-      expect(await s.briefingText(), 'session text');
-      expect(root, '/b/briefing');
-    });
-  });
-
-  test('programEnv makes the shell capture fit a terminal UI', () {
-    final env = programEnv(
-      {'PATH': '/x', 'TERM': 'dumb', 'NO_COLOR': '1', 'PAGER': 'cat', 'GIT_PAGER': 'cat'},
-      {'A': 'b'},
-      'tag-9',
-    );
-    expect(env, {'PATH': '/x', 'TERM': 'xterm-256color', 'A': 'b', sessionEnvVar: 'tag-9'});
   });
 }

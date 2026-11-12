@@ -27,6 +27,8 @@ import '../../live/desktop_window_io.dart';
 import '../../live/key_map.dart';
 import '../../live/ios_simulator_io.dart';
 import '../../live/live_browsers.dart';
+import '../../live/live_pool.dart';
+import '../../../../core/process/pool.dart';
 import '../../live/live_session.dart';
 import '../../live/webview_browser.dart';
 import '../../panes/panes_providers.dart';
@@ -183,9 +185,25 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
     }
   }
 
+  /// The user's queued browser ticket while the Preview waits for a slot.
+  Lease? _queuedFor;
+
+  /// The Preview's place in the browser queue, or null.
+  int? get _queuedAt => switch (_queuedFor?.state) {
+    Queued(:final position) => position,
+    _ => null,
+  };
+
+  void _poolChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // A Preview that closes while queued leaves the queue (a granted lease stays with the page).
+    if (_queuedFor case final l? when l.state is Queued) LivePool.pool.release(l);
+    LivePool.pool.removeListener(_poolChanged);
     _made?.cancel();
     _shellChanges?.cancel();
     _appChanges?.cancel();
@@ -233,7 +251,26 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
   /// The session's page, made now when the user opens something before the agent did.
   Future<BrowserPage> _ensure() async {
     if (_browser case final b?) return b;
-    final b = LiveBrowsers.forSession(_id, profileDir: await _profile());
+    // The page is a pooled browser: the user's Preview takes the session's lease (or its own), and waits its turn
+    // like anyone's when the pool is full, showing its place.
+    final lease = LivePool.forUser(_id, ResourceKind.browser);
+    if (!lease.state.holdsSlot) {
+      if (mounted) setState(() => _queuedFor = lease);
+      LivePool.pool.addListener(_poolChanged);
+      try {
+        if (!await LivePool.pool.waitGranted(lease, null)) throw StateError('The browser queue ended this ticket.');
+      } finally {
+        LivePool.pool.removeListener(_poolChanged);
+        if (mounted) setState(() => _queuedFor = null);
+      }
+    }
+    final profile = await _profile();
+    if (!mounted) {
+      // Granted after the pane went: the user's own lease, with no page made on it, goes back to the pool.
+      if (lease.holder == LivePool.userHolder(_id) && LiveBrowsers.of(_id) == null) LivePool.pool.release(lease);
+      throw StateError('The Preview closed while it waited for a browser.');
+    }
+    final b = LiveBrowsers.forSession(_id, profileDir: profile);
     _attach(b);
     return b;
   }
@@ -680,6 +717,8 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
             b,
             !hasBrowser
                 ? _NeedsBrowser(progress: _downloading, problem: _problem, onDownload: _download)
+                : _queuedAt != null
+                ? _Note('Queued for a browser (${ordinal(_queuedAt!)})')
                 : _signingIn
                 ? const _Note(
                     'Sign in in the Chrome window that opened, then close it. The Preview and the agent use the new sign-ins.',

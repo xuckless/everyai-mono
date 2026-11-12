@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../../core/process/supervisor.dart';
 import 'app_view.dart';
 
 /// The Android SDK's tools on this computer: adb and the emulator, from ANDROID_HOME / ANDROID_SDK_ROOT, the usual
@@ -56,9 +57,57 @@ abstract final class AndroidSdk {
   static String get _need =>
       adb ?? (throw const AppError('No adb here: install Android Studio (or the SDK platform-tools).'));
 
+  /// The adb server's port (adb's own `ANDROID_ADB_SERVER_PORT`, else 5037).
+  static int get serverPort => int.tryParse(Platform.environment['ANDROID_ADB_SERVER_PORT'] ?? '') ?? 5037;
+
+  static Future<void>? _serverUp;
+
+  /// Makes sure adb's server runs before any supervised adb call: it is shared with the user's Android Studio and
+  /// `flutter run`, so it must never be one of EveryAI's processes. An adb client that finds no server forks one that
+  /// inherits the client's `EVERYAI_*` tags, and the app's sweeps would later kill it (the user's devices drop to
+  /// "offline"). So EveryAI starts it itself, untagged and detached ([ProcessSupervisor.launchDetached]), and waits
+  /// (bounded) until its port answers. Once per run; a failed start is tried again by the next call.
+  static Future<void> ensureServer() {
+    final f = _serverUp ??= _startServer();
+    return f.catchError((Object e) {
+      if (identical(_serverUp, f)) _serverUp = null;
+      throw e;
+    });
+  }
+
+  static Future<bool> _serverAnswers() async {
+    try {
+      final s = await Socket.connect(InternetAddress.loopbackIPv4, serverPort, timeout: const Duration(seconds: 1));
+      s.destroy();
+      return true;
+    } on SocketException {
+      return false;
+    }
+  }
+
+  static Future<void> _startServer() async {
+    if (await _serverAnswers()) return;
+    final launched = await ProcessSupervisor.instance.launchDetached(_need, const [
+      'start-server',
+    ], label: 'adb start-server (shared, not EveryAI\'s)');
+    if (launched case LaunchFailed(:final error)) throw AppError("adb's server could not be started: $error");
+    final until = DateTime.now().add(const Duration(seconds: 15));
+    while (DateTime.now().isBefore(until)) {
+      if (await _serverAnswers()) return;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    throw AppError("adb's server didn't answer on port $serverPort within 15 s.");
+  }
+
   /// `adb [-s serial] args`, its output (throws [AppError] on failure).
-  static Future<String> run(List<String> args, {String? serial, Duration timeout = const Duration(seconds: 60)}) async {
-    final r = await runBytes(args, serial: serial, timeout: timeout);
+  /// [duringQuit] lets a goodbye (`emu kill`) run while the app quits.
+  static Future<String> run(
+    List<String> args, {
+    String? serial,
+    Duration timeout = const Duration(seconds: 60),
+    bool duringQuit = false,
+  }) async {
+    final r = await runBytes(args, serial: serial, timeout: timeout, duringQuit: duringQuit);
     return utf8.decode(r, allowMalformed: true);
   }
 
@@ -66,27 +115,39 @@ abstract final class AndroidSdk {
     List<String> args, {
     String? serial,
     Duration timeout = const Duration(seconds: 60),
+    bool duringQuit = false,
   }) async {
-    final p = await Process.start(_need, [
-      if (serial != null) ...['-s', serial],
-      ...args,
-    ]);
-    final out = BytesBuilder(copy: false);
-    final err = StringBuffer();
-    final done = Future.wait([p.stdout.forEach(out.add), p.stderr.transform(utf8.decoder).forEach(err.write)]);
-    final code = await p.exitCode.timeout(
-      timeout,
-      onTimeout: () {
-        p.kill();
-        return -1;
-      },
+    // Never while quitting: a goodbye must not start the shared server (none running means nothing to say bye to).
+    if (!duringQuit) await ensureServer();
+    final r = await ProcessSupervisor.instance.runBounded(
+      _need,
+      [
+        if (serial != null) ...['-s', serial],
+        ...args,
+      ],
+      timeout: timeout,
+      owner: const ProbeOwner('adb'),
+      stderrEncoding: utf8,
+      duringQuit: duringQuit,
+      label: 'adb ${args.take(3).join(' ')}',
     );
-    await done;
-    if (code != 0) {
-      final why = '$err'.trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
-      throw AppError('adb ${args.first} failed: $why');
+    switch (r) {
+      case Finished(:final code, :final stderr, :final stdoutBytes):
+        if (code != 0) {
+          final why = stderr.trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
+          throw AppError('adb ${args.first} failed: $why');
+        }
+        return stdoutBytes;
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        throw AppError(
+          'adb ${args.first} took longer than ${timeout.inSeconds} s and was '
+          '${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}',
+        );
+      case StartFailed(:final error):
+        throw AppError('adb ${args.first} could not start: $error');
+      case Refused(:final reason):
+        throw AppError('adb ${args.first} could not start: $reason');
     }
-    return out.takeBytes();
   }
 
   /// [args] as one `adb shell` command line, each quoted for the device's shell.

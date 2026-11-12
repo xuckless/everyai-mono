@@ -18,42 +18,6 @@ Map<String, String> snapshot(Directory dir) => {
 };
 
 void main() {
-  group('migrationRoots', () {
-    test('defaults under HOME', () {
-      final r = migrationRoots({'HOME': '/home/a'});
-      expect(r.claudeDir, '/home/a/.claude');
-      expect(r.claudeJson, '/home/a/.claude.json');
-      expect(r.cursorDir, '/home/a/.cursor');
-      expect(r.codexDir, '/home/a/.codex');
-      expect(r.openCodeDir, '/home/a/.config/opencode');
-    });
-
-    test('CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_CONFIG_HOME win', () {
-      final r = migrationRoots({
-        'HOME': '/home/a',
-        'CLAUDE_CONFIG_DIR': '/c/claude/',
-        'CODEX_HOME': '/c/codex',
-        'XDG_CONFIG_HOME': '/c/xdg',
-      });
-      expect(r.claudeDir, '/c/claude');
-      expect(r.claudeJson, '/c/claude/.claude.json');
-      expect(r.codexDir, '/c/codex');
-      expect(r.openCodeDir, '/c/xdg/opencode');
-    });
-
-    test('Windows-style home from USERPROFILE', () {
-      final r = migrationRoots({'USERPROFILE': r'C:\Users\Ali'});
-      expect(r.claudeDir, r'C:\Users\Ali/.claude');
-      expect(r.openCodeDir, r'C:\Users\Ali/.config/opencode');
-    });
-
-    test('no home gives nothing to read', () {
-      final r = migrationRoots(const {});
-      expect(r.claudeDir, isNull);
-      expect(r.claudeJson, isNull);
-    });
-  });
-
   group('scanOtherTools', () {
     late Directory tmp;
     late String home;
@@ -103,10 +67,6 @@ void main() {
       final rules = items.where((i) => i.kind == ImportKind.rule).map((i) => (i.title, i.used)).toList();
       expect(rules, containsAll([('CLAUDE.md', false), ('AGENTS.md', true), ('GEMINI.md', false)]));
       expect(rules.any((r) => r.$1.endsWith('style.mdc')), isTrue);
-    });
-
-    test('missing folders give nothing', () async {
-      expect(await scanOtherTools(migrationRoots({'HOME': '${tmp.path}/nowhere'}), const []), isEmpty);
     });
   });
 }

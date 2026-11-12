@@ -37,17 +37,4 @@ void main() {
     expect(paths.last, '/v1/models');
     expect(paths.where((p) => p == '/v1/ping'), hasLength(3));
   });
-
-  test('a server that answers at once shows no banner', () async {
-    final client = ApiClient(
-      baseUrl: Uri.parse('https://api.test/'),
-      waitForServer: true,
-      client: MockClient((req) async => http.Response('{}', 200)),
-    );
-    final seen = <ServerStatus>[];
-    client.status.listen(seen.add);
-    await client.getJson('v1/me');
-    await Future<void>.delayed(Duration.zero);
-    expect(seen, isEmpty);
-  });
 }

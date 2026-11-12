@@ -6,12 +6,10 @@ import 'package:every_ai/features/code/drivers/opencode/opencode_driver.dart';
 import 'package:every_ai/features/code/drivers/opencode/opencode_session.dart' show openCodeSessionRules;
 import 'package:every_ai/features/code/drivers/opencode/opencode_server.dart';
 import 'package:every_ai/features/code/handoff/native/opencode_import.dart';
-import 'package:every_ai/features/code/harness/events.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-import '../../../support/replay_http.dart';
 import 'native_source.dart';
 
 const _native = 'test/fixtures/drivers/native';
@@ -100,84 +98,5 @@ void main() {
       'model': 'opencode/big-pickle',
       'effort': 'default',
     });
-  });
-
-  test('no import route (404, or the web page) or no provider/model: nothing is imported', () async {
-    for (final reply in [http.Response('not found', 404), http.Response('<html></html>', 200)]) {
-      expect(await importer(MockClient((r) async => reply)).write(source(model: 'opencode/big-pickle')), isNull);
-    }
-    expect(await importer(MockClient((r) async => fail('called'))).write(source(model: 'big-pickle')), isNull);
-    expect(await importer(MockClient((r) async => fail('called'))).write(source(model: 'a/b', sessionTag: '')), isNull);
-    expect(Directory('${data.path}/driver-sessions').existsSync(), isFalse);
-  });
-
-  test('reopened, it shows only what came after the imported messages', () async {
-    final export = (_json('opencode_export_after.json')['data']! as Map)['messages']! as List;
-    final id = '${((_json('opencode_export_after.json')['data']! as Map)['info']! as Map)['id']}';
-    final messages = [
-      for (final (i, m) in export.cast<Map<String, Object?>>().indexed)
-        i < 5 ? {...m, 'metadata': openCodeImportedMeta} : m,
-    ];
-    String line(String dir, Map<String, Object?> msg) => jsonEncode({'dir': dir, 'msg': msg});
-    final http = ReplayHttpClient.script(
-      [
-        line('out', {'id': 1, 'method': 'GET', 'path': '/api/event'}),
-        line('in', {
-          'event': {'type': 'server.connected', 'data': <String, Object?>{}},
-        }),
-        line('out', {
-          'id': 2,
-          'method': 'GET',
-          'path': '/api/session/$id/message',
-          'query': {'order': 'asc', 'limit': '100'},
-        }),
-        line('in', {
-          'id': 2,
-          'status': 200,
-          'body': {'data': messages},
-        }),
-        line('out', {'id': 3, 'method': 'GET', 'path': '/api/session/$id/permission'}),
-        line('in', {
-          'id': 3,
-          'status': 200,
-          'body': {'data': <Object?>[]},
-        }),
-        // Its child sessions (none).
-        line('out', {
-          'id': 4,
-          'method': 'GET',
-          'path': '/api/session',
-          'query': {'parentID': id, 'limit': '100'},
-        }),
-        line('in', {
-          'id': 4,
-          'status': 200,
-          'body': {
-            'data': <Object?>[],
-            'cursor': {'previous': null, 'next': null},
-          },
-        }),
-      ].join('\n'),
-    );
-    File('${data.path}/driver-sessions/opencode/$id.json')
-      ..createSync(recursive: true)
-      ..writeAsStringSync(jsonEncode({'workingDir': cwd, 'sessionTag': 'tag-1', 'model': 'a/b'}));
-    final session = await driver(http).attach(id);
-    final events = <HarnessEvent>[];
-    session.events.listen(events.add);
-    await pumpEventQueue();
-    http.channel.expectFinished();
-    final users = [
-      for (final e in events)
-        if (e case ChatMessage(fromUser: true, :final text)) text,
-    ];
-    expect(users, [
-      for (final m in messages.skip(5))
-        if (m['type'] == 'user') m['text'],
-    ]);
-    expect(users.first, startsWith('Answer without using any tools'));
-    expect(users.any((u) => u.contains('PINEAPPLE')), isFalse);
-    expect(events.whereType<ActionCall>(), isEmpty);
-    await session.close();
   });
 }

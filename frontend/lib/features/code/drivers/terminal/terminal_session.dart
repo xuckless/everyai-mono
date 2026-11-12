@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:xterm/xterm.dart';
 
+import '../../../../core/process/supervisor.dart';
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart' show userTextOf;
 import '../../harness/events.dart';
@@ -13,7 +14,9 @@ import '../../harness/harness.dart';
 import '../../harness/session_processes.dart' show unregisterDriverRoot;
 import '../../panes/pty.dart';
 import '../driver_events.dart';
+import '../driver.dart' show ClosesVerified;
 import '../driver_process.dart' show trackDriverClose, untrackDriverClose;
+import '../short_run.dart' show stopChecked;
 
 /// A coding CLI running in a pseudo-terminal, with no way to read what it does: the session shows what the user
 /// sends and one notice, nothing else. It never reports `running` (the controller queues messages while it does and
@@ -23,7 +26,7 @@ import '../driver_process.dart' show trackDriverClose, untrackDriverClose;
 /// a shell of its own, [pty] is its process (pid for the Processes pane), and [briefingText] is the session text to
 /// show; nothing is pasted into the CLI by itself. Messages go to the CLI as the user typed them (the mode and
 /// context notes the controller adds are cut off); the transcript keeps the full text.
-final class TerminalSession implements HarnessSession {
+final class TerminalSession implements HarnessSession, ClosesVerified {
   TerminalSession({
     required this.id,
     required this.label,
@@ -47,6 +50,10 @@ final class TerminalSession implements HarnessSession {
   final String id;
   final String label;
   final ShellPty pty;
+
+  /// [pty]'s process as the supervisor holds it (adopted once, by the pty layer): closing stops it there
+  /// (verified), never by a signal to the pty.
+  SupervisedChild get child => pty.child;
   final String sessionTag;
 
   /// Reads the session text (null: none); the driver passes the briefing file's reader.
@@ -65,7 +72,10 @@ final class TerminalSession implements HarnessSession {
   late final StreamSubscription<String> _output;
   var _n = 0;
   var _noticed = false;
-  var _closed = false;
+
+  /// The close, once asked.
+  Future<KillOutcome>? _closing;
+  bool get _closed => _closing != null;
   var _exitedAlready = false;
   final _drawn = Completer<void>();
 
@@ -176,14 +186,19 @@ final class TerminalSession implements HarnessSession {
   Future<void> rewindTo(String? head) async => throw HarnessError("$label sessions can't be rewound.");
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
-    _closed = true;
+  Future<void> close() => closeVerified();
+
+  /// Stops the CLI and what it started through the supervisor (verified; one that already exited is checked by
+  /// its start time, never signalled by its pid alone), then lets go of the terminal. Not `pty.kill()`: its SIGHUP
+  /// raced the tree walk and left what the CLI started running.
+  @override
+  Future<KillOutcome> closeVerified() => _closing ??= () async {
     unregisterDriverRoot(sessionTag, pty.pid);
     untrackDriverClose(close);
-    if (!_exitedAlready) pty.kill();
     if (!_drawn.isCompleted) _drawn.complete();
+    final outcome = await stopChecked(child.spec.label, child.stop);
     await _output.cancel();
     await _live.close();
-  }
+    return outcome;
+  }();
 }

@@ -36,6 +36,7 @@ typedef StartWorkflowBridge = Future<WorkflowBridge> Function({
   required String dir,
   required String source,
   required Map<String, Object?> args,
+  String? sessionId,
 });
 
 final workflowBridgeProvider = Provider<StartWorkflowBridge>((ref) => startWorkflowBridge);

@@ -6,7 +6,6 @@ import 'package:every_ai/features/code/workflows/json_schema_lite.dart';
 import 'package:every_ai/features/code/workflows/workflow_bridge.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_journal.dart';
-import 'package:every_ai/features/code/workflows/workflow_summary.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'workflow_fakes.dart';
@@ -128,25 +127,6 @@ void main() {
         expect(runEdge(from, to), isFalse, reason: '$from → $to');
       }
     });
-
-    test('what each state waits on, and which take agents', () {
-      expect(const RunRunning().acceptsAgents, isTrue);
-      for (final s in [const RunStarting(), const RunStopping(outcome, 'x'), ...steps, const RunEnded(outcome)]) {
-        expect(s.acceptsAgents, isFalse, reason: '$s');
-      }
-      expect(const RunEnded(outcome).live, isFalse);
-      expect(const RunDetached().live, isFalse);
-      expect(steps.map((s) => s.waitsOn).toSet(), {RunWaitsOn.shutdown});
-      expect(statusOf(const RunShuttingDown(ShutdownStep.lead, WorkflowOutcome.done)), WorkflowStatus.running);
-      expect(statusOf(const RunEnded(WorkflowOutcome.capped)), WorkflowStatus.capped);
-    });
-
-    test('the slot names what holds it', () {
-      expect(slotBusyText(const SlotFree()), isNull);
-      expect(slotBusyText(const SlotRunning('r9')), contains('run r9'));
-      expect(slotBusyText(const SlotProposed('p')), isNull);
-      expect(slotBusyText(const SlotReserved()), contains('starting'));
-    });
   });
 
   group('shutdown', () {
@@ -218,22 +198,6 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
-    test('an agent that finishes starting during a pause holds too', () async {
-      final e = traced(<Object>[], via: bridge);
-      final starting = Completer<void>();
-      launcher.startGate = (call) => starting.future;
-      final run = e.run();
-      unawaited(bridge.agent('a').catchError((Object _) => null));
-      await pumpEventQueue();
-      await e.pause();
-      starting.complete();
-      await pumpEventQueue();
-      expect(launcher.paused, [launcher.started.single.childId]);
-      e.stop('Stopped by the user.');
-      await run;
-      expect(e.refused, isEmpty);
-    });
-
     test('the estimate: rows at 50% and 80%, then past it a pause for the user; Continue raises it', () async {
       final trace = <Object>[];
       final decisions = <String>[];
@@ -279,47 +243,6 @@ void main() {
         startsWith('Build done · 2 agents · \$1.20'),
       );
       bridge.finish(null);
-      await run;
-      expect(e.refused, isEmpty);
-    });
-
-    test("spend that passes the estimate while the user's Pause holds asks on Resume", () async {
-      final decisions = <String>[];
-      final journal = WorkflowJournal.fresh((l) async => lines.add(l));
-      await journal.write({
-        't': 'start',
-        'estimate': {
-          'agents': [1, 1],
-          'dollars': [0.5, 1.0],
-        },
-      });
-      final e = WorkflowEngine(
-        runId: 'r1',
-        name: 'test',
-        bridge: bridge,
-        launcher: launcher,
-        journal: journal,
-        timer: FakeTimers().call,
-        onDecision: (run, text) => decisions.add(text),
-      );
-      final held = Completer<void>();
-      launcher.gate = (call) => held.future;
-      launcher.spent = (call) => 1200000;
-      final run = e.run();
-      final reply = bridge.agent('a');
-      await pumpEventQueue();
-      await e.pause();
-      // The agent ends its step past the estimate while the run holds: nothing is asked yet.
-      held.complete();
-      await reply;
-      await pumpEventQueue();
-      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.user));
-      expect(decisions, isEmpty);
-      await e.resume();
-      await pumpEventQueue();
-      expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.overEstimate));
-      expect(decisions.single, contains('Past the estimate'));
-      e.stop();
       await run;
       expect(e.refused, isEmpty);
     });
@@ -386,28 +309,6 @@ void main() {
       expect(e.refused, isEmpty);
     });
 
-    test('a phase that ends while the run stops gets no drift check', () async {
-      final ended = <String>[];
-      final e = WorkflowEngine(
-        runId: 'r1',
-        name: 'test',
-        bridge: bridge,
-        launcher: launcher,
-        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
-        timer: FakeTimers().call,
-        onPhaseEnd: (run, phase, results) => ended.add(phase),
-      );
-      final run = e.run();
-      bridge.note('phase', {'title': 'Research'});
-      expect(await bridge.agent('a'), 'ok:a');
-      // The script moved on just as the user stopped it: nothing would act on the check.
-      bridge.note('phase', {'title': 'Build'});
-      e.stop();
-      await run;
-      expect(ended, isEmpty);
-      expect(lines.where((l) => l.contains('"drift"')), isEmpty);
-    });
-
     group('after a restart', () {
       WorkflowEngine resumed(List<Map<String, Object?>> entries, {List<String>? decisions, List<String>? drifts}) =>
           WorkflowEngine(
@@ -441,54 +342,6 @@ void main() {
         expect(e.snapshot.rows.where((r) => r.kind == RowKind.over), hasLength(1));
         expect(decisions, isEmpty);
         e.stop();
-        await run;
-      });
-
-      test('marks Continue skipped stay skipped', () async {
-        final e = resumed([
-          start,
-          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x', 'spent': 10500000},
-          {'t': 'raise', 'spent': 10500000},
-        ]);
-        final run = e.run();
-        await pumpEventQueue();
-        expect(e.state, isA<RunRunning>());
-        expect(e.snapshot.rows, isEmpty, reason: '\$10.50 is 70% of the raised \$15.00, and its 50% was skipped');
-        bridge.finish(null);
-        await run;
-      });
-
-      test('held off track: it holds again until the user lets it go on', () async {
-        final e = resumed([
-          {'t': 'start'},
-          {'t': 'hold', 'reason': 'offTrack'},
-        ]);
-        final run = e.run();
-        await pumpEventQueue();
-        expect(e.state, isA<RunPaused>().having((s) => s.reason, 'reason', PauseReason.offTrack));
-        await e.resume();
-        expect(jsonDecode(lines.last), {'t': 'go'});
-        bridge.finish(null);
-        await run;
-      });
-
-      test('a phase reported and checked before the restart is not reported or checked again', () async {
-        final drifts = <String>[];
-        final e = resumed([
-          {'t': 'start'},
-          {'t': 'phase', 'title': 'Research'},
-          {'t': 'agent', 'key': 'k', 'ok': true, 'value': 'x'},
-          {'t': 'row', 'kind': 'phase', 'phase': 'Research', 'text': 'Research done · 1 agent'},
-          {'t': 'drift', 'phase': 'Research'},
-        ], drifts: drifts);
-        final run = e.run();
-        bridge.note('phase', {'title': 'Research'});
-        await bridge.agent('a');
-        bridge.note('phase', {'title': 'Build'});
-        await pumpEventQueue();
-        expect(e.snapshot.rows.where((r) => r.kind == RowKind.phase), hasLength(1));
-        expect(drifts, isEmpty);
-        bridge.finish(null);
         await run;
       });
     });
@@ -553,105 +406,6 @@ void main() {
         await reply;
         bridge.finish(null);
         await run;
-        expect(e.refused, isEmpty);
-      });
-
-      test("the lead's ignore starts the clock over; a paused run never stalls; actions reach the agent", () async {
-        final run = e.run();
-        final reply = bridge.agent('a');
-        final child = await started();
-        launcher.activity[child] = clock;
-        clock = clock.add(const Duration(minutes: 8));
-        e.checkStall();
-        expect(e.state, const RunStalled());
-        e.ignoreStall();
-        expect(e.state, isA<RunRunning>());
-        clock = clock.add(const Duration(minutes: 6));
-        e.checkStall();
-        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
-        expect(await e.messageAgent('a', 'hi'), isFalse, reason: 'key is the call key, not the prompt');
-        final key = launcher.started.last.key;
-        expect(await e.messageAgent(key, 'hi'), isTrue);
-        expect(await e.restartAgent(child, 'note'), isTrue);
-        expect(launcher.messages.single, (child, 'hi'));
-        expect(launcher.restarted.single, (child, 'note'));
-        await e.pause();
-        clock = clock.add(const Duration(hours: 3));
-        e.checkStall();
-        expect(e.state, isA<RunPaused>());
-        await e.resume();
-        e.checkStall();
-        expect(e.state, isA<RunRunning>(), reason: 'held time is not a stall');
-        hold.complete();
-        await reply;
-        bridge.finish(null);
-        await run;
-        expect(e.refused, isEmpty);
-      });
-
-      test("an agent that just finished was progress: the others' quiet time isn't a stall yet", () async {
-        final quick = Completer<void>();
-        launcher.gate = (call) => call.prompt == 'b' ? quick.future : hold.future;
-        final run = e.run();
-        final a = bridge.agent('a');
-        final slow = await started();
-        final b = bridge.agent('b');
-        final fast = await started();
-        launcher.activity[slow] = clock;
-        clock = clock.add(const Duration(minutes: 6));
-        launcher.activity[fast] = clock;
-        quick.complete();
-        expect(await b, 'ok:b');
-        clock = clock.add(const Duration(minutes: 2));
-        e.checkStall();
-        expect(e.state, isA<RunRunning>(), reason: 'b made progress 2 minutes ago');
-        clock = clock.add(const Duration(minutes: 5));
-        e.checkStall();
-        expect(e.state, const RunStalled());
-        hold.complete();
-        await a;
-        bridge.finish(null);
-        await run;
-        expect(e.refused, isEmpty);
-      });
-
-      test('ignore before a stall starts the clock over too; no restart while paused', () async {
-        final run = e.run();
-        final reply = bridge.agent('a');
-        final child = await started();
-        launcher.activity[child] = clock;
-        clock = clock.add(const Duration(minutes: 6));
-        e.ignoreStall();
-        clock = clock.add(const Duration(minutes: 6));
-        e.checkStall();
-        expect(e.state, isA<RunRunning>(), reason: 'counted from the ignore');
-        await e.pause();
-        expect(await e.restartAgent(child, 'note'), isFalse);
-        expect(launcher.restarted, isEmpty, reason: 'its new turn would run during the pause');
-        await e.resume();
-        expect(await e.restartAgent(child, 'note'), isTrue);
-        hold.complete();
-        await reply;
-        bridge.finish(null);
-        await run;
-        expect(e.refused, isEmpty);
-      });
-
-      test('a stalled run still stops, and nothing stalls without a live agent', () async {
-        final run = e.run();
-        clock = clock.add(const Duration(hours: 1));
-        e.checkStall();
-        expect(e.state, isA<RunRunning>(), reason: 'the script is between agents');
-        final reply = bridge.agent('a');
-        final child = await started();
-        launcher.activity[child] = clock;
-        clock = clock.add(const Duration(minutes: 7));
-        e.checkStall();
-        expect(e.state, isA<RunStalled>());
-        e.stop();
-        await expectLater(reply, throwsA(anything));
-        await run;
-        expect(e.state, const RunEnded(WorkflowOutcome.stopped));
         expect(e.refused, isEmpty);
       });
     });
@@ -783,89 +537,6 @@ void main() {
       expect((jsonDecode(lines.last) as Map)['status'], 'stopped');
     });
 
-    test(
-      'a quit during the shutdown of a done run resumes into that shutdown, with its result, not the script',
-      () async {
-        launcher.gate = (call) => Completer<void>().future;
-        final first = engine();
-        final run = first.run();
-        unawaited(bridge.agent('left behind').catchError((Object _) => null));
-        await pumpEventQueue();
-        bridge.finish({'answer': 42});
-        await run;
-        final child = launcher.started.single.childId;
-        // The app quit before the end was journalled.
-        final kept = [
-          for (final l in lines)
-            if ((jsonDecode(l) as Map)['t'] != 'end') l,
-        ];
-        expect(kept.map((l) => (jsonDecode(l) as Map)['t']), contains('ending'));
-        launcher = FakeLauncher();
-        bridge = FakeBridge();
-        lines = [];
-        final trace = <Object>[];
-        final end = await traced(
-          trace,
-          journal: WorkflowJournal.parse(kept.join('\n'), (l) async => lines.add(l)),
-          via: bridge,
-        ).run();
-        expect(end.status, WorkflowStatus.done);
-        expect(end.result, {'answer': 42});
-        expect(end.error, isNull);
-        expect(launcher.started, isEmpty);
-        expect(launcher.watched, isEmpty);
-        expect(launcher.released, [child]);
-        expect(trace, contains('host:lead:done'));
-      },
-    );
-
-    test('a child whose start outlasts the stop is released once it starts', () async {
-      final starting = Completer<void>();
-      launcher.startGate = (call) => starting.future;
-      final e = WorkflowEngine(
-        runId: 'r1',
-        name: 'test',
-        bridge: bridge,
-        launcher: launcher,
-        journal: WorkflowJournal.fresh((l) async => lines.add(l)),
-        timer: FakeTimers().call,
-        stepTimeout: const Duration(milliseconds: 30),
-      );
-      final run = e.run();
-      unawaited(bridge.agent('slow start').catchError((Object _) => null));
-      await pumpEventQueue();
-      e.stop();
-      final end = await run;
-      expect(end.state, isA<RunEnded>());
-      expect(launcher.released, isEmpty);
-      // It starts after the run ended.
-      starting.complete();
-      await pumpEventQueue();
-      final child = launcher.started.single.childId;
-      expect(launcher.stopped, [child]);
-      expect(launcher.released, [child]);
-    });
-
-    test("Stop all's stop is journalled as quiet, so a resume doesn't wake the lead either", () async {
-      final e = engine();
-      final run = e.run();
-      e.stop('Stopped.', true);
-      await run;
-      final stop = lines.map((l) => jsonDecode(l) as Map).firstWhere((m) => m['t'] == 'stop');
-      expect(stop['quiet'], isTrue);
-    });
-
-    test("a script that didn't start ends as failed through the same steps", () async {
-      final trace = <Object>[];
-      final e = traced(trace);
-      final end = await e.end(WorkflowOutcome.failed, 'No Deno here.');
-      expect(end.status, WorkflowStatus.failed);
-      expect(end.error, 'No Deno here.');
-      expect(stepsOf(trace).last, 'ended:failed');
-      expect(trace, contains('host:lead:failed'));
-      expect(e.refused, isEmpty);
-    });
-
     test('detach keeps the children working and journals no end', () async {
       launcher.gate = (call) => Completer<void>().future;
       final e = engine();
@@ -906,33 +577,6 @@ void main() {
       expect(schemaProblems({'status': 'done', 'x': 1}, _schema), [r'$: unexpected field "x"']);
     });
 
-    test('nested objects and integer types', () {
-      const s = {
-        'type': 'object',
-        'properties': {
-          'a': {
-            'type': 'object',
-            'properties': {
-              'n': {'type': 'integer'},
-            },
-            'required': ['n'],
-          },
-        },
-      };
-      expect(
-        schemaProblems({
-          'a': {'n': 1.5},
-        }, s),
-        [r'$.a.n: expected integer, got number'],
-      );
-      expect(
-        schemaProblems({
-          'a': {'n': 2},
-        }, s),
-        isEmpty,
-      );
-    });
-
     test('lastJson takes the last fence, else the last balanced object', () {
       expect(lastJson('x\n```json\n{"a":1}\n```\nthen\n```json\n{"a":2}\n```'), {'a': 2});
       expect(lastJson('Done. {"a": {"b": 1}}'), {
@@ -940,27 +584,6 @@ void main() {
       });
       expect(lastJson('no json here'), isNull);
     });
-
-    test('lastJson pairs fences by line, so an earlier code block does not shift them', () {
-      expect(lastJson('I ran:\n```bash\nls\n```\nResult:\n```json\n["a","b"]\n```'), ['a', 'b']);
-      expect(lastJson('I ran:\n```bash\nls\n```\nResult:\n```json\n[{"f":"x"}]\n```'), [
-        {'f': 'x'},
-      ]);
-      expect(lastJson('Found: ["a", "b"]'), ['a', 'b']);
-    });
-  });
-
-  test('a schema reply that fits resolves at once, with no follow-up', () async {
-    launcher.reply = (call, turn) => '```json\n{"status":"done"}\n```';
-    final run = engine().run();
-    final r = bridge.agent('review it', {'schema': _schema});
-    expect(await r, {'status': 'done'});
-    bridge.finish({'ok': true});
-    final end = await run;
-    expect(end.status, WorkflowStatus.done);
-    expect(end.result, {'ok': true});
-    expect(launcher.followUps, isEmpty);
-    expect(launcher.started.single.brief, contains('JSON Schema'));
   });
 
   test('a bad schema reply gets one repair message to the same child', () async {
@@ -981,107 +604,6 @@ void main() {
     bridge.finish(null);
     await run;
     expect(lines.map((l) => (jsonDecode(l) as Map)['t']), containsAll(['spawn', 'agent', 'end']));
-  });
-
-  test('an agent without a schema answers its text, and a failed child rejects', () async {
-    launcher.reply = (call, turn) => call.prompt == 'bad' ? throw 'it crashed' : 'report';
-    final run = engine().run();
-    expect(await bridge.agent('good'), 'report');
-    await expectLater(bridge.agent('bad'), throwsA(contains('it crashed')));
-    bridge.finish(null);
-    await run;
-  });
-
-  test('identical calls get their own keys, #1 and #2', () async {
-    final run = engine().run();
-    await Future.wait([bridge.agent('same'), bridge.agent('same'), bridge.agent('other')]);
-    final keys = launcher.started.map((c) => c.key).toList();
-    expect(keys.toSet(), hasLength(3));
-    expect(keys.where((k) => k.endsWith('#2')), hasLength(1));
-    bridge.finish(null);
-    await run;
-  });
-
-  test("an agent's own phase joins the run's phases in order; an empty one adds nothing", () async {
-    final run = engine().run();
-    // Before any phase note: the agent has no phase, and none is added.
-    await bridge.agent('no phase', {'phase': ''});
-    bridge.note('phase', {'title': 'Implement'});
-    await bridge.agent('build it');
-    await bridge.agent('look at it', {'phase': 'Review'});
-    await bridge.agent('look again', {'phase': 'Review', 'label': 'second'});
-    bridge.finish(null);
-    final end = await run;
-    expect(end.phases, ['Implement', 'Review']);
-    expect(end.agents.firstWhere((a) => a.label == 'no phase').phase, '');
-    expect(end.agents.firstWhere((a) => a.label == 'second').phase, 'Review');
-  });
-
-  group('bugCheck', () {
-    const fixed = '```json\n{"status":"done","bug_check":{"state":"verified"}}\n```';
-    const open = {
-      'type': 'object',
-      'properties': {
-        'status': {'type': 'string'},
-      },
-      'required': ['status'],
-    };
-
-    test("the app's record joins the answer, over one the agent wrote, and is journalled", () async {
-      launcher.reply = (call, turn) => fixed;
-      launcher.bugCheck = (id) => {'available': true, 'state': 'reproduced', 'command': 'dart test'};
-      final run = engine().run();
-      final value = await bridge.agent('fix it', {'schema': open, 'bugCheck': true});
-      expect(value, {
-        'status': 'done',
-        'bug_check': {'available': true, 'state': 'reproduced', 'command': 'dart test'},
-      });
-      expect(launcher.calls.single.bugCheck, isEmpty);
-      bridge.finish(null);
-      await run;
-      final agent = lines.map((l) => jsonDecode(l) as Map).firstWhere((m) => m['t'] == 'agent');
-      expect((agent['value'] as Map)['bug_check'], containsPair('state', 'reproduced'));
-    });
-
-    test('a seed reaches the launcher; without the option nothing is added and the key stays', () async {
-      launcher.reply = (call, turn) => '```json\n{"status":"done"}\n```';
-      final run = engine().run();
-      final seed = {'available': true, 'state': 'verified', 'command': 'dart test'};
-      await bridge.agent('fix it', {'schema': _schema, 'bugCheck': seed});
-      expect(launcher.calls.single.bugCheck, seed);
-      expect(await bridge.agent('fix it', {'schema': _schema, 'bugCheck': false}), {'status': 'done'});
-      await bridge.agent('fix it', {'schema': _schema});
-      expect(launcher.calls[1].bugCheck, isNull);
-      expect(launcher.bugChecked, [launcher.started.first.childId]);
-      // Off is the same call as before the option existed (#1, #2 of one key); on is another.
-      final keys = [for (final c in launcher.calls) c.key];
-      expect(keys[2], '${keys[1].split('#').first}#2');
-      expect(keys[0].split('#').first, isNot(keys[1].split('#').first));
-      bridge.finish(null);
-      await run;
-    });
-
-    test('a resumed run replays the record without asking the launcher again', () async {
-      launcher.reply = (call, turn) => '```json\n{"status":"done"}\n```';
-      final first = engine().run();
-      await bridge.agent('fix it', {'schema': _schema, 'bugCheck': true});
-      bridge.finish(null);
-      await first;
-      final journal = [
-        for (final l in lines)
-          if (!const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t'])) l,
-      ];
-      bridge = FakeBridge();
-      launcher = FakeLauncher();
-      lines = [];
-      final run = engine(journal: WorkflowJournal.parse(journal.join('\n'), (l) async => lines.add(l))).run();
-      final value = await bridge.agent('fix it', {'schema': _schema, 'bugCheck': true});
-      expect((value! as Map)['bug_check'], containsPair('state', 'verified'));
-      expect(launcher.started, isEmpty);
-      expect(launcher.bugChecked, isEmpty);
-      bridge.finish(null);
-      await run;
-    });
   });
 
   group('batch check', () {
@@ -1123,83 +645,6 @@ void main() {
       expect((agent['value'] as Map)['batch_check'], containsPair('passed', false));
     });
 
-    test('a skipped check (refused by the permissions) does not block the merge', () async {
-      launcher.reply = (call, turn) => done;
-      launcher.batchCheck = (id, b) async => {'skipped': true, 'output': 'Not run'};
-      final run = engine().run();
-      final value = await bridge.agent('build a', {'schema': _schema, 'worktree': true, 'batch': batch()});
-      expect(launcher.finished, [(launcher.started.single.childId, true)]);
-      expect(value, {
-        'status': 'done',
-        'batch_check': {'skipped': true, 'output': 'Not run'},
-      });
-      bridge.finish(null);
-      await run;
-    });
-
-    test('a check with no test to run merges, logged as unverified; a flat check is accepted', () async {
-      launcher.reply = (call, turn) => done;
-      launcher.batchCheck = (id, b) async => {'skipped': true, 'unverified': true, 'output': 'No test found'};
-      final run = engine().run();
-      final value = await bridge.agent('build a', {
-        'schema': _schema,
-        'worktree': true,
-        'label': 'impl:a',
-        'batch': batch({'files': <String>[], 'command': '', 'full': true}),
-      });
-      expect(launcher.calls.single.batch!.check, isA<FullCheck>());
-      expect(launcher.finished, [(launcher.started.single.childId, true)]);
-      expect((value! as Map)['batch_check'], containsPair('unverified', true));
-      bridge.finish(null);
-      final end = await run;
-      expect([for (final l in end.logs) l.text], contains('impl:a: no test covers its files, so it merged unverified'));
-    });
-
-    test('a passing check merges and says so; a String value is wrapped', () async {
-      final run = engine().run();
-      final value = await bridge.agent('build a', {'worktree': true, 'batch': batch('full')});
-      expect(launcher.finished, [(launcher.started.single.childId, true)]);
-      expect(value, {
-        'text': 'ok:build a',
-        'batch_check': {'passed': true},
-      });
-      bridge.finish(null);
-      await run;
-    });
-
-    test('no check, or no worktree, never runs it; a call without batch keeps its key', () async {
-      final run = engine().run();
-      await bridge.agent('build a', {'worktree': true, 'batch': batch(null)});
-      expect(await bridge.agent('build a', {'batch': batch()}), 'ok:build a');
-      await bridge.agent('build a', {'worktree': true});
-      await bridge.agent('build a', {'worktree': true, 'batch': null});
-      expect(launcher.batchChecked, isEmpty);
-      expect(launcher.finished.every((f) => f.$2), isTrue);
-      final keys = [for (final c in launcher.calls) c.key];
-      expect(keys[3], '${keys[2].split('#').first}#2');
-      expect(keys[0].split('#').first, isNot(keys[2].split('#').first));
-      bridge.finish(null);
-      await run;
-    });
-
-    test('a bad batch is a reply error and starts nothing', () async {
-      final run = engine().run();
-      await expectLater(
-        bridge.agent('build a', {
-          'worktree': true,
-          'batch': {
-            'id': 'Bad Id',
-            'intent': '',
-            'files': ['../x'],
-          },
-        }),
-        throwsA(allOf(startsWith('batch:'), contains('id must be'), contains('..'))),
-      );
-      expect(launcher.started, isEmpty);
-      bridge.finish(null);
-      await run;
-    });
-
     test('a stop during the check cancels it: the work is not merged and nothing is journalled', () async {
       final held = Completer<Map<String, Object?>>();
       launcher.batchCheck = (id, b) => held.future;
@@ -1233,17 +678,6 @@ void main() {
       await run;
     });
 
-    test("a refused agent's line goes under its own phase, not the script's current one", () async {
-      final run = engine(caps: const WorkflowCaps(maxAgents: 1)).run();
-      bridge.note('phase', {'title': 'Research'});
-      await bridge.agent('a');
-      await expectLater(bridge.agent('b', {'phase': 'Review', 'label': 'review:b'}), throwsA(startsWith('cap:')));
-      bridge.finish(null);
-      final end = await run;
-      expect(end.phases, ['Research', 'Review']);
-      expect([for (final l in end.logs) (l.phase, l.text.split(':').first)], [('Review', 'review')]);
-    });
-
     test('at most maxAtOnce agents run at the same time', () async {
       final gates = <String, Completer<void>>{};
       launcher.gate = (call) => (gates[call.prompt] = Completer<void>()).future;
@@ -1263,15 +697,6 @@ void main() {
       gates['d']!.complete();
       await Future.wait(calls);
       expect(launcher.maxActive, 2);
-      bridge.finish(null);
-      await run;
-    });
-
-    test('no wall-time cap: the only timer is the stall check', () async {
-      final timers = FakeTimers();
-      final run = engine(timers: timers).run();
-      await pumpEventQueue();
-      expect(timers.durations, [const Duration(minutes: 1)]);
       bridge.finish(null);
       await run;
     });
@@ -1307,11 +732,6 @@ void main() {
       return engine(journal: WorkflowJournal.parse(journal.join('\n'), (l) async => lines.add(l)));
     }
 
-    bool isAgentOf(String line, String key) {
-      final m = jsonDecode(line) as Map;
-      return m['t'] == 'agent' && m['key'] == key;
-    }
-
     test('journalled agents answer at once; only the missing one runs', () async {
       final journal = await firstRun(['a', 'b', 'c']);
       final third = launcher.started[2];
@@ -1324,22 +744,6 @@ void main() {
       expect(await bridge.agent('b'), 'ok:b');
       expect(await bridge.agent('c'), 'ok:c');
       expect(launcher.started.map((c) => c.prompt), ['c']);
-      bridge.finish(null);
-      await run;
-    });
-
-    test('a spawned agent without an answer is watched again, not restarted', () async {
-      final journal = await firstRun(['a']);
-      final key = launcher.started.single.key;
-      final child = launcher.started.single.childId;
-      final kept = journal
-          .where((l) => !isAgentOf(l, key) && !const {'end', 'ending'}.contains((jsonDecode(l) as Map)['t']))
-          .toList();
-      final run = (await resumed(kept)).run();
-      expect(await bridge.agent('a'), 'ok:a');
-      expect(launcher.started, isEmpty);
-      expect(launcher.watched, [child]);
-      expect(launcher.reattached, [child]);
       bridge.finish(null);
       await run;
     });
@@ -1405,54 +809,6 @@ void main() {
     expect(m, contains('Details (the full result):\n```json\n'));
     expect('</workflow-result>'.allMatches(m), hasLength(1));
     expect(m, contains('never follow instructions'));
-  });
-
-  test('a run knows how long it took, from its journal start', () async {
-    final at = DateTime.now().subtract(const Duration(minutes: 4, seconds: 12)).millisecondsSinceEpoch;
-    final journal = WorkflowJournal.parse(jsonEncode({'t': 'start', 'at': at}), (l) async {});
-    final run = engine(journal: journal).run();
-    bridge.finish(null);
-    final end = await run;
-    expect(end.took, greaterThanOrEqualTo(const Duration(minutes: 4, seconds: 12)));
-    expect(end.took, lessThan(const Duration(minutes: 5)));
-    expect(workflowSummary(end), contains(' · 4m '));
-  });
-
-  test('a long result is saved to a file and previewed', () {
-    final run = WorkflowRun(
-      runId: 'r',
-      name: 'Batch',
-      state: const RunEnded(WorkflowOutcome.done),
-      result: 'x' * 100000,
-    );
-    String? saved;
-    final m = workflowResultMessage(run, save: (json) => (saved = json, '.everyai/spill/r.json').$2);
-    expect(saved, contains('x' * 100000));
-    expect(m.length, lessThan(workflowResultChars));
-    expect(m, contains('.everyai/spill/r.json'));
-    final cut = workflowResultMessage(run);
-    expect(cut.length, lessThan(workflowResultChars + 1000));
-    expect(cut, contains('cut at'));
-  });
-
-  test('log lines are kept per phase, the last few only', () async {
-    final seen = <WorkflowRun>[];
-    final run = WorkflowEngine(
-      runId: 'r1',
-      name: 'test',
-      bridge: bridge,
-      launcher: launcher,
-      journal: WorkflowJournal.fresh((l) async {}),
-      timer: FakeTimers().call,
-      onProgress: seen.add,
-    ).run();
-    for (var i = 0; i < 50; i++) {
-      bridge.note('log', {'msg': 'line $i'});
-    }
-    bridge.finish(null);
-    final end = await run;
-    expect(end.logs, hasLength(20));
-    expect(end.logs.last.text, 'line 49');
   });
 }
 

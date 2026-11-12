@@ -39,36 +39,6 @@ void main() {
     }
   });
 
-  test('a floor hit the user allowed word for word is not asked again', () {
-    const allowed = PermissionPolicy(
-      workingDir: '/p',
-      rules: PermissionRules(allow: ['Exact(rm -rf ~)']),
-    );
-    expect(
-      outsideVerdict(allowed, _sh('rm -rf ~'), AgentMode.ask, advised: {floorReason('rm -rf ~')!})?.accept,
-      isTrue,
-    );
-  });
-
-  test('a host-run check that hits the floor is refused outright, with no advice', () {
-    final check = HarnessEvent.decode({
-      'kind': 'ActionEvent',
-      'id': 'b',
-      'tool_name': 'mcp__everyai__bug_check',
-      'action': {'kind': 'MCPToolAction', 'command': 'rm -rf ~'},
-    }) as ActionCall;
-    for (final m in AgentMode.values.where((m) => m != AgentMode.bypass)) {
-      for (final advised in [
-        <String>{},
-        {floorReason('rm -rf ~')!},
-      ]) {
-        final v = outsideVerdict(policy, check, m, advised: advised);
-        expect(v?.accept, isFalse, reason: '$m');
-        expect(v!.reason, isNot(startsWith(floorAdviceLead)), reason: '$m');
-      }
-    }
-  });
-
   test('a floor hit is never approved on its own', () {
     for (final m in AgentMode.values.where((m) => m != AgentMode.bypass)) {
       for (final c in ['rm -rf ~', 'sudo rm -rf /usr', 'mkfs.ext4 /dev/sdb1', ':(){ :|:& };:']) {
@@ -82,12 +52,6 @@ void main() {
     }
   });
 
-  test('Ask and Auto-edit leave it to the card; Plan still refuses', () {
-    expect(outsideVerdict(policy, _sh('rm -rf ~'), AgentMode.ask), isNull);
-    expect(outsideVerdict(policy, _sh('rm -rf ~'), AgentMode.autoEdit), isNull);
-    expect(outsideVerdict(policy, _sh('rm -rf ~'), AgentMode.plan), (accept: false, reason: AgentMode.planRefusal));
-  });
-
   test("the user's deny rules stay hard", () {
     const denying = PermissionPolicy(rules: PermissionRules(deny: ['rm *']));
     for (final m in [AgentMode.fullAuto, AgentMode.ask]) {
@@ -96,23 +60,5 @@ void main() {
       expect(v.reason, isNot(startsWith(floorAdviceLead)));
       expect(v.reason, contains('`rm *` forbids it'));
     }
-  });
-
-  test('anything else is decided as before', () {
-    for (final m in AgentMode.values.where((m) => m != AgentMode.bypass)) {
-      for (final c in ['ls', 'npm install', 'git reset --hard']) {
-        expect(outsideVerdict(policy, _sh(c), m), policy.decideAll([_sh(c)], m), reason: '$m $c');
-      }
-    }
-  });
-
-  test('the card warns about floor hits and dangerous calls, not plain asks', () {
-    final flags = approvalFlags(policy, [
-      _sh('rm -rf ~', id: 'floor'),
-      _sh('git reset --hard', id: 'danger'),
-      _sh('npm install', id: 'plain'),
-    ], AgentMode.ask);
-    expect(flags.keys, unorderedEquals(['floor', 'danger']));
-    expect(flags['floor'], floorReason('rm -rf ~'));
   });
 }

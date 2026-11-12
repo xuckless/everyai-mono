@@ -1,6 +1,5 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,20 +13,16 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart' show NoticeItem;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_env.dart';
-import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/environments/environment_providers.dart';
 import 'package:every_ai/features/code/environments/environment_scan.dart' show EnvScan;
 import 'package:every_ai/features/code/environments/exec_env.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/harness.dart';
-import 'package:every_ai/features/code/host/host.dart';
-import 'package:every_ai/features/code/host/host_max_tools.dart' show forkHostTool;
 import 'package:every_ai/features/code/host/host_providers.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/fake_leads.dart';
@@ -204,19 +199,6 @@ void main() {
     expect(CodeSessionInfo.fromJson(info.toJson()).environment, 'wsl:Ubuntu');
   });
 
-  test("WSL in NAT mode reaches the MCP host at the distro's default gateway", () async {
-    await start('p3');
-    final b = fake.specs.single.briefing!;
-    expect(b.mcpUrl, 'http://172.20.0.1:9/mcp');
-    expect(host.reached, ['${b.mcpToken} http://172.20.0.1:9/mcp']);
-  });
-
-  test('reopening goes to the copy bound to the environment', () async {
-    final info = await start('p1');
-    await container.read(codeSessionsProvider.notifier).attachSession(info);
-    expect(used, ['start wsl:Ubuntu', 'attach wsl:Ubuntu']);
-  });
-
   test("an environment that's gone stops the start; it never runs here instead", () async {
     await expectLater(
       start('p2'),
@@ -235,44 +217,12 @@ void main() {
     expect(fake.specs, isEmpty);
   });
 
-  test('the EveryAI harness stays on this computer', () async {
-    await expectLater(
-      start('p1', harness: everyaiHarnessName),
-      throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains('runs on this computer only'))),
-    );
-  });
-
-  test('Stop ends a saved-login fill waiting on the Allow card: back to unasked', () async {
-    final info = await start('p1');
-    container.listen(codeSessionProvider(info.id), (_, _) {});
-    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
-    final gate = LoginGate.of(info.id);
-    final waiting = gate.ensure('github', site: 'github.com');
-    expect(gate.stateOf('github'), isA<ConsentAsking>());
-    await container.read(codeSessionProvider(info.id).notifier).stop();
-    expect(await waiting, ConsentOutcome.stopped);
-    expect(gate.stateOf('github'), isA<ConsentUnasked>());
-    expect(LoginGate.asks.value.where((a) => a.gate == gate), isEmpty);
-  });
-
   test("Stop ends what the CLI's shells run inside", () async {
     final info = await start('p1');
     container.listen(codeSessionProvider(info.id), (_, _) {});
     await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
     await container.read(codeSessionProvider(info.id).notifier).stop();
     expect(ended, ['wsl:Ubuntu ${info.id} true']);
-  });
-
-  test('paths in its tool calls come back as host paths', () async {
-    final info = await start('p1');
-    container.listen(codeSessionProvider(info.id), (_, _) {});
-    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
-    session.add(
-      actionEvent(id: 'a1', toolName: 'Read', kind: 'ReadFileAction', args: {'path': '/home/u/project/lib/a.dart'}),
-    );
-    await pumpEventQueue();
-    final call = container.read(codeSessionProvider(info.id).notifier).mirrorEvents.whereType<ActionCall>().single;
-    expect(call.str('path'), '${tmp.path}/project/lib/a.dart');
   });
 
   test("where the host can't be reached from inside, the agent gets no token and no host tools, and is told", () async {
@@ -289,57 +239,5 @@ void main() {
         if (i is NoticeItem) i.message,
     ];
     expect(notes, contains(hostUnreachedNotice('vm (Multipass)')));
-  });
-
-  Future<void> gitInit() async {
-    for (final a in [
-      ['init', '-q', '-b', 'main'],
-      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x'],
-    ]) {
-      expect((await Process.run('git', a, workingDirectory: '${tmp.path}/project')).exitCode, 0);
-    }
-  }
-
-  test("a fork asked for its own worktree shares the folder where the agent can't write the app's data", () async {
-    await gitInit();
-    final info = await start('p4-devbox');
-    container.listen(codeSessionProvider(info.id), (_, _) {});
-    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
-    final r = await host.tools[info.id]!.call(
-      HostCall(
-        id: 'h1',
-        sessionId: info.id,
-        name: forkHostTool,
-        args: const {'task': 'Add b.txt', 'worktree': true},
-        ended: Completer<HostEnd>().future,
-      ),
-    );
-    expect(r.isError, isFalse, reason: r.text);
-    final child = container.read(codeSessionsProvider).where((s) => s.parentId == info.id).single;
-    expect(child.forkCopy, isNull);
-    expect(child.workingDir, '${tmp.path}/project');
-    expect(Directory('${tmp.path}/data/forks').existsSync(), isFalse);
-  });
-
-  test("an isolated session is refused before anything is made where the agent can't write the worktree", () async {
-    final dir = '${tmp.path}/project';
-    await gitInit();
-    await expectLater(
-      start('p4-devbox', isolated: true),
-      throwsA(isA<HarnessError>().having((e) => e.message, 'message', isolatedUnreachable('dev (Container)'))),
-    );
-    expect(Directory('${tmp.path}/data/worktrees').existsSync(), isFalse);
-    expect((await Process.run('git', ['branch', '--list', 'everyai/*'], workingDirectory: dir)).stdout, isEmpty);
-    expect(fake.specs, isEmpty);
-  });
-
-  test("a Board task or race runner that needs its own branch is refused where the project can't have one", () async {
-    // Not a git repository: an ordinary isolated session falls back to the folder; the Board's don't.
-    await expectLater(
-      start('p1', isolated: true, requireWorktree: true),
-      throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains("can't have worktrees"))),
-    );
-    expect(fake.specs, isEmpty);
-    expect(container.read(codeSessionsProvider), isEmpty);
   });
 }

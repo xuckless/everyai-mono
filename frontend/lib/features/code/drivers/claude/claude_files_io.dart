@@ -1,10 +1,10 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import '../../harness/everyai/shell_io.dart' show ShellEnv;
+import '../short_run.dart';
 
 Future<String?> readTextFile(String path) async {
   try {
@@ -25,19 +25,30 @@ Future<void> writeTextFile(String path, String text) async {
 
 Future<void> makeDir(String path) => Directory(path).create(recursive: true);
 
+/// [executable] [args]'s output, or null when it can't start or runs past 10 s (then it is stopped, verified,
+/// with what it started; the log says when that isn't proven).
 Future<String?> runQuiet(String executable, List<String> args) async {
+  final ShellEnv shell;
   try {
-    final shell = await ShellEnv.load();
-    final res = await Process.run(
-      executable,
-      args,
-      environment: shell.env,
-      stdoutEncoding: const Utf8Codec(allowMalformed: true),
-    ).timeout(const Duration(seconds: 10));
-    return '${res.stdout}';
+    shell = await ShellEnv.load();
   } on Object {
     return null;
   }
+  final r = await runShort(
+    executable,
+    args,
+    timeout: const Duration(seconds: 10),
+    env: shell.env,
+    owner: const ProbeOwner('claude-auth'),
+  );
+  return switch (r) {
+    Finished(:final stdout) => stdout,
+    TimedOut(:final kill) || Cancelled(:final kill) => () {
+      logStop('$executable ${args.join(' ')}', kill);
+      return null;
+    }(),
+    StartFailed() || Refused() => null,
+  };
 }
 
 Future<bool> claudeSessionExists(String cwd, String id, {String? configDir}) async {

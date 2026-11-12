@@ -1,18 +1,24 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
-
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../net/api_client.dart';
 import '../net/http_client.dart';
+import '../process/process_model.dart';
 import 'local_backend.dart';
 
 /// The bundled server; stopped when the app quits (provider disposal doesn't run then).
 final localBackendProvider = Provider<LocalBackend>((ref) {
   final backend = createLocalBackend();
-  // Quitting stops it through localShutdownProvider (local_model_bridge.dart).
-  ref.onDispose(() => unawaited(backend.stop()));
+  // Quitting stops it through appQuitProvider (app/app_quit.dart). Here (a test's container, a hot
+  // restart) the stop's outcome is logged when it isn't a checked end.
+  ref.onDispose(() {
+    backend.stop().then(
+      (o) => o is Ended ? null : debugPrint('NOT CLOSED: the bundled server at dispose: $o'),
+      onError: (Object e) => debugPrint('NOT CLOSED: the bundled server at dispose: the stop failed: $e'),
+    );
+  });
   return backend;
 });
 

@@ -2,6 +2,9 @@
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import 'tools_io.dart';
 
@@ -59,11 +62,24 @@ bool _hasPlans(String root) {
 /// Whether git tracks [path] in [root]'s repository: a memory file that came
 /// with a cloned repository is someone else's text, so it isn't loaded.
 Future<bool> _tracked(String root, String path) async {
-  try {
-    final r = await Process.run('git', ['ls-files', '--error-unmatch', path], workingDirectory: root);
-    return r.exitCode == 0;
-  } on Object {
-    return false;
+  final r = await ProcessSupervisor.instance.runBounded(
+    'git',
+    ['ls-files', '--error-unmatch', path],
+    timeout: const Duration(seconds: 10),
+    cwd: root,
+    owner: const ProbeOwner('project-notes'),
+    maxOutputBytes: 64 * 1024,
+  );
+  switch (r) {
+    case Finished(:final code):
+      return code == 0;
+    // No git here: nothing can track it.
+    case StartFailed():
+      return false;
+    // It hung or the app quits: unknown, so it counts as the repository's (not loaded), and the log says so.
+    case TimedOut() || Cancelled() || Refused():
+      debugPrint('Project memory $path not loaded: git could not say whether it is tracked ($r).');
+      return true;
   }
 }
 

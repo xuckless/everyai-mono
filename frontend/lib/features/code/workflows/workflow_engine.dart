@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../../../core/process/process_model.dart' show Ended;
 import '../domain/plan_batches.dart';
 import '../harness/events.dart' show PlanWindow;
 import 'json_schema_lite.dart';
@@ -866,22 +867,34 @@ final class WorkflowEngine {
         }),
       );
     }
+    _leftovers.clear();
     for (final step in ShutdownStep.values) {
       _to(RunShuttingDown(step, outcome));
       try {
         await _step(step, outcome).timeout(stepTimeout);
       } on Object catch (e) {
-        _log('Shutting down (${step.name}): ${e is TimeoutException ? 'took too long, moved on' : e}');
+        final why = e is TimeoutException ? 'did not finish within ${stepTimeout.inSeconds} s' : '$e';
+        _leftovers.add('${step.name}: $why');
+        _log('NOT CLOSED: shutting down (${step.name}): $why');
       }
     }
-    _to(RunEnded(outcome));
+    _to(RunEnded(outcome, leftovers: List.unmodifiable(_leftovers)));
     return snapshot;
   }
+
+  /// What this run's shutdown left (see [RunEnded.leftovers]).
+  final _leftovers = <String>[];
 
   Future<void> _step(ShutdownStep step, WorkflowOutcome outcome) async {
     switch (step) {
       case ShutdownStep.script:
-        bridge?.kill();
+        if (bridge case final b?) {
+          final stopped = await b.stop();
+          if (stopped is! Ended) {
+            _leftovers.add('script: $stopped');
+            _log('NOT CLOSED: the workflow script: $stopped');
+          }
+        }
       case ShutdownStep.agents:
         // done() came while agents still ran, or the run was stopped: what is still going stops now.
         _stopAgents(outcome == WorkflowOutcome.done ? 'Stopped: the workflow ended.' : (_error ?? 'Stopped.'));

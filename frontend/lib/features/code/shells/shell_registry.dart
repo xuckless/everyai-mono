@@ -3,8 +3,10 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
+import '../../../core/process/child_state.dart';
+import '../../../core/process/process_model.dart' show Ended, KillOutcome, ScanFailed, Survived;
 import 'terminal_text.dart';
 
 /// Who started a shell.
@@ -34,8 +36,78 @@ abstract interface class LiveShell {
 
   void write(Uint8List data);
   void resize(int rows, int columns);
+
+  /// Ends it with a verified stop; the entry's [ShellEntry.state] says how that went (not closed stays listed).
   Future<void> stop();
 }
+
+/// Where a shell's process is, as its supervisor child says (see `ChildState`): the Processes tab, the terminal
+/// tab that follows it and the agent's tools read this, never a guess.
+///
+/// ```text
+///   running ──TERM/KILL──▶ stopping ──exit──▶ exited(code)
+///      │                      │ survivors ──▶ notClosed(pids) ──exit──▶ exited
+///      └──────────exit──────────────────────────────▲   exited ──its group left processes──▶ notClosed
+/// ```
+@immutable
+sealed class ShellState {
+  const ShellState();
+}
+
+final class ShellRunning extends ShellState {
+  const ShellRunning(this.pid);
+  final int? pid;
+  @override
+  String toString() => 'running($pid)';
+}
+
+/// A stop is under way (SIGTERM or SIGKILL sent).
+final class ShellStopping extends ShellState {
+  const ShellStopping(this.pid);
+  final int? pid;
+  @override
+  String toString() => 'stopping($pid)';
+}
+
+final class ShellExited extends ShellState {
+  const ShellExited(this.code, this.at);
+
+  /// Its own exit code; null when its end was seen by a check (the code is unknown).
+  final int? code;
+  final DateTime at;
+  @override
+  String toString() => 'exited($code)';
+}
+
+/// Still running after SIGKILL (or not checkable): it stays listed, loudly.
+final class ShellNotClosed extends ShellState {
+  const ShellNotClosed(this.pids, this.reason);
+  final List<int> pids;
+  final String reason;
+  @override
+  String toString() => 'notClosed($pids: $reason)';
+}
+
+/// The shell state a supervisor child's [s] means.
+ShellState shellStateOf(ChildState s) => switch (s) {
+  ChildStarting() => const ShellRunning(null),
+  ChildLaunched(:final pid) || ChildUnverified(:final pid) => ShellRunning(pid),
+  ChildRunning(:final pid) => ShellRunning(pid),
+  ChildTerming(:final id) || ChildKilling(:final id) => ShellStopping(id.pid),
+  ChildExited(:final code, :final at) => ShellExited(code, at),
+  ChildNotClosed(:final survivors, :final reason) => ShellNotClosed([for (final p in survivors) p.pid], reason),
+  ChildStartFailed() => ShellExited(null, DateTime.now()),
+  // Its pid turned out not to be the process started (gone or reused): never signalled, so not known closed.
+  ChildDisowned(:final pid, :final why) => ShellNotClosed([pid], 'not ours any more: $why'),
+};
+
+/// [o] in words, for tool results and notes: what is still running and why.
+String killOutcomeText(KillOutcome o) => switch (o) {
+  Ended(maybeEscaped: []) => 'stopped',
+  Ended(:final maybeEscaped) => 'stopped (warning: pids ${maybeEscaped.join(', ')} may have left its tree unseen)',
+  Survived(:final pids, :final reason) => 'not closed: pids ${pids.join(', ')} $reason',
+  ScanFailed(:final why) => 'not closed: its end could not be checked ($why)',
+};
 
 /// One process EveryAI started (or watches) for a session: what it runs, how
 /// it ended, and where its whole output is kept.
@@ -52,9 +124,11 @@ final class ShellEntry {
     this.pid,
     this.logPath,
     this.pty = false,
-    this.live,
+    LiveShell? live,
     DateTime? startedAt,
-  }) : startedAt = startedAt ?? DateTime.now();
+  }) : startedAt = startedAt ?? DateTime.now(),
+       _live = live, // ignore: prefer_initializing_formals
+       _state = ShellRunning(pid);
 
   /// Unique in the registry (a fork's shells share its parent's [session] and may reuse its ids).
   final String key;
@@ -69,7 +143,9 @@ final class ShellEntry {
 
   /// A background shell (else a foreground command, read-only once it ends).
   final bool background;
-  int? pid;
+
+  /// The pid it was started with (kept after it ends, for the record).
+  final int? pid;
 
   /// Its raw output on disk (see `ShellLog`), or null when nothing is kept.
   final String? logPath;
@@ -77,14 +153,36 @@ final class ShellEntry {
   /// Whether the output came from a pseudo-terminal (CRLF line ends already).
   final bool pty;
   final DateTime startedAt;
-  DateTime? endedAt;
+
+  ShellState _state;
+
+  /// Where its process is (see [ShellState]); changed through [ShellRegistry.setState] and [ShellRegistry.follow].
+  ShellState get state => _state;
+
+  /// When it was seen to end (null while it runs or isn't closed).
+  DateTime? get endedAt => switch (_state) {
+    ShellExited(:final at) => at,
+    _ => null,
+  };
+
+  /// Its exit code once it ended (null while it runs, isn't closed, or its code is unknown).
+  int? get exitCode => switch (_state) {
+    ShellExited(:final code) => code,
+    _ => null,
+  };
 
   /// When it last printed something (a workflow's stall check counts that as progress).
   DateTime? lastOutputAt;
-  int? exitCode;
 
-  /// Set while it runs and we hold its ends.
-  LiveShell? live;
+  LiveShell? _live;
+
+  /// Its live end while its process is there (null once it ended).
+  LiveShell? get live => _state is ShellExited ? null : _live;
+  set live(LiveShell? l) => _live = l;
+
+  // Cancelled by the registry when the entry is trimmed or its session forgotten.
+  // ignore: cancel_subscriptions
+  StreamSubscription<ChildState>? _following;
 
   /// Runs its command again (a background shell the agent started; null otherwise).
   Future<void> Function()? restart;
@@ -127,7 +225,11 @@ final class ShellEntry {
     return b.toBytes();
   }
 
-  bool get running => endedAt == null;
+  /// Whether its process may still be there: running, stopping, or not closed (see [notClosed]).
+  bool get running => _state is! ShellExited;
+
+  /// Whether a stop left it (or what it started) running.
+  bool get notClosed => _state is ShellNotClosed;
 
   /// A label for tabs and rows: the description, else the command's start.
   String get title {
@@ -180,13 +282,20 @@ final class ShellRegistry {
     _changes.add(e.session);
   }
 
-  /// Marks [e] ended with [exitCode].
-  void ended(ShellEntry e, int exitCode) {
-    e
-      ..exitCode = exitCode
-      ..endedAt = DateTime.now()
-      ..live = null;
+  /// Marks [e] ended with [exitCode] (its own exit future said so).
+  void ended(ShellEntry e, int exitCode) => setState(e, ShellExited(exitCode, DateTime.now()));
+
+  /// Moves [e] to [state] (what its process's supervisor child says).
+  void setState(ShellEntry e, ShellState state) {
+    e._state = state;
     _changes.add(e.session);
+  }
+
+  /// Keeps [e]'s state with its supervisor child's: [now], then every change on [changes].
+  void follow(ShellEntry e, ChildState now, Stream<ChildState> changes) {
+    unawaited(e._following?.cancel());
+    setState(e, shellStateOf(now));
+    e._following = changes.listen((s) => setState(e, shellStateOf(s)));
   }
 
   void changed(ShellEntry e) => _changes.add(e.session);
@@ -203,7 +312,12 @@ final class ShellRegistry {
 
   /// Forgets [session]'s shells (the session was removed).
   void forget(String session) {
-    if (_bySession.remove(session) != null) _changes.add(session);
+    final gone = _bySession.remove(session);
+    if (gone == null) return;
+    for (final e in gone.values) {
+      unawaited(e._following?.cancel());
+    }
+    _changes.add(session);
   }
 
   /// Foreground commands kept per session (the oldest finished ones are forgotten; their logs stay on disk).
@@ -219,6 +333,7 @@ final class ShellRegistry {
     ];
     for (final e in done.take(done.length - keptForeground < 0 ? 0 : done.length - keptForeground)) {
       m.remove(e.key);
+      unawaited(e._following?.cancel());
     }
   }
 }

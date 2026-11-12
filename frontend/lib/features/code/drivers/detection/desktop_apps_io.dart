@@ -1,9 +1,9 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
+import '../short_run.dart';
 import 'desktop_apps.dart';
 
 List<String> _listDir(String dir) {
@@ -22,19 +22,23 @@ String? _readFile(String path) {
   }
 }
 
+/// `reg query` output, or '' when it fails or runs past 3 s (then it is stopped, verified).
 Future<String> _reg(String executable, List<String> args) async {
-  final proc = await Process.start(executable, args);
-  final out = proc.stdout.transform(utf8.decoder).join();
-  unawaited(proc.stderr.drain<void>());
-  // Killed when it runs out (`Process.run(...).timeout` would leave it running).
-  final code = await proc.exitCode.timeout(
-    const Duration(seconds: 3),
-    onTimeout: () {
-      proc.kill();
-      return -1;
-    },
+  final r = await runShort(
+    executable,
+    args,
+    timeout: const Duration(seconds: 3),
+    owner: const ProbeOwner('desktop-apps'),
   );
-  return code == 0 ? await out : '';
+  switch (r) {
+    case Finished(code: 0, :final stdout):
+      return stdout;
+    case TimedOut(:final kill) || Cancelled(:final kill):
+      logStop('$executable ${args.join(' ')}', kill);
+      return '';
+    case Finished() || StartFailed() || Refused():
+      return '';
+  }
 }
 
 String get _home => Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';

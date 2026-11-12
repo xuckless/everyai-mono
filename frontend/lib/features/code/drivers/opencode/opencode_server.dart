@@ -6,10 +6,12 @@ import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import '../../../../core/process/supervisor.dart' show Ended, KillOutcome;
 import '../../environments/exec_env.dart';
 import '../../harness/harness.dart';
 import '../briefing/recipes.dart';
 import '../driver_process.dart';
+import '../short_run.dart' show logStop;
 
 /// A private `opencode serve` for one session: its [base] URL on loopback,
 /// with a password of its own (HTTP Basic, user `opencode`). OpenCode keeps
@@ -17,7 +19,8 @@ import '../driver_process.dart';
 final class OpenCodeServer {
   OpenCodeServer({required this.base, required String password, required this.client, this.process})
     : authHeader = 'Basic ${base64.encode(utf8.encode('opencode:$password'))}' {
-    unawaited(process?.exitCode.then((_) => _exited = true));
+    // Its own exit (the process's exit future), never the end of its output.
+    unawaited(process?.exitCode.then((_) => _exited = true, onError: (Object _) => _exited = true));
   }
 
   final Uri base;
@@ -28,7 +31,7 @@ final class OpenCodeServer {
   final DriverProcess? process;
   var _exited = false;
 
-  /// Whether the process has ended.
+  /// Whether the process has been seen to exit.
   bool get exited => _exited;
 
   /// Calls the API: the decoded JSON reply, null for an empty one. A reply
@@ -81,12 +84,13 @@ final class OpenCodeServer {
     }
   }
 
-  /// Ends the server and everything it runs (once, however often it's asked).
-  Future<void> close() => _closing ??= () async {
+  /// Ends the server and everything it runs, verified (once, however often it's asked); Ended for a server the
+  /// app didn't start.
+  Future<KillOutcome> close() => _closing ??= () async {
     client.close();
-    await process?.close();
+    return await process?.close() ?? const Ended([]);
   }();
-  Future<void>? _closing;
+  Future<KillOutcome>? _closing;
 
   static String _errorText(String body) {
     try {
@@ -192,6 +196,8 @@ Future<OpenCodeServer> launchOpenCode({
           logPath: logPath,
           env: serveEnv,
           execEnv: execEnv,
+          // A server: it doesn't read its input.
+          closeInputFirst: false,
         ));
   OpenCodeServer? server;
   try {
@@ -212,7 +218,7 @@ Future<OpenCodeServer> launchOpenCode({
     await server.verify();
     return server;
   } on Object {
-    await (server?.close() ?? process.close());
+    logStop("OpenCode's server (didn't start)", await (server?.close() ?? process.close()));
     rethrow;
   }
 }

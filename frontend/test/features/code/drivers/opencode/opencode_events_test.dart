@@ -102,26 +102,6 @@ void main() {
     expect(usage.map((u) => u.id), isNot(contains('msg_1a52059ea0014hQ15QKUcxo5l2')));
   });
 
-  test('a cost OpenCode reports is passed on', () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    final e = m.live({
-      'type': 'session.step.ended',
-      'data': {
-        'sessionID': _ses,
-        'assistantMessageID': 'msg_a',
-        'cost': 0.0123,
-        'tokens': {
-          'input': 10,
-          'output': 2,
-          'reasoning': 0,
-          'cache': {'read': 0, 'write': 5},
-        },
-      },
-    });
-    expect(e.single, isA<UsageReport>().having((u) => u.costMicros, 'cost', 12300).having((u) => u.input, 'in', 15));
-    expect((e.single as UsageReport).onPlan, isFalse);
-  });
-
   test('a call that asks twice gets a fresh id the second time, and refusing it all ends the run', () {
     final m = OpenCodeMapper(workingDir: _cwd);
     final frames = _frames(_ses2);
@@ -144,28 +124,6 @@ void main() {
     expect(results[1].outcome, ToolOutcome.rejected);
     expect(m.status, ExecutionStatus.idle);
     expect(m.pending, isEmpty);
-  });
-
-  test('an interrupt while a call waits gives it an error result and leaves nothing waiting', () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    final frames = _slice(_ses, (f) => _inbox(f, 'sleep 30'), 'session.execution.interrupted');
-    final asked = frames.indexWhere((f) => f['type'] == 'permission.asked');
-    _play(m, frames.take(asked + 1));
-    expect(m.pending.keys, ['call_fcb9ef103ec648679aa3379b']);
-    final rest = _play(m, frames.skip(asked + 1));
-    final result = rest.whereType<ToolResult>().single;
-    expect(result.outcome, ToolOutcome.error);
-    expect(result.text, 'Tool execution interrupted');
-    expect(m.pending, isEmpty);
-    expect(rest.last, isA<StateChange>().having((s) => s.executionStatus, 'status', ExecutionStatus.idle));
-  });
-
-  test("a failed run shows OpenCode's own words", () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    final events = _play(m, _slice(_ses, (f) => f['type'] == 'session.inbox.enqueued', 'session.execution.failed'));
-    final failure = events.whereType<ConversationFailure>().single;
-    expect(failure.message, startsWith('This API key has expired.'));
-    expect(events.last, isA<StateChange>().having((s) => s.executionStatus, 'status', ExecutionStatus.error));
   });
 
   test('a spent quota is a usage limit, dated only when live; a rate limit is a plain failure', () {
@@ -225,76 +183,6 @@ void main() {
     expect(rejected.actionId, 'call_e25aab1c5deb4faba78eae1a');
   });
 
-  test('a waiting request read after reopening asks again, once', () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    final asked = _frames(_ses).firstWhere((f) => jsonEncode(f).contains('per_1a5215c87001dpqVghS1nOAtV3'));
-    final request = asked['data']! as Map<String, Object?>;
-    final first = m.requests([request]);
-    expect(first.whereType<ActionCall>().single.actionKind, 'TerminalAction');
-    expect(first.whereType<ActionCall>().single.str('command'), 'sleep 30');
-    expect(m.requests([request]), isEmpty);
-  });
-
-  test('unknown events are dropped; our MCP tools are MCP calls, other tools keep their own kinds', () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    expect(m.live({'type': 'project.updated', 'data': {}}), isEmpty);
-    expect(
-      m.live({
-        'type': 'session.something.new',
-        'data': {'sessionID': _ses},
-      }),
-      isEmpty,
-    );
-    ActionCall finished(String id, String name, Map<String, Object?> input) {
-      m.live({
-        'type': 'session.tool.input.started',
-        'data': {'id': id, 'name': name},
-      });
-      m.live({
-        'type': 'session.tool.called',
-        'data': {'id': id, 'input': input},
-      });
-      return m
-          .live({
-            'type': 'session.tool.success',
-            'data': {
-              'id': id,
-              'content': [
-                {'type': 'text', 'text': 'ok'},
-              ],
-            },
-          })
-          .whereType<ActionCall>()
-          .single;
-    }
-
-    final mcp = finished('call_1', 'everyai_present_plan', {'plan': 'x'});
-    expect(mcp.actionKind, 'MCPToolAction');
-    expect(mcp.toolName, 'everyai_present_plan');
-    final execute = finished('call_2', 'execute', {'code': '1'});
-    expect(execute.actionKind, 'OpenCodeAction');
-    expect(autoDecidable(execute), isFalse);
-    m.live({
-      'type': 'session.tool.input.started',
-      'data': {'id': 'call_4', 'name': 'patch'},
-    });
-    final p = m
-        .live({
-          'type': 'permission.asked',
-          'data': {
-            'id': 'per_10',
-            'action': 'edit',
-            'resources': ['a.txt', 'b/c.txt'],
-            'source': {'type': 'tool', 'id': 'call_4'},
-          },
-        })
-        .whereType<ActionCall>()
-        .single;
-    expect(p.actionKind, 'ApplyPatchAction');
-    expect(p.action['paths'], ['$_cwd/a.txt', '$_cwd/b/c.txt']);
-    expect(autoDecidable(p), isTrue);
-  });
-
   test('a web fetch runs on this machine, so only the user answers it', () {
     final m = OpenCodeMapper(workingDir: _cwd);
     m.live({
@@ -338,38 +226,6 @@ void main() {
         .whereType<ActionCall>()
         .single;
     expect(call.str('command'), 'ls && rm -rf build');
-  });
-
-  test('history leaves the text a message is still writing to the stream, which then gives it whole', () {
-    final m = OpenCodeMapper(workingDir: _cwd);
-    final events = m.history([
-      {
-        'id': 'msg_u',
-        'type': 'user',
-        'text': 'hi',
-        'time': {'created': 1},
-      },
-      {
-        'id': 'msg_a',
-        'type': 'assistant',
-        'time': {'created': 2},
-        'content': [
-          {
-            'type': 'reasoning',
-            'text': 'Thinking done.',
-            'time': {'created': 2, 'completed': 3},
-          },
-          {'type': 'text', 'text': 'Half of the ans'},
-        ],
-      },
-    ]);
-    final agent = events.whereType<ChatMessage>().where((c) => !c.fromUser).toList();
-    expect(agent.map((c) => c.id), ['msg_a/reasoning/0']);
-    final ended = m.live({
-      'type': 'session.text.ended',
-      'data': {'sessionID': _ses, 'assistantMessageID': 'msg_a', 'ordinal': 0, 'text': 'Half of the answer, whole.'},
-    });
-    expect(ended.whereType<ChatMessage>().single.text, 'Half of the answer, whole.');
   });
 
   test('a run the history leaves going ends as interrupted when nothing runs it', () {

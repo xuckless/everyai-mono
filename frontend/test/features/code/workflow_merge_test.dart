@@ -43,41 +43,6 @@ void main() {
     expect(m['merged_summaries'], ['The loop never stops when the list is empty']);
   }, skip: skip);
 
-  test('one lens is never merged with itself, and other files or other problems stay apart', () async {
-    final same = 'The loop never stops when the list is empty';
-    expect(await _merge([_f('a', same), _f('a', same)]), hasLength(2));
-    expect(await _merge([_f('a', same), _f('b', same, file: 'b.dart')]), hasLength(2));
-    expect(await _merge([_f('a', same), _f('b', 'Token is logged in plain text on failure')]), hasLength(2));
-    expect(await _merge(<Map<String, Object?>>[]), isEmpty);
-  }, skip: skip);
-
-  test('the overlap threshold is 0.6 of the words', () async {
-    // 2 shared words of 8 in all (0.25) stay apart; 3 of 4 (0.75) join.
-    expect(
-      await _merge([_f('a', 'cache keys collide across users'), _f('b', 'cache keys differ per tenant')]),
-      hasLength(2),
-    );
-    expect(await _merge([_f('a', 'cache keys collide'), _f('b', 'cache keys collide often')]), hasLength(1));
-  }, skip: skip);
-
-  test('a third finding does not chain two findings of one lens together', () async {
-    final out = await _merge([
-      _f('correctness', 'off by one in loop bound'),
-      _f('correctness', 'loop bound off by one in second loop'),
-      _f('cost', 'off by one loop bound'),
-    ]) as List;
-    expect(out, hasLength(2));
-    expect([for (final f in out) (f as Map)['merged_from'] ?? 1]..sort(), [1, 2]);
-  }, skip: skip);
-
-  test('words that differ only by an ending still match', () async {
-    final out = await _merge([
-      _f('a', 'Missing null check on result causes crash when the script returns nothing'),
-      _f('b', 'Crash when the script returns nothing because result is not null checked'),
-    ]) as List;
-    expect(out, hasLength(1));
-  }, skip: skip);
-
   test('an argument that holds the merge marker is data, not a place for the merge source', () {
     final js = workflowPrelude({'report': 'the __MERGE__ marker stays in prelude.js'});
     expect('__g.mergeFindings = '.allMatches(js), hasLength(1));

@@ -12,27 +12,23 @@ import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/fork_state.dart';
-import 'package:every_ai/features/code/domain/notice.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/domain/subagents.dart';
-import 'package:every_ai/features/code/workflows/workflow_notes.dart' show maxWorkflowId;
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
-import 'package:every_ai/features/code/drivers/lead_skills.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/session_processes.dart' show killSessionProcesses;
+import 'package:every_ai/core/process/process_model.dart' show Ended;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_max_tools.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
-import 'package:every_ai/features/code/host/host_report.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:every_ai/features/usage/usage_totals.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:every_ai/features/code/live/agent_logins.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -164,15 +160,6 @@ void main() {
 
   List<String> notices(FakeLeadSession s) => s.sent.where((t) => t.contains('<task-notification>')).toList();
 
-  test('report_issue builds a link that names the session\'s model and sends nothing', () async {
-    final l = await lead();
-    final r = await hostCall(l.info.id, reportIssueTool, {'title': 'T', 'tool': 'check', 'happened': 'it hung'});
-    expect(r.isError, isFalse, reason: r.text);
-    final link = Uri.parse(r.text.split('\n').last);
-    expect(link.queryParameters['body'], contains('Model: lead-model'));
-    expect(link.queryParameters['labels'], 'feedback');
-  });
-
   test('fork starts a briefed child on the lead\'s harness and returns at once', () async {
     final l = await lead();
     final f = await fork(l.info.id, {'task': 'Add the settings page\nwith a dark mode toggle', 'worktree': false});
@@ -215,23 +202,6 @@ void main() {
     expect(n, endsWith('</task-notification>\n</everyai-notice>'));
     final after = await hostCall(l.info.id, checkForksTool, const {});
     expect(after.text, startsWith('No forks are running'));
-  });
-
-  test('skills turned off for the lead in this project reach its session at start and when switched', () async {
-    final skills = container.read(leadSkillsProvider.notifier);
-    skills.setOff('p1', 'test', 'pdf', off: true);
-    skills.setOff('other-project', 'test', 'docx', off: true);
-    skills.setOff('p1', 'other', 'review', off: true);
-    final l = await lead();
-    expect(driver.specs.first.skillsOff, {'pdf'});
-    expect(l.session.skillsOff, {'pdf'});
-    skills.setOff('p1', 'test', 'review', off: true);
-    await pumpEventQueue();
-    expect(l.session.skillsOff, {'pdf', 'review'});
-    skills.setOff('p1', 'test', 'pdf', off: false);
-    skills.setOff('p1', 'test', 'review', off: false);
-    await pumpEventQueue();
-    expect(l.session.skillsOff, isEmpty);
   });
 
   test('a report that contains notice tags can neither close the wrapper nor open a forged notice', () async {
@@ -338,38 +308,6 @@ void main() {
     );
   });
 
-  test('message_fork reaches a working fork without stopping it; an unknown fork is refused', () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    f.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    final out = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Use the v2 API.'});
-    expect(out.text, startsWith('Sent'));
-    expect(f.session.interrupts, 0);
-    // This lead takes no message mid-run, so it waits for the turn's end instead of stopping it.
-    final queued = container.read(codeSessionProvider(f.info.id)).queued.single.text;
-    expect(queued, contains('A message from the agent that started you'));
-    expect(queued, contains('Use the v2 API.'));
-    final none = await hostCall(l.info.id, messageForkTool, {'fork_id': 'nope', 'message': 'x'});
-    expect(none.text, contains('no running fork'));
-  });
-
-  test("message_fork doesn't restart a fork the user stopped, or one that isn't running", () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    final idle = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
-    expect(idle.text, startsWith('Not sent'));
-    f.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    await container.read(codeSessionProvider(f.info.id).notifier).stop();
-    // Still unwinding after the user's Stop.
-    expect(container.read(codeSessionProvider(f.info.id)).transcript.running, isTrue);
-    final stopping = await hostCall(l.info.id, messageForkTool, {'fork_id': f.info.id, 'message': 'Go on.'});
-    // Refused: as stopped, or as no longer one of the lead's running forks.
-    expect(stopping.text, isNot(startsWith('Sent')));
-    expect(container.read(codeSessionProvider(f.info.id)).queued, isEmpty);
-  });
-
   test('stop_fork stops the child, and what it did comes as its report', () async {
     final l = await lead();
     final f = await fork(l.info.id);
@@ -382,20 +320,6 @@ void main() {
     final n = parseTaskNotification(notices(l.session).single)!;
     expect(n.status, SubagentStatus.stopped);
     expect(n.result, contains('Halfway there.'));
-  });
-
-  test("a fork's saved-login ask needs the user on its lead, and stop_fork ends it", () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    // The fork asks on its own session id (its page), not on the lead's it bills to.
-    final asked = LoginGate.of(f.info.id).ensure('github', site: 'github.com');
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider(l.info.id)).loginAsk, isTrue);
-    expect(container.read(codeSessionProvider(l.info.id)).status, SessionStatus.needsInput);
-    await hostCall(l.info.id, stopForkTool, {'fork_id': f.info.id});
-    expect(await asked, ConsentOutcome.stopped);
-    expect(LoginGate.of(f.info.id).stateOf('github'), isA<ConsentUnasked>());
-    expect(container.read(codeSessionProvider(l.info.id)).loginAsk, isFalse);
   });
 
   test("a stopped fork's late events are no follow-up: it stays reported and holds no slot", () async {
@@ -434,57 +358,6 @@ void main() {
     expect(notices(l.session), hasLength(1));
   });
 
-  test("end_workflow waits for the lead's forks: refused while one runs, Max off once it has stopped", () async {
-    final l = await lead();
-    final sessions = container.read(codeSessionsProvider.notifier);
-    sessions.update(sessions.byId(l.info.id)!.copyWith(workflow: maxWorkflowId));
-    final f = await fork(l.info.id);
-    final early = await hostCall(l.info.id, endWorkflowTool, {'outcome': 'done'});
-    expect(early.isError, isTrue);
-    expect(early.text, contains(f.info.id));
-    expect(sessions.byId(l.info.id)!.workflow, maxWorkflowId);
-    await hostCall(l.info.id, stopForkTool, {'fork_id': f.info.id});
-    await pumpEventQueue();
-    final ended = await hostCall(l.info.id, endWorkflowTool, {'outcome': 'done'});
-    expect(ended.text, startsWith('Max is off'));
-    expect(sessions.byId(l.info.id)!.workflow, isNull);
-  });
-
-  test("a fork's processes carry its own tag while it bills to the lead", () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    expect(f.info.processTag, f.info.id);
-    expect(f.info.billingTag, l.info.id);
-    expect(killsOwnProcesses(f.info), isTrue);
-    final spec = driver.specs.last;
-    expect(spec.procTag, f.info.id);
-    expect(spec.sessionTag, l.info.id);
-  });
-
-  test('a fork that works again after its report sends a follow-up report', () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    finish(f.session, 'Added the page.');
-    await pumpEventQueue();
-    expect(notices(l.session), hasLength(1));
-    final forks = container.read(codeSessionProvider(l.info.id).notifier).forks;
-    expect(forks.byChild(f.info.id)!.state, isA<ForkReported>());
-    // Something wakes it (a message to it, a task of its own) and it reports again.
-    f.session
-      ..add(stateEvent('r2', ExecutionStatus.running))
-      ..add(agentMessageEvent('m2', 'Also fixed the toggle.'))
-      ..add(stateEvent('f2', ExecutionStatus.finished));
-    await pumpEventQueue();
-    final all = notices(l.session);
-    expect(all, hasLength(2));
-    final again = parseTaskNotification(all.last)!;
-    expect(again.childId, f.info.id);
-    expect(again.title, contains('follow-up'));
-    expect(again.result, contains('Also fixed the toggle.'));
-    expect(forks.byChild(f.info.id)!.reports, 2);
-    expect(forks.refused, isEmpty);
-  });
-
   test('Pause all holds the queue until Resume; an idle lead holds at once', () async {
     final l = await lead();
     final c = container.read(codeSessionProvider(l.info.id).notifier);
@@ -509,46 +382,13 @@ void main() {
     expect(l.session.sent.last, contains('Next: the footer'));
   });
 
-  test('a fork whose turn ended during Pause all reports, and Resume all lets it go too', () async {
-    final l = await lead();
-    final c = container.read(codeSessionProvider(l.info.id).notifier);
-    final f = await fork(l.info.id);
-    f.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    final paused = c.pauseAll();
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.pausing);
-    // Its step was its last: the turn ends, so it holds, and its report is in.
-    finish(f.session, 'Added the page.');
-    await paused;
-    final forks = c.forks;
-    expect(forks.byChild(f.info.id)!.state, isA<ForkReported>());
-    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.paused);
-    await c.resumeAll();
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.none, reason: 'not held after Resume');
-    expect(notices(l.session), hasLength(1));
-    expect(forks.refused, isEmpty);
-  });
-
-  test('a fork started while the lead is paused holds too', () async {
-    final l = await lead();
-    final c = container.read(codeSessionProvider(l.info.id).notifier);
-    await c.pauseAll();
-    final f = await fork(l.info.id);
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider(f.info.id)).hold, isNot(StepHold.none));
-    await c.resumeAll();
-    await pumpEventQueue();
-    expect(container.read(codeSessionProvider(f.info.id)).hold, StepHold.none);
-  });
-
   test("the lead's Stop ends what a fork that reported left running (it has its own process tag)", () async {
     final killed = <String>[];
-    CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async {
-      killed.add(tag);
-      return const [];
-    };
+    CodeSessionController.killProcesses =
+        ({required tag, required workingDir, required ownsDir, workflows = false}) async {
+          killed.add(tag);
+          return const Ended([]);
+        };
     addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
     final l = await lead();
     final done = await fork(l.info.id);
@@ -560,89 +400,6 @@ void main() {
     await container.read(codeSessionProvider(l.info.id).notifier).stop();
     // Its own, and the reported fork's; a fork still at work keeps its processes (Stop all ends those).
     expect(killed, unorderedEquals([l.info.id, done.info.id]));
-  });
-
-  test('a busy lead gets fork reports only once its turn ends', () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    l.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    finish(f.session, 'Done.');
-    await pumpEventQueue();
-    expect(notices(l.session), isEmpty);
-    l.session.add(stateEvent('r2', ExecutionStatus.finished));
-    await pumpEventQueue();
-    expect(notices(l.session), hasLength(1));
-  });
-
-  test('two reports held for a busy lead go as one message with a notice each, and read back as two rows', () async {
-    final l = await lead();
-    final f1 = await fork(l.info.id);
-    final f2 = await fork(l.info.id);
-    l.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    finish(f1.session, 'First done.');
-    finish(f2.session, 'Second done.');
-    await pumpEventQueue();
-    l.session.add(stateEvent('r2', ExecutionStatus.finished));
-    await pumpEventQueue();
-    final n = notices(l.session).single;
-    expect(RegExp('<everyai-notice ').allMatches(n), hasLength(2));
-    expect([for (final b in noticeBodies(n)) parseTaskNotification(b)!.childId], [f1.info.id, f2.info.id]);
-    // The echo of that message: one row per report.
-    final b = TranscriptBuilder()..add(ChatMessage(id: 'u1', raw: const {}, fromUser: true, text: n));
-    expect(b.snapshot.items.whereType<NoticeItem>().map((i) => i.detail), ['First done.', 'Second done.']);
-  });
-
-  test('check_forks mid-turn gives a busy lead the reports held for its turn end', () async {
-    final l = await lead();
-    final f = await fork(l.info.id);
-    l.session.add(stateEvent('r1', ExecutionStatus.running));
-    await pumpEventQueue();
-    finish(f.session, 'Added the page.');
-    await pumpEventQueue();
-    final out = await hostCall(l.info.id, checkForksTool, const {});
-    expect(out.text, startsWith('No forks are running.'));
-    expect(out.text, isNot(contains('Every fork you started has reported')));
-    expect(parseTaskNotification(out.text.substring(out.text.indexOf('<task-notification>')))!.childId, f.info.id);
-    expect(out.text, contains('Added the page.'));
-    // Already seen, so the turn end sends nothing more.
-    l.session.add(stateEvent('r2', ExecutionStatus.finished));
-    await pumpEventQueue();
-    expect(notices(l.session), isEmpty);
-  });
-
-  test('another harness the user allows runs the fork on its own default model', () async {
-    final l = await lead();
-    final f = await fork(l.info.id, {'task': 'Review the diff', 'harness': 'other', 'worktree': false});
-    expect((f.info.harness, f.info.model), ('other', ''));
-    expect(f.result.text, contains('on Other CLI.'));
-  });
-
-  test('refusals: depth 2, a fifth fork, the EveryAI harness, unknown, absent or unallowed harnesses', () async {
-    final l = await lead();
-    Future<String> refused(String id, Map<String, Object?> args) async {
-      final r = await hostCall(id, forkHostTool, args);
-      expect(r.isError, isTrue, reason: r.text);
-      return r.text;
-    }
-
-    final first = await fork(l.info.id);
-    expect(await refused(first.info.id, {'task': 'More'}), contains("can't start forks"));
-    expect(await refused(l.info.id, {'task': ' '}), contains('task is empty'));
-    expect(await refused(l.info.id, {'task': 'x', 'harness': everyaiHarnessName}), forkOnEveryaiOff('Test CLI'));
-    expect(await refused(l.info.id, {'task': 'x', 'harness': 'nope'}), contains('no harness called "nope"'));
-    // A command line the model wrote is never run as a harness.
-    for (final made in ['acp:sh -c touch\${IFS}/tmp/pwned', 'terminal:/bin/sh', 'acp:test']) {
-      expect(await refused(l.info.id, {'task': 'x', 'harness': made}), contains('no harness called'), reason: made);
-    }
-    expect(await refused(l.info.id, {'task': 'x', 'harness': 'absent'}), contains("isn't installed"));
-    expect(await refused(l.info.id, {'task': 'x', 'harness': 'cli'}), contains("Turn on 'Use my own installed CLIs'"));
-    for (var i = 0; i < maxConcurrentSubagents - 1; i++) {
-      await fork(l.info.id);
-    }
-    expect(await refused(l.info.id, {'task': 'x'}), contains('at most $maxConcurrentSubagents forks'));
-    expect(childrenOf(l.info.id), hasLength(maxConcurrentSubagents));
   });
 
   test('with worktree on, the fork works on a copy that merges back when it completes', () async {

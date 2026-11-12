@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../core/process/supervisor.dart' show ProcessOwner, ProcessSupervisor;
 import '../panes/pty.dart' show ShellPty;
 
 /// Starts [executable] in a pseudo-terminal. Platforms without `dart:ffi` (the web) have no ptys: always null, so
@@ -10,8 +11,11 @@ typedef PtySpawner = Future<ShellPty?> Function(
   String cwd,
   Map<String, String> env,
   int rows,
-  int cols,
-);
+  int cols, {
+  required ProcessSupervisor supervisor,
+  required ProcessOwner owner,
+  String? label,
+});
 
 Future<ShellPty?> spawnPty(
   String executable,
@@ -19,5 +23,8 @@ Future<ShellPty?> spawnPty(
   String cwd,
   Map<String, String> env,
   int rows,
-  int cols,
-) async => null;
+  int cols, {
+  required ProcessSupervisor supervisor,
+  required ProcessOwner owner,
+  String? label,
+}) async => null;

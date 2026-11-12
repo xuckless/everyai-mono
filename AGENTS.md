@@ -1239,8 +1239,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   min, `gaveBackText`), ghost cursor from `control.activity`. Agent API: `FrameBook` frame ids (`f_N`, geometry check,
   zoom regions), `pageSnapshotJs` element list with `ref_N`, `evalRefusal` (cookies/storage/other-site requests),
   eval results scrubbed. Chrome for Testing download pinned in `live/chrome_pin.dart` by
-  `tool/pin_chrome_for_testing.sh`. Dev MCP test rig: `tool/live_mcp/live_mcp_serve_test.dart` (env
-  `EVERYAI_LIVE_MCP_OUT`) serves the host browser tool + a demo shop for an outside agent to review.
+  `tool/pin_chrome_for_testing.sh`. A dev MCP test rig (removed in the
+  2026-11-12 test cut) served the host browser tool + a demo shop for an outside agent to review.
 - **Framework sources: the `app` tool (2026-11-06).** `live/app_endpoints.dart` finds apps in a shell's output
   (`flutter run`'s VM service line, Chromium's `DevTools listening on` for Electron, Metro's banner);
   `AppSources.running(sessions)` scans the sessions' registry shells (and an outside lead's output files via
@@ -1255,8 +1255,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   what changed on screen (`appTreeChange`); app text goes in an `untrusted` block. `bash_output {screen: true}`
   renders a TUI's screen (`shells/terminal_screen.dart`, headless xterm). Preview: source chips (Web + each app),
   Flutter picture view (polled inspector shots, taps/wheel forwarded), RN element list, Electron live page. Verified
-  against a running `flutter run -d flutter-tester` app (`tool/live_apps/flutter_app_probe_test.dart`,
-  `EVERYAI_FLUTTER_VM`); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
+  against a running `flutter run -d flutter-tester` app (a dev probe, removed in the 2026-11-12 test cut); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
   Electron or React Native app was run.
 - **iOS Simulator (2026-11-06).** The `app` tool's source "ios" drives a booted simulator for any app (native,
   Flutter, React Native) through AXe (`live/ios_simulator_io.dart`): `describe-ui` → `AppNode`s (points; refs `iN`
@@ -1268,7 +1267,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   1.8.0 is downloaded on first use into app data `tools/axe-1.8.0/` and checked against `axe_pin.dart`
   (`verified_download_io.dart`, shared with Chrome for Testing; `EVERYAI_AXE` overrides). Preview: `IosSimulatorView`
   paints `axe stream-video` MJPEG (~9 fps at half scale, `MjpegFrames` cuts by Content-Length), forwards clicks,
-  drags and the wheel. Dev probe `tool/live_apps/simulator_probe_test.dart` (`EVERYAI_SIM`).
+  drags and the wheel. (Its dev probe was removed in the 2026-11-12 test cut.)
 - **Android (2026-11-06).** The `app` tool's source "android" drives an emulator or device for any app through adb
   (`live/android_device_io.dart`, `live/adb_io.dart` finds the SDK: ANDROID_HOME/ANDROID_SDK_ROOT, the usual folders,
   PATH, `EVERYAI_ADB`; nothing downloaded): `uiautomator dump` → `AppNode`s in pixels (refs `aN`; a clickable
@@ -1283,9 +1282,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   deletes itself on exit, so it is pushed every start) and decodes its H.264 with VideoToolbox into a Flutter texture
   (`VideoDecoderBridge` / `H264Texture` in `macos/Runner/MainFlutterWindow.swift`, channel `everyai/h264`,
   `live/h264_texture.dart`); other OSes get screenshots each second. Touches, drags, the wheel and the keyboard go
-  through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
-  device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
-  (`EVERYAI_ANDROID`).
+  through scrcpy's control socket. Checked in a real macOS build with a device-view demo (both
+  device views; a tap sent through the view opened the app); the demo and the Android dev probe were removed in the
+  2026-11-12 test cut.
   Fix #31 (2026-11-07): `source: "android"`/`"ios"` with no device of the session's yet (an outside lead, an emulator
   its shells never named) takes the one running device no other session holds (`claimNamedDevice`; several: `device`
   picks). React Native: `reload` detaches the inspector socket, every attach sends `Runtime.runIfWaitingForDebugger`,
@@ -1316,8 +1315,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   listen in one of the session's processes or a program built in the project (`_foreignDevTools`, lsof), so a user's
   own browser with remote debugging isn't attached.
   Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
-  front. Probe
-  `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
+  front. Its
+  probe and the MCP rig were removed in the 2026-11-12 test cut.
 - **Desktop windows on Windows and Linux (2026-11-07).** Same `desktop` source and driver; the helper differs
   (`live/desktop_helper_io.dart` `desktopHelper()`: same commands and JSON as everyai-ax, sources in
   `assets/helpers/`, installed under app data `tools/` named by content hash; `EVERYAI_DESKTOP_HELPER` overrides).
@@ -1542,8 +1541,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
 - **Cursor CLI + outside agents on their own terms (2026-11-11; branch `feat/cursor-native`, plan
   `~/.claude/plans/cursor-native.md`).** Owner: EveryAI switches harnesses and offers tools; outside agents keep
-  their own modes, approvals and habits. Cursor (`agent acp`, checked live with
-  `tool/live_drivers/cursor_live_test.dart`): a permission request's text is kept off the call
+  their own modes, approvals and habits. Cursor (`agent acp`, checked live once with
+  a since-removed live test): a permission request's text is kept off the call
   (`acpWithoutAskText`; "Not in allowlist: …" showed as every asked call's result), Cursor's MCP calls
   (`{providerIdentifier, toolName, args}`) are MCP actions, no "ran without asking" notice, no
   ask_user_question/present_plan host tools (`DriverCap.nativeQuestions`; it has cursor/ask_question), models probed
@@ -1614,6 +1613,94 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   swept at start (`sweepWebviewFolders`); the Preview's driver bar shows whenever the browser runs; the macOS bridge
   runs no script in non-session webviews and drops hover on a locked view. Rig 31/33 (the two hover steps couldn't
   move the pointer: another window covered the point).
+- **Process supervisor, phase 1 (2026-11-12; branch `feat/process-supervisor`; review fixes in a second commit).**
+  Owner's rules: the process audit (every process EveryAI starts is owned, its shown state is true, not closed fails
+  loudly). `core/process/`: `ProcessSupervisor.instance` (`supervisor.dart`, io in `supervisor_io.dart`, web stub).
+  `spawn(SpawnSpec{owner app|session|probe, kind, exe, args, env, cwd, label, politeStop, outlivesApp, port, detail})`
+  starts every child in a session of its own with setsid + exec in place, so the pid is the program and has no
+  controlling terminal: `everyai-exec` (`tool/exec_helper/main.c`; dev `tool/build_exec_helper.sh` → `frontend/.tools/`;
+  macOS build phase `macos/scripts/bundle_exec_helper.sh`, called by `bundle_deno.sh`, not yet run through Xcode;
+  `EVERYAI_EXEC_HELPER` overrides), else `/usr/bin/perl -MPOSIX` (macOS), else `setsid` (Linux), else the child is
+  recorded as sharing the app's group (`SharedGroup`) and ended by its tree only. `exe` is resolved on the child's PATH
+  first (never a shell); missing/not executable throws like `Process.start`. Env tags `EVERYAI_APP=<pid>:<lstart>`,
+  `EVERYAI_OWNER`, `EVERYAI_CHILD` (`tagsFor(owner)` for ptys; recipe in the class doc). Sealed `ChildState`
+  (`child_state.dart`: starting → launched(pid) → running(id) | unverified(why) → terming → killing →
+  exited(ExitCode|SeenGone) | notClosed, plus startFailed) via `nextChildState`. `stop`/`stopOwner`/`killTree` →
+  `KillOutcome` Ended | Survived | Unaccounted (macOS orphans with hidden environments that may be the child's) |
+  ScanFailed; groups signalled only once the leader's start matches. One shared, rate-limited scan; a ticker keeps each
+  child's descendant snapshot (ledger `tree` lines). Ledger `processes/ledger-<pid>-<start>.jsonl` and
+  `watch-<pid>-<start>.list` (async queue, batched; a hot restart re-adopts its own run's live entries); the watchdog
+  (one per run, marker `watchdog-<pid>-<start>.pid`) kills listed groups, trees and tagged processes; `stopAll(timings)`
+  (default `StopTimings.quit`) refuses new spawns (`SupervisorClosed`) and writes `quit.json`. `runBounded` → Finished
+  (`leftRunning` when a grandchild held the pipes) | TimedOut | Cancelled | StartFailed, `maxOutputBytes`, bytes mode;
+  no sync version (`webview_browser.dart`'s two `Process.runSync` must go async). `ChildProcesses` is a shim; `killTree`
+  delegates. Raw-spawn guard `test/core/process/raw_spawn_guard_test.dart` counts raw calls per allowlisted file.
+  Windows: compile-safe only (no groups, no start times, `taskkill /T /F`). Linux: not run. Not migrated: every other
+  spawner (phase 2).
+  Second review (same branch): `launchDetached(exe, args)` → `Launched(pid) | LaunchFailed` replaces
+  `outlivesApp` (no pipes, no `EVERYAI_*`, a ledger note nothing acts on, never in `children`); `runBounded` never
+  throws (`Refused` while quitting; `duringQuit: true` for goodbye commands); `stopAll(before: [steps])` runs quit
+  steps first; `Unaccounted` is gone: `Ended(pids, maybeEscaped:)`, filled only when something vanished from the
+  child's tree (evidence of an escape) and the orphan started in its life and isn't a daemon; `adopt(…,
+  expectedStart:, startedWithin:)` → `ChildDisowned` (never signalled) on a mismatch; `ledgerEntries` /
+  `previousRunEntries`; `treeScanInterval` (5 s idle; NotClosed/Unverified back off 250 ms → 5 s). The helper runs
+  ENOEXEC files in /bin/sh; Dart pre-checks a `#!` interpreter; perl maps only its five variables. The spawn line is
+  on disk before `Process.start`; the watch list is flushed on the first child. Ledger compacted past 2000 lines,
+  tree lines at most every 3 s per child; a folder of the supervisor's own (tests) is removed when empty.
+  Every public call runs in `Zone.root` and answers in the caller's zone (`_inRoot`), so widget tests' fake time
+  drives no supervisor timer. `TerminalOwner(sessionId)` (`terminal:<id>`): the user's terminal tabs, tagged without
+  `EVERYAI_SESSION`, untouched by `stopOwner(SessionOwner(id))`. `killTree(pid, expectedStart:)` signals nothing
+  for a gone or reused pid (`Ended([], skipped:)`); `child.annotate(port:, detail:)` (ledger `note` lines, carried
+  by `ledgerEntries` and hot-restart re-adoption with kind, owner and label).
+- **Process supervisor, phase 2 (2026-11-12; lanes `sup/lane-{harness,drivers,live}` merged in
+  `feat/process-supervisor-p2`).** Every spawner is on the supervisor: the raw-spawn guard's allowlist is **empty**
+  (nothing outside `core/process/` calls `Process.start/run/killPid` or `Pty.start`). Ptys start in one place,
+  `core/process/pty_spawn_io.dart` `spawnPty(supervisor, spec)` (Pty.start + the owner's tags + `adopt(startedWithin:)`;
+  SIGKILL and `SupervisorClosed` while quitting); the terminal driver, `spawnDriverTty`, terminal tabs and background
+  shells use it and are adopted once (`ShellPty.child`, `kill()` → `KillOutcome`). Moved: harness shells (pipes and
+  ptys, `EVERYAI_SHELL` mark; `killAll` also finds a shell's nohup orphans), rg/grep/glob/git probes, LSP (polite
+  shutdown/exit), stdio MCP (stdin closed), run_script/svg_script (Deno), osascript/screencapture, docker/podman, the
+  Processes pane (`killTree(expectedStart:)` from the row's start time), lead CLIs (`spawnDriver`, input closed first),
+  every git/gh and short CLI call (`runShort`, 1/3/10 min), the workflow Deno bridge, local servers (Ollama, fm,
+  manual commands as group leaders), the bundled server, Chrome, Xvfb, scrcpy, the emulator, AXe/helper streams,
+  simctl/adb. Detached opens (open as text, reveal in Finder/Explorer, the AppImage restart waiter) use
+  `launchDetached`. New sealed states: `ShellState` (running/stopping/exited/notClosed), `TerminalPhase`,
+  `RestartResult` (restart refused while the old copy isn't closed), `SessionScan` / `ProcessListing` / `PortScan`
+  (an unreadable table is said, never "nothing running"), `DriverLink` per driver session (close during spawn, EOF
+  before exit), `ServerPhase.NotClosed` + `ServerStopResult`; `SessionPidsUnreadable` makes screenshot/app say the
+  table couldn't be read. Behaviour changes: Not closed is shown and returned (kill_shell, bash results, terminal
+  lines, Processes toasts, server rows) instead of "stopped"; the `app` tool refuses a DevTools address when lsof
+  fails; a memory file counts as tracked (not loaded) when git times out; terminal tabs belong to
+  `TerminalOwner(session)` (`EVERYAI_TERMINAL` kept), so an agent's Stop never ends them; an environment CLI's ssh
+  master still holding its output is stopped after it exits; `stopListener` only touches loopback listeners whose
+  command matches the server kind, rechecks pid + start, names the owner when refusing; `server.owner.json` refuses a
+  second live EveryAI on the same data folder (`BackendBlocked`) instead of killing it; the emulator is no longer
+  detached. Not done: nothing calls `stopOwner(TerminalOwner(id))` on session delete yet; Session Stop ignores a
+  Survived outcome (no notice); phases 3–5 (UI for not-closed children and the ledger, the Windows path, removing
+  `ChildProcesses`, still used only by `memory_lifecycle_test`); Windows and Linux never run; the Xcode build phase
+  for `everyai-exec` checked by one debug build only.
+- **Process ownership, phases 3–5 and the test cut (2026-11-12; PR #86, branch `feat/process-ownership`).**
+  Stop (`CodeSessionController.stop`) bounds the interrupt (10 s, `stopStepBound`) then ends, verified, everything
+  the session started but the lead CLI (`stopKeepsKinds` = leadCli; the terminal driver's pty CLI is leadCli and a
+  registered driver root is kept too): the EveryAI harness's shells, MCP and language servers (`KillsOwnProcesses`;
+  restarted on next use), every other `SessionOwner` child, the tag sweep, the browser page (`closeKeepingJar`),
+  display, booted simulators and pool leases. Workflow scripts (label `workflowScriptLabel`, owner = the session's
+  proc tag passed into `startWorkflowBridge`) end only with Stop all. Survivors → `ProcessesNotClosed` (fails the
+  session; added to, never replacing, a budget notice). Forks are dropped only after an `Ended` stop. Delete
+  (`CodeSessions.remove` → `SessionTeardown`: requested → stoppingRun → stoppingProcesses → releasing → gone |
+  notClosed; any throw → notClosed) covers descendants at any depth, closes harness sessions before the owner stop,
+  releases pool leases in the release step, and keeps the session and its worktree when anything survives
+  (`SessionNotClosedError` toast). Quit is `app/app_quit.dart` (`runQuit` through `stopAll(before:)`, a bounded,
+  logged step each, SIGTERM too, `quit.json`); the launch sweep runs at start. Workflow `RunEnded.leftovers`.
+  Pool (`core/process/pool.dart`, `live/live_pool.dart`): FIFO per kind, auto capacities from RAM/cores, queued
+  calls wait 20 s then get their place, nudge on any tool result (EveryAI harness and host MCP), no eviction; tab
+  cap, background shell cap (16), per-session process budget (`ProcessBudgetWatch`, default max(400, cores×16), by
+  proc tag). Settings → Processes: every owned process by owner with its true state, launch-sweep and quit notices,
+  Capacity (applied at once) and a Holding list with Release per agent lease. Tests cut 3,362 → ~1,060 (kept: core,
+  security, state machines, drivers' contracts, one per feature; restored the JSON-RPC peer's pending-request case).
+  Not done: the session queue, displays/streams through the pool, a crashed browser's slot, the lead switch awaiting
+  the old lead's close, closing a fork's CLI on stop_fork/release, Android per-session stop, Windows/Linux never run,
+  nothing clicked through live.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

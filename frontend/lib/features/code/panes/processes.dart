@@ -1,7 +1,10 @@
 import 'package:flutter/foundation.dart';
 
+import '../../../core/process/process_model.dart' show Ended, KillOutcome, ScanFailed, Survived;
 import '../domain/local_ports.dart';
 import 'processes_stub.dart' if (dart.library.io) 'processes_io.dart' as impl;
+
+export '../../../core/process/process_model.dart' show KillOutcome;
 
 /// Who started a process in the session.
 enum ProcessOrigin { agent, terminal }
@@ -15,6 +18,7 @@ final class SessionProcess {
     required this.command,
     required this.origin,
     this.ports = const [],
+    this.start,
   });
 
   final int pid;
@@ -23,6 +27,10 @@ final class SessionProcess {
   final ProcessOrigin origin;
   final List<ListeningPort> ports;
 
+  /// When it started (the supervisor's `startToken`), if known: Stop/Force quit then end it only while the pid is
+  /// still this process.
+  final String? start;
+
   /// The program's name, without its folder or arguments.
   String get name {
     final first = command.trimLeft().split(RegExp(r'\s')).first;
@@ -30,12 +38,37 @@ final class SessionProcess {
   }
 }
 
+/// What a look at a session's processes found.
+@immutable
+sealed class ProcessListing {
+  const ProcessListing();
+}
+
+final class ProcessesListed extends ProcessListing {
+  const ProcessesListed(this.processes);
+  final List<SessionProcess> processes;
+}
+
+/// The process table couldn't be read: the pane says so instead of "nothing running".
+final class ProcessesUnreadable extends ProcessListing {
+  const ProcessesUnreadable(this.why);
+  final String why;
+}
+
+/// The error a failed listing reaches the Processes pane as (through its provider).
+final class ProcessesUnreadableError implements Exception {
+  const ProcessesUnreadableError(this.why);
+  final String why;
+  @override
+  String toString() => "Couldn't read processes: $why";
+}
+
 /// The processes the agent's terminal left running for session [tag] (see
 /// `killSessionProcesses`), the trees of [agentRoots] (the app app_run
 /// started), and everything below the user's own terminal shells
-/// [terminalShells], with the ports they listen on. Empty where processes
-/// can't be listed.
-Future<List<SessionProcess>> listSessionProcesses({
+/// [terminalShells], with the ports they listen on; or why they couldn't be
+/// listed.
+Future<ProcessListing> listSessionProcesses({
   required String tag,
   required String workingDir,
   required bool ownsDir,
@@ -49,11 +82,50 @@ Future<List<SessionProcess>> listSessionProcesses({
   terminalShells: terminalShells,
 );
 
-/// The TCP ports [pids] listen on (none where that can't be found).
-Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) => impl.listeningPorts(pids);
+/// What a look for the TCP ports some processes listen on found.
+@immutable
+sealed class PortScan {
+  const PortScan();
+}
 
-/// Sends SIGTERM (or SIGKILL with [force]) to [pid].
-bool killProcess(int pid, {bool force = false}) => impl.killProcess(pid, force: force);
+final class PortsListed extends PortScan {
+  const PortsListed(this.ports);
+  final List<ListeningPort> ports;
+}
+
+/// The ports couldn't be read (lsof/ss failed, timed out or wasn't run): unknown, not "none".
+final class PortsUnreadable extends PortScan {
+  const PortsUnreadable(this.why);
+  final String why;
+}
+
+/// The TCP ports [pids] listen on, or why they couldn't be read.
+Future<PortScan> scanListeningPorts(Iterable<int> pids) => impl.scanListeningPorts(pids);
+
+/// The TCP ports [pids] listen on, for callers where they are a detail: an unreadable scan is logged and gives none.
+Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async => switch (await scanListeningPorts(pids)) {
+  PortsListed(:final ports) => ports,
+  PortsUnreadable(:final why) => () {
+    debugPrint('Listening ports could not be read: $why');
+    return const <ListeningPort>[];
+  }(),
+};
+
+/// Ends [pid] and its tree with the supervisor's verified kill (with [force], SIGKILL without a grace): what came
+/// of it. Only [Ended]-type outcomes mean gone.
+/// With [expectedStart], a pid that is gone or now another process's is left alone (an [Ended] with `skipped`).
+Future<KillOutcome> killProcess(int pid, {bool force = false, String? expectedStart}) =>
+    impl.killProcess(pid, force: force, expectedStart: expectedStart);
+
+/// The toast for a Stop/Kill of [name] ([pid]) that came to [out]: "Stopped" only when it is proven gone.
+String killToast(KillOutcome out, String name, int pid, {bool force = false}) => switch (out) {
+  Ended(skipped: final String why) => '$name ($pid) had already gone: $why',
+  Ended(maybeEscaped: []) => '${force ? 'Killed' : 'Stopped'} $name ($pid)',
+  Ended(:final maybeEscaped) =>
+    '${force ? 'Killed' : 'Stopped'} $name ($pid). Warning: ${maybeEscaped.join(', ')} may have left its tree',
+  Survived(:final pids) => 'Not closed: ${pids.join(', ')} still running after SIGKILL',
+  ScanFailed(:final why) => "Couldn't check that $name ($pid) stopped: $why",
+};
 
 /// The regular file [pid]'s standard output goes to (a process an outside lead started with its output in a file),
 /// or null: a terminal, a pipe, a socket, or not found. Its row in Processes then tails it.

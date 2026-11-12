@@ -5,14 +5,43 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
 import 'app_view.dart';
 import 'axe_install.dart';
 import 'device_screen.dart';
 import 'frames.dart';
 import 'live_session.dart';
-import '../../../core/process/child_processes.dart';
+import 'supervised_stream_io.dart';
+import '../../../core/process/supervisor.dart';
+import '../git/git_service.dart';
+
+/// `xcrun simctl args`, bounded: a run past [timeout] is killed (verified). [AppError] when it can't run or times out.
+Future<Finished> _simctl(
+  List<String> args, {
+  Duration timeout = const Duration(seconds: 60),
+  bool duringQuit = false,
+}) async {
+  final r = await ProcessSupervisor.instance.runBounded(
+    'xcrun',
+    ['simctl', ...args],
+    timeout: timeout,
+    owner: const ProbeOwner('simctl'),
+    stdoutEncoding: utf8,
+    stderrEncoding: utf8,
+    duringQuit: duringQuit,
+    label: 'simctl ${args.take(2).join(' ')}',
+  );
+  return switch (r) {
+    Finished() => r,
+    TimedOut(:final kill) || Cancelled(:final kill) => throw AppError(
+      'simctl ${args.first} took longer than ${timeout.inSeconds} s and was '
+      '${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}.',
+    ),
+    StartFailed(:final error) => throw AppError("simctl couldn't run: $error"),
+    Refused(:final reason) => throw AppError("simctl wasn't run: $reason"),
+  };
+}
 
 /// A simulator `xcrun simctl` knows.
 final class SimDevice {
@@ -49,17 +78,36 @@ abstract final class IosSimulators {
     return _booted;
   }
 
+  /// Drops the simulators EveryAI booted that [all] (a full listing) shows not booted: EveryAI's watch of each ended
+  /// there, so a later boot of that udid (by the user) is never EveryAI's to shut down.
+  static void _watch(List<SimDevice> all) {
+    if (_ours.isEmpty || all.isEmpty) return;
+    final up = {
+      for (final d in all)
+        if (d.booted) d.udid,
+    };
+    final gone = _ours.where((u) => !up.contains(u)).toList();
+    for (final u in gone) {
+      _ours.remove(u);
+      debugPrint('Simulator $u, booted by EveryAI, was shut down elsewhere: no longer EveryAI\'s.');
+    }
+    if (gone.isNotEmpty) unawaited(_save());
+  }
+
   /// Every available iPhone and iPad simulator.
   static Future<List<SimDevice>> list() async {
     if (!Platform.isMacOS) return const [];
-    final ProcessResult r;
+    final Finished r;
     try {
-      r = await Process.run('xcrun', ['simctl', 'list', 'devices', 'available', '-j']);
-    } on ProcessException {
+      r = await _simctl(const ['list', 'devices', 'available', '-j'], timeout: const Duration(seconds: 30));
+    } on AppError catch (e) {
+      debugPrint('Simulators could not be listed: ${e.message}');
       return const [];
     }
-    if (r.exitCode != 0) return const [];
-    return parseSimctlDevices('${r.stdout}');
+    if (r.code != 0) return const [];
+    final all = parseSimctlDevices(r.stdout);
+    _watch(all);
+    return all;
   }
 
   /// The simulator [device] names among [all]: a udid, or a name, with its runtime ("iPhone 16e (iOS 18.6)") when
@@ -88,19 +136,146 @@ abstract final class IosSimulators {
     return d;
   }
 
-  /// Boots [device] (a name or udid) without opening Simulator.app, and waits until it is up.
+  /// Boots [device] (a name or udid) without opening Simulator.app, and waits until it is up. A simulator EveryAI
+  /// boots is EveryAI's for [shutdownBooted] while every listing since shows it booted; one not up within 3 minutes
+  /// is shut down again.
   static Future<SimDevice> boot(String device) async {
     final d = pickSimulator(await list(), device);
     if (!d.booted) {
-      final r = await Process.run('xcrun', ['simctl', 'boot', d.udid]);
-      if (r.exitCode != 0 && !'${r.stderr}'.contains('current state: Booted')) {
-        throw AppError("Couldn't boot ${d.name}: ${'${r.stderr}'.trim()}");
+      final r = await _simctl(['boot', d.udid]);
+      if (r.code != 0 && !r.stderr.contains('current state: Booted')) {
+        throw AppError("Couldn't boot ${d.name}: ${r.stderr.trim()}");
       }
-      await Process.run('xcrun', ['simctl', 'bootstatus', d.udid, '-b']).timeout(const Duration(minutes: 3));
+      if (r.code == 0) await _remember(d.udid, add: true);
+      _readAt = DateTime.fromMillisecondsSinceEpoch(0);
+      try {
+        await _simctl(['bootstatus', d.udid, '-b'], timeout: const Duration(minutes: 3));
+      } on AppError catch (e) {
+        final shut = await _shutdown(d.udid);
+        throw AppError('${d.name} did not finish booting: ${e.message} ${shut ?? 'It was shut down again.'}');
+      }
     }
     _readAt = DateTime.fromMillisecondsSinceEpoch(0);
     await refresh();
     return SimDevice(udid: d.udid, name: d.name, runtime: d.runtime, booted: true);
+  }
+
+  /// The simulators this run booted and has seen booted in every listing since ([_watch]). In memory: a new run
+  /// never inherits them.
+  static final _ours = <String>{};
+
+  /// Whether [_forgetLastRun] ran this run.
+  static var _lastRunForgotten = false;
+
+  /// The simulators EveryAI booted in this run and still owns.
+  static Future<Set<String>> bootedByEveryAI() async {
+    await _forgetLastRun();
+    return {..._ours};
+  }
+
+  /// App data `simulators-booted.json`: this run's [_ours], written so a crash leaves a record of what it booted.
+  static Future<File> _file() async => File('${await GitService.dataDir()}/simulators-booted.json');
+
+  /// Entries a previous run left (it crashed, or a shutdown at its quit failed). A dead run's watch can't vouch that
+  /// the simulator still is the one it booted (the user may have shut it down and booted it again), so they are
+  /// dropped without shutting anything down: the user's simulators are never touched. Once per run, at first use.
+  static Future<void> _forgetLastRun() async {
+    if (_lastRunForgotten) return;
+    _lastRunForgotten = true;
+    try {
+      final f = await _file();
+      if (!f.existsSync()) return;
+      final j = jsonDecode(await f.readAsString());
+      final left = [
+        if (j is List)
+          for (final x in j)
+            if (x is String && !_ours.contains(x)) x,
+      ];
+      if (left.isNotEmpty) {
+        debugPrint(
+          'Simulators a previous run booted (${left.join(', ')}) are left as they are: '
+          "that run ended without shutting them down, and EveryAI can't tell they are still its own.",
+        );
+      }
+      await _save();
+    } on Object catch (e) {
+      debugPrint('The list of simulators a previous run booted could not be read: $e');
+    }
+  }
+
+  static Future<void> _remember(String udid, {required bool add}) async {
+    await _forgetLastRun();
+    if (add ? !_ours.add(udid) : !_ours.remove(udid)) return;
+    await _save();
+  }
+
+  static Future<void> _save() async {
+    try {
+      final f = await _file();
+      await f.parent.create(recursive: true);
+      await f.writeAsString(jsonEncode([..._ours]));
+    } on Object catch (e) {
+      debugPrint('The list of simulators EveryAI booted could not be written: $e');
+    }
+  }
+
+  /// `simctl shutdown` [udid], then a check that it is no longer booted: null when it is shut down, else why not.
+  static Future<String?> _shutdown(String udid) async {
+    try {
+      final r = await _simctl(['shutdown', udid], duringQuit: true);
+      if (r.code != 0 && !r.stderr.contains('current state: Shutdown')) {
+        return 'simctl shutdown failed: ${r.stderr.trim()}';
+      }
+    } on AppError catch (e) {
+      return e.message;
+    }
+    final Finished r;
+    try {
+      r = await _simctl(const ['list', 'devices', '-j'], timeout: const Duration(seconds: 30), duringQuit: true);
+    } on AppError catch (e) {
+      return "Couldn't check it shut down: ${e.message}";
+    }
+    if (r.code != 0) return "Couldn't check it shut down (simctl list exit ${r.code}).";
+    if (parseSimctlDevices(r.stdout).any((x) => x.udid == udid && x.booted)) return 'It is still booted.';
+    await _remember(udid, add: false);
+    _readAt = DateTime.fromMillisecondsSinceEpoch(0);
+    return null;
+  }
+
+  /// Shuts down every simulator EveryAI booted (verified: no longer listed as booted), or those of [only]: phase 3
+  /// calls this at session delete and quit. The user's own simulators are never touched. [Ended] when all are shut
+  /// down; a [Survived] (no pids: simulators aren't our processes) naming those still booted.
+  static Future<KillOutcome> shutdownBooted({Iterable<String>? only}) async {
+    await _forgetLastRun();
+    // A fresh listing first: one shut down (and maybe booted again) by someone else since is no longer ours.
+    if (_ours.isNotEmpty) {
+      try {
+        final r = await _simctl(
+          const ['list', 'devices', '-j'],
+          timeout: const Duration(seconds: 30),
+          duringQuit: true,
+        );
+        if (r.code == 0) _watch(parseSimctlDevices(r.stdout));
+      } on AppError catch (e) {
+        debugPrint('Simulators could not be listed before shutting down EveryAI\'s: ${e.message}');
+      }
+    }
+    final ours = [..._ours];
+    final targets = only == null
+        ? ours
+        : [
+            for (final u in only)
+              if (ours.contains(u)) u,
+          ];
+    final problems = <String>[];
+    for (final udid in targets) {
+      final why = await _shutdown(udid);
+      if (why != null) problems.add('$udid: $why');
+    }
+    if (problems.isEmpty) return const Ended([]);
+    final reason = 'simulators not shut down: ${problems.join('; ')}';
+    debugPrint('NOT CLOSED: $reason');
+    return Survived(const [], reason);
   }
 
   /// The session holding simulator [udid], if any.
@@ -189,25 +364,32 @@ final class IosSimulator implements DeviceScreen {
 
   Future<String> _axe(List<String> args, {String? stdin}) async {
     final exe = await ensureAxe();
-    final p = await Process.start(exe, [...args, '--udid', udid]);
-    if (stdin != null) {
-      p.stdin.add(utf8.encode(stdin));
-    }
-    await p.stdin.close();
-    final out = p.stdout.transform(utf8.decoder).join();
-    final err = p.stderr.transform(utf8.decoder).join();
-    final code = await p.exitCode.timeout(
-      const Duration(seconds: 60),
-      onTimeout: () {
-        p.kill();
-        return -1;
-      },
+    final r = await ProcessSupervisor.instance.runBounded(
+      exe,
+      [...args, '--udid', udid],
+      timeout: const Duration(seconds: 60),
+      owner: const ProbeOwner('axe'),
+      stdin: stdin,
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+      label: 'axe ${args.first}',
     );
-    if (code != 0) {
-      final why = (await err).trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
-      throw AppError('The simulator action failed: ${why.replaceFirst(RegExp(r'^Error:\s*'), '')}');
+    switch (r) {
+      case Finished(:final code, :final stdout, :final stderr):
+        if (code != 0) {
+          final why = stderr.trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
+          throw AppError('The simulator action failed: ${why.replaceFirst(RegExp(r'^Error:\s*'), '')}');
+        }
+        return stdout;
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        throw AppError(
+          'The simulator action took over 60 s and was ${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}.',
+        );
+      case StartFailed(:final error):
+        throw AppError("The simulator action couldn't start: $error");
+      case Refused(:final reason):
+        throw AppError("The simulator action couldn't start: $reason");
     }
-    return out;
   }
 
   /// The screen's element list now.
@@ -480,8 +662,8 @@ final class IosSimulator implements DeviceScreen {
   /// Installs the `.app` bundle at [path] on the simulator.
   @override
   Future<String> install(String path) async {
-    final r = await Process.run('xcrun', ['simctl', 'install', udid, path]);
-    if (r.exitCode != 0) throw AppError("Couldn't install $path: ${'${r.stderr}'.trim()}");
+    final r = await _simctl(['install', udid, path], timeout: const Duration(minutes: 5));
+    if (r.code != 0) throw AppError("Couldn't install $path: ${r.stderr.trim()}");
     return 'Installed $path.';
   }
 
@@ -489,15 +671,15 @@ final class IosSimulator implements DeviceScreen {
   @override
   Future<String> launch(String app) async {
     final bundle = app;
-    final there = await Process.run('xcrun', ['simctl', 'get_app_container', udid, bundle]);
-    if (there.exitCode != 0) {
+    final there = await _simctl(['get_app_container', udid, bundle]);
+    if (there.code != 0) {
       throw AppError(
         '$bundle is not installed on this simulator: build it for the simulator and install the .app first.',
       );
     }
     control.report(LiveActivity('look', caption: 'Launching $bundle'));
-    final r = await Process.run('xcrun', ['simctl', 'launch', '--terminate-running-process', udid, bundle]);
-    if (r.exitCode != 0) throw AppError("Couldn't launch $bundle: ${'${r.stderr}'.trim()}");
+    final r = await _simctl(['launch', '--terminate-running-process', udid, bundle]);
+    if (r.code != 0) throw AppError("Couldn't launch $bundle: ${r.stderr.trim()}");
     await Future<void>.delayed(const Duration(milliseconds: 1500));
     return 'Launched $bundle.';
   }
@@ -538,43 +720,34 @@ final class IosSimulator implements DeviceScreen {
     }
   }
 
-  /// The screen as JPEG frames for the Preview ([fps], at [scale] of its pixels), while listened to.
-  Stream<Uint8List> stream({int fps = 10, double scale = 0.5}) {
-    Process? p;
-    late final StreamController<Uint8List> out;
-    out = StreamController<Uint8List>(
-      onListen: () async {
-        try {
-          final exe = await ensureAxe();
-          p = await Process.start(exe, [
-            'stream-video',
-            '--udid',
-            udid,
-            '--format',
-            'mjpeg',
-            '--fps',
-            '$fps',
-            '--quality',
-            '70',
-            '--scale',
-            '$scale',
-          ]);
-          ChildProcesses.track(p!.pid, label: 'Simulator stream ($udid)', executable: exe, exited: p!.exitCode);
-          unawaited(p!.stderr.drain<void>());
-          await p!.stdout.transform(MjpegFrames()).pipe(out);
-        } on Object catch (e) {
-          if (!out.isClosed) {
-            out.addError(e);
-            await out.close();
-          }
-        }
-      },
-      onCancel: () {
-        p?.kill();
-      },
-    );
-    return out.stream;
-  }
+  /// The screen as JPEG frames for the Preview ([fps], at [scale] of its pixels), while listened to: `axe
+  /// stream-video`, a supervised child stopped (verified) when the listener cancels, even mid-start.
+  Stream<Uint8List> stream({int fps = 10, double scale = 0.5}) => supervisedFrames(
+    'Simulator stream ($udid)',
+    () async => ProcessSupervisor.instance.spawn(
+      SpawnSpec(
+        owner: const AppOwner(),
+        kind: ProcessKind.stream,
+        exe: await ensureAxe(),
+        args: [
+          'stream-video',
+          '--udid',
+          udid,
+          '--format',
+          'mjpeg',
+          '--fps',
+          '$fps',
+          '--quality',
+          '70',
+          '--scale',
+          '$scale',
+        ],
+        label: 'Simulator stream ($udid)',
+        detail: 'udid $udid',
+      ),
+    ),
+    MjpegFrames(),
+  );
 
   /// The user's tap in the Preview, in points.
   Future<void> userTap(double x, double y) => _axe(['tap', '-x', _n(x), '-y', _n(y)]);

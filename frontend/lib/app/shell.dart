@@ -24,15 +24,16 @@ import '../core/theme/every_theme.dart';
 import '../core/ui/adaptive.dart' show AdaptiveButton, AdaptiveProgress, GlassSurface, GlassLevel, showAdaptiveToast;
 import '../features/code/automations/schedule_providers.dart' show scheduleRunnerProvider;
 import '../features/code/code_providers.dart' show driverShutdownProvider, workflowResumeProvider;
+import 'app_quit.dart' show appQuitProvider;
 import '../features/code/forks/orphan_forks.dart' show orphanForksProvider;
 import '../features/local_models/local_models_providers.dart' show serverLifecyclesProvider;
-import '../features/local_models/local_model_bridge.dart'
-    show localRoutesProvider, localShutdownProvider, localUseTrackerProvider;
+import '../features/local_models/local_model_bridge.dart' show localRoutesProvider, localUseTrackerProvider;
 import '../features/code/drivers/driver_registry.dart' show driverStatusesProvider;
 import '../features/code/ui/real_input_consent.dart' show connectRealInput;
 import '../features/history/ui/sidebar.dart';
 import '../features/code/board/board_plan_providers.dart' show boardPlanWatchProvider;
 import '../features/onboarding/onboarding_providers.dart';
+import '../features/processes/ui/processes_section.dart' show ProcessNotices;
 import '../features/onboarding/ui/onboarding_screen.dart';
 import '../features/remote/remote_providers.dart' show remoteHostingProvider;
 import '../features/settings/byok_keys.dart' show modelBillingProvider;
@@ -226,7 +227,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     if (Host.isDesktop) {
       // Outside coding CLIs end with the app, whichever way they were started.
       ref.listen(driverShutdownProvider, (_, _) {});
-      ref.listen(localShutdownProvider, (_, _) {});
+      // The one quit sequence (sessions, browsers, devices, local servers, then every process left), and SIGTERM.
+      ref.listen(appQuitProvider, (_, _) {});
       // Keeps LocalRoutes.current filled for the Code harness, which reads it per call.
       ref.listen(localRoutesProvider, (_, _) {});
       ref.listen(localUseTrackerProvider, (_, _) {});
@@ -302,13 +304,19 @@ class _AppShellState extends ConsumerState<AppShell> {
     body = Stack(
       children: [
         body,
-        if (server == ServerStatus.waking || server == ServerStatus.unreachable)
-          Positioned(
-            top: 12,
-            left: 0,
-            right: 0,
-            child: Center(child: _ServerBanner(status: server!)),
+        Positioned(
+          top: 12,
+          left: 0,
+          right: 0,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (server == ServerStatus.waking || server == ServerStatus.unreachable) _ServerBanner(status: server!),
+              // Processes that didn't close, and what the last run left: loud, wherever the user is.
+              if (Host.isDesktop) const ProcessNotices(),
+            ],
           ),
+        ),
       ],
     );
 

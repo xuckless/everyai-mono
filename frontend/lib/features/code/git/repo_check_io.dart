@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../../../core/process/supervisor.dart';
+import '../drivers/short_run.dart';
 import 'git_guard.dart';
 import 'repo_check.dart';
 
@@ -18,7 +20,25 @@ Future<List<RepoFinding>> checkRepo(String dir) async {
   }
 
   final fixed = guardFlags(Platform.isWindows ? 'NUL' : '/dev/null');
-  Future<ProcessResult> git(List<String> args) => Process.run('git', ['-C', dir, ...fixed, ...args]);
+  // Bounded: a git that hangs is stopped (verified) and its step reads as unreadable, said in the log.
+  Future<ProcessResult> git(List<String> args) async {
+    final r = await runShort(
+      'git',
+      ['-C', dir, ...fixed, ...args],
+      timeout: const Duration(minutes: 1),
+      owner: const ProbeOwner('git'),
+      encoding: systemEncoding,
+    );
+    switch (r) {
+      case Finished(:final code, :final stdout, :final stderr):
+        return ProcessResult(0, code, stdout, stderr);
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        logStop('git ${args.first} (repo check)', kill);
+        throw StateError(runProblem('git ${args.first}', r)!);
+      case StartFailed(:final error) || Refused(reason: final error):
+        throw ProcessException('git', args, error);
+    }
+  }
 
   // git answers with real paths (macOS temp folders are symlinks).
   var root = dir;

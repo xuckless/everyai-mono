@@ -6,12 +6,14 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../git/git_service.dart';
 import 'adb_io.dart';
 import 'app_view.dart';
 import 'scrcpy_pin.dart';
 import 'verified_download_io.dart';
-import '../../../core/process/child_processes.dart';
+import '../../../core/process/supervisor.dart';
 
 /// One encoded video packet from the device (Annex-B H.264); [config] holds the parameter sets.
 typedef VideoPacket = ({Uint8List data, bool config, bool key});
@@ -23,11 +25,7 @@ Future<String> scrcpyServer() => _fetching ??= () async {
   if (Platform.environment['EVERYAI_SCRCPY_SERVER'] case final set? when File(set).existsSync()) return set;
   final dir = '${await GitService.dataDir()}/tools/scrcpy-$scrcpyVersion';
   final file = File('$dir/scrcpy-server');
-  if (!file.existsSync()) {
-    final part = File('${file.path}.part');
-    await downloadVerified(Uri.parse(scrcpyServerUrl), scrcpyServerSha256, part);
-    part.renameSync(file.path);
-  }
+  if (!file.existsSync()) await downloadVerifiedTo(Uri.parse(scrcpyServerUrl), scrcpyServerSha256, file);
   return file.path;
 }().whenComplete(() => _fetching = null);
 
@@ -37,8 +35,102 @@ Future<String> scrcpyServer() => _fetching ??= () async {
 final class ScrcpyConnection {
   ScrcpyConnection._(this.serial, this._server, this._port, this._name, this._video, this._control);
 
+  /// The adb forwards scrcpy sessions of this run set up (`serial|port`), until each is removed. One whose removal
+  /// failed stays here, and [forwardProblems] says why (adb keeps a forward until it is removed or adb restarts).
+  static final forwards = <String>{};
+  static final forwardProblems = <String, String>{};
+
+  /// Removes the forward of [port] on [serial]; a failure is kept in [forwardProblems] and logged.
+  static Future<bool> _unforward(String serial, int port) async {
+    final key = '$serial|$port';
+    try {
+      await AndroidSdk.run(['forward', '--remove', 'tcp:$port'], serial: serial, timeout: const Duration(seconds: 10));
+      forwards.remove(key);
+      forwardProblems.remove(key);
+      await _record(serial, port, null);
+      return true;
+    } on Object catch (e) {
+      forwardProblems[key] = '$e';
+      debugPrint('NOT CLOSED: the adb forward tcp:$port on $serial could not be removed: $e');
+      return false;
+    }
+  }
+
+  /// App data `scrcpy-forwards.json`: every forward EveryAI set up (`serial|port|socket name`) until it is removed,
+  /// so a later run can tell the ones a crashed run left from the user's own scrcpy (whose forwards look the same).
+  static Future<File> _recordFile() async => File('${await GitService.dataDir()}/scrcpy-forwards.json');
+
+  static Future<void> _recordQueue = Future.value();
+
+  /// Adds (with [name]) or removes (null) the record of [serial]'s forward of [port]; writes run one at a time.
+  static Future<void> _record(String serial, int port, String? name) {
+    final next = _recordQueue.then((_) async {
+      final now = await _recorded();
+      now.removeWhere((r) => r.startsWith('$serial|$port|'));
+      if (name != null) now.add('$serial|$port|$name');
+      try {
+        final f = await _recordFile();
+        await f.parent.create(recursive: true);
+        await f.writeAsString(jsonEncode([...now]));
+      } on Object catch (e) {
+        debugPrint('scrcpy: the record of its adb forwards could not be written: $e');
+      }
+    });
+    return _recordQueue = next;
+  }
+
+  static Future<Set<String>> _recorded() async {
+    try {
+      final f = await _recordFile();
+      if (!f.existsSync()) return {};
+      final j = jsonDecode(await f.readAsString());
+      return {
+        if (j is List)
+          for (final x in j)
+            if (x is String) x,
+      };
+    } on Object catch (e) {
+      debugPrint('scrcpy: the record of its adb forwards could not be read: $e');
+      return {};
+    }
+  }
+
+  /// Forwards on [serial] that EveryAI recorded setting up (same port and socket name) and no session of this run
+  /// holds: left by a run that crashed. A forward EveryAI has no record of (the user's own scrcpy, another tool) is
+  /// never removed, whatever its name.
+  static Future<void> _removeStaleForwards(String serial) async {
+    final recorded = await _recorded();
+    if (!recorded.any((r) => r.startsWith('$serial|'))) return;
+    final String list;
+    try {
+      list = await AndroidSdk.run(['forward', '--list'], timeout: const Duration(seconds: 10));
+    } on Object catch (e) {
+      debugPrint('scrcpy: the adb forwards could not be listed ($e); stale ones may remain.');
+      return;
+    }
+    final present = <String>{};
+    for (final line in list.split('\n')) {
+      final m = RegExp(r'^(\S+)\s+tcp:(\d+)\s+localabstract:(scrcpy_\S+)$').firstMatch(line.trim());
+      if (m == null || m.group(1) != serial) continue;
+      final port = int.parse(m.group(2)!);
+      final key = '$serial|$port|${m.group(3)}';
+      present.add(key);
+      if (recorded.contains(key) && !forwards.contains('$serial|$port')) await _unforward(serial, port);
+    }
+    // Records of forwards adb no longer has (it restarted, the device went): dropped.
+    for (final r in recorded) {
+      final parts = r.split('|');
+      if (parts.length == 3 &&
+          parts[0] == serial &&
+          !present.contains(r) &&
+          !forwards.contains('${parts[0]}|${parts[1]}')) {
+        await _record(serial, int.parse(parts[1]), null);
+      }
+    }
+  }
+
   final String serial;
-  final Process _server;
+  final SupervisedProcess _server;
   final int _port;
   final String _name;
   final Socket? _video;
@@ -65,6 +157,7 @@ final class ScrcpyConnection {
     final server = await scrcpyServer();
     const remote = '/data/local/tmp/everyai-scrcpy.jar';
     // The server deletes its file when it ends, so it goes up every time.
+    await _removeStaleForwards(serial);
     await AndroidSdk.run(['push', server, remote], serial: serial);
     final scid = Random.secure().nextInt(0x7fffffff).toRadixString(16).padLeft(8, '0');
     final name = 'scrcpy_$scid';
@@ -72,6 +165,8 @@ final class ScrcpyConnection {
     final port = probe.port;
     await probe.close();
     await AndroidSdk.run(['forward', 'tcp:$port', 'localabstract:$name'], serial: serial);
+    forwards.add('$serial|$port');
+    await _record(serial, port, name);
     final args = [
       'CLASSPATH=$remote',
       'app_process',
@@ -88,14 +183,29 @@ final class ScrcpyConnection {
       'clipboard_autosync=false',
       'log_level=warn',
     ];
-    final p = await Process.start(AndroidSdk.adb!, ['-s', serial, 'shell', args.join(' ')]);
-    ChildProcesses.track(p.pid, label: 'scrcpy server ($serial)', executable: AndroidSdk.adb!, exited: p.exitCode);
+    final SupervisedProcess p;
+    try {
+      p = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: const AppOwner(),
+          kind: ProcessKind.stream,
+          exe: AndroidSdk.adb!,
+          args: ['-s', serial, 'shell', args.join(' ')],
+          label: 'scrcpy server ($serial)',
+          detail: 'serial $serial, forward tcp:$port',
+        ),
+      );
+    } on Object catch (e) {
+      await _unforward(serial, port);
+      throw AppError("Couldn't start scrcpy on $serial: $e");
+    }
     final log = StringBuffer();
-    p.stdout.transform(utf8.decoder).listen(log.write);
-    p.stderr.transform(utf8.decoder).listen(log.write);
+    p.stdout.transform(utf8.decoder).listen(log.write, onError: (Object _) {});
+    p.stderr.transform(utf8.decoder).listen(log.write, onError: (Object _) {});
     Future<void> undo() async {
-      p.kill();
-      await AndroidSdk.run(['forward', '--remove', 'tcp:$port'], serial: serial).catchError((Object _) => '');
+      final outcome = await p.stop();
+      if (outcome is! Ended) debugPrint('NOT CLOSED: scrcpy server ($serial) after a failed start: $outcome');
+      await _unforward(serial, port);
     }
 
     try {
@@ -127,7 +237,7 @@ final class ScrcpyConnection {
     }
   }
 
-  static Future<(Socket, _Reader)> _connectFirst(int port, Process server) async {
+  static Future<(Socket, _Reader)> _connectFirst(int port, SupervisedProcess server) async {
     final until = DateTime.now().add(const Duration(seconds: 10));
     var exited = false;
     unawaited(server.exitCode.then((_) => exited = true));
@@ -244,15 +354,23 @@ final class ScrcpyConnection {
     _send([...b.buffer.asUint8List(), ...bytes]);
   }
 
-  Future<void> close() async {
-    if (_closed) return;
+  Future<KillOutcome>? _closing;
+
+  /// Ends the session: its sockets first (the server on the device then ends by itself), then the `adb shell`
+  /// process (verified), then the forward. The outcome of the process stop; a forward that stays is in
+  /// [forwardProblems].
+  Future<KillOutcome> close() => _closing ??= _close();
+
+  Future<KillOutcome> _close() async {
     _closed = true;
     _video?.destroy();
     _control.destroy();
-    _server.kill();
+    final outcome = await _server.stop();
+    if (outcome is! Ended) debugPrint('NOT CLOSED: scrcpy server ($serial): $outcome');
     await _packets.close();
     await _sizes.close();
-    await AndroidSdk.run(['forward', '--remove', 'tcp:$_port'], serial: serial).catchError((Object _) => '');
+    await _unforward(serial, _port);
+    return outcome;
   }
 
   @override

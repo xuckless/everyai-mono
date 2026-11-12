@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/process/budget.dart' show ProcessBudgetWatch;
+import '../../live/live_pool.dart' show LivePool;
 import '../../domain/notebook.dart';
 import 'lsp_io.dart';
 
@@ -19,6 +21,21 @@ import 'exfil.dart';
 import 'llm.dart';
 import 'package_registry_io.dart';
 import 'shell_io.dart';
+import '../../../../core/process/supervisor.dart'
+    show
+        AppOwner,
+        Cancelled,
+        Ended,
+        Finished,
+        KillOutcome,
+        ProcessSupervisor,
+        Refused,
+        RunResult,
+        SessionOwner,
+        StartFailed,
+        TimedOut;
+import '../../shells/shell_registry.dart'
+    show ShellExited, ShellNotClosed, ShellRunning, ShellStopping, killOutcomeText;
 import '../../live/app_tool_spec.dart';
 import '../../shells/terminal_screen.dart';
 import 'app_tools_io.dart';
@@ -739,15 +756,12 @@ final class ToolRunner {
     scrubber.addEnv((await ShellEnv.load()).env);
     if (pushTargets == null) {
       final targets = <String>{};
-      try {
-        final r = await Process.run('git', ['remote', '-v'], workingDirectory: root);
-        if (r.exitCode == 0) {
-          for (final line in const LineSplitter().convert(r.stdout as String)) {
-            targets.addAll(line.split(RegExp(r'\s+')).take(2).where((w) => w.isNotEmpty));
-          }
+      // Not a repository, no git, or it hung: only a plain `git push` goes.
+      final r = await _bounded('git', ['remote', '-v'], timeout: const Duration(seconds: 10), cwd: root);
+      if (r case Finished(code: 0, :final stdout)) {
+        for (final line in const LineSplitter().convert(stdout)) {
+          targets.addAll(line.split(RegExp(r'\s+')).take(2).where((w) => w.isNotEmpty));
         }
-      } on Object {
-        // Not a repository, or no git: only a plain `git push` goes.
       }
       pushTargets ??= targets;
     }
@@ -914,6 +928,23 @@ final class ToolRunner {
   }
 
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
+    final out = await _runTool(tool, raw, cancel: cancel);
+    // The runaway guard stopped this session's processes: the agent hears why, once.
+    // Noted under the process tag the session's processes carry (the shell's), not the billing tag.
+    final why = shell.sessionTag.isEmpty ? null : ProcessBudgetWatch.takeNote(shell.sessionTag);
+    // Holding the session's browser idle while others queue: any tool's result says so (the browser tool's own
+    // result already carries it).
+    final nudge = sessionTag.isEmpty || tool == ToolNames.browser ? null : LivePool.nudgeForSession(sessionTag);
+    if (why == null && nudge == null) return out;
+    return ToolOutput(
+      [?why, out.text, ?nudge].join('\n\n'),
+      isError: out.isError,
+      observation: out.observation,
+      images: out.images,
+    );
+  }
+
+  Future<ToolOutput> _runTool(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
     await ready();
     final args = mapped(raw);
     if (_researchRefusal(tool, args) ?? _guard(tool, args) case final refusal?) {
@@ -932,8 +963,8 @@ final class ToolRunner {
         ToolNames.applyPatch => await _withHint(tool, args, _applyPatch),
         ToolNames.diagnostics => await _diagnostics(args),
         ToolNames.notebookEdit => _notebookEdit(args),
-        ToolNames.grep => await _grep(args),
-        ToolNames.glob => await _glob(args),
+        ToolNames.grep => await _grep(args, cancel),
+        ToolNames.glob => await _glob(args, cancel),
         ToolNames.todo => const ToolOutput('Todos updated. Keep working through them.'),
         ToolNames.webFetch => await _webFetch(args),
         ToolNames.webSearch => await _webSearch(args),
@@ -1102,7 +1133,12 @@ final class ToolRunner {
     final check = await packages?.check(command, cwd: cwd, root: root);
     if (check?.refusal case final why?) return ToolOutput(why, isError: true);
     if (args['run_in_background'] == true) {
-      final bg = await shell.start(command, description: args['description'] as String? ?? '');
+      final BackgroundShell bg;
+      try {
+        bg = await shell.start(command, description: args['description'] as String? ?? '');
+      } on TooManyBackgroundShells catch (e) {
+        return ToolOutput(e.message, isError: true);
+      }
       return ToolOutput(
         'Started in the background as ${bg.id} (pid ${bg.pid}). Use bash_output to read its output, monitor '
         'to wait for a line or its exit, and kill_shell to stop it.${PackageGuard.block(check?.notes ?? const [])}',
@@ -1120,19 +1156,32 @@ final class ToolRunner {
       cancel: cancel,
     );
     final out = _commandOutput(command, r.output.trimRight(), name, cwd: cwd);
-    final note = r.timedOut
+    final stopped = switch (r.stop) {
+      null || Ended() => null,
+      final o => killOutcomeText(o),
+    };
+    final note = stopped != null
+        ? '\n[${r.timedOut ? 'Timed out after ${ms ~/ 1000} s' : 'Stopped by the user'}, but the command is '
+              '$stopped. It may still change files or hold ports.]'
+        : r.timedOut
         ? '\n[Killed after ${ms ~/ 1000} s. Run long commands in the background with run_in_background.]'
         : r.cancelled
         ? '\n[Stopped by the user.]'
         : '';
-    final shown = '${out.isEmpty ? '(no output)' : out}$note${r.exitCode == 0 ? '' : '\n[exit code ${r.exitCode}]'}';
+    final code = stopped != null || r.exitCode == 0 ? '' : '\n[exit code ${r.exitCode}]';
+    final shown = '${out.isEmpty ? '(no output)' : out}$note$code';
     final checked = check == null
         ? ''
         : PackageGuard.block([...check.notes, ...await packages!.lockNotes(locks!, command)]);
     return ToolOutput(
       '${_fit(shown, name)}$checked',
-      isError: r.exitCode != 0,
-      observation: {'exit_code': r.exitCode, 'cwd': shell.cwd, 'start_cwd': startCwd},
+      isError: r.exitCode != 0 || !r.closed,
+      observation: {
+        'exit_code': r.exitCode,
+        'cwd': shell.cwd,
+        'start_cwd': startCwd,
+        if (!r.closed) 'not_closed': true,
+      },
     );
   }
 
@@ -1162,17 +1211,21 @@ final class ToolRunner {
 
   BackgroundShell? _bg(Map<String, Object?> args) => shell.backgroundShell(args['shell_id'] as String? ?? '');
 
-  String _status(BackgroundShell b) => b.running ? 'running' : 'exited with code ${b.exitCode}';
+  String _status(BackgroundShell b) => switch (b.state) {
+    ShellRunning() => 'running',
+    ShellStopping() => 'stopping',
+    ShellExited(:final code) => code == null ? 'exited' : 'exited with code $code',
+    ShellNotClosed(:final pids, :final reason) => 'NOT CLOSED: pids ${pids.join(', ')} still running ($reason)',
+  };
 
   /// What the agent should know beside [b]'s output: what the user typed into it since the last read, and the
   /// prompt it seems to wait at.
   String _shellNotes(BackgroundShell b) {
     final typed = b.entry.takeTyped();
     final waiting = b.waitingFor();
-    final restarted = b.restarted;
-    b.restarted = false;
+    final note = b.takeNote();
     return [
-      if (restarted) '[The user restarted this shell from the app: the output is from the new run.]',
+      if (note != null) '[$note]',
       if (typed != null)
         '[The user typed into this shell from the app: ${stripHidden(typed)}. What follows may come from that.]',
       if (waiting != null)
@@ -1204,8 +1257,9 @@ final class ToolRunner {
   Future<ToolOutput> _killShell(Map<String, Object?> args) async {
     final b = _bg(args);
     if (b == null) return ToolOutput('Error: no background shell ${args['shell_id']}.', isError: true);
-    await b.kill();
-    return ToolOutput('Stopped ${b.id}.');
+    final out = await b.kill();
+    if (out is Ended) return ToolOutput('Stopped ${b.id}.');
+    return ToolOutput('Not closed: ${b.id} ${killOutcomeText(out)}.', isError: true);
   }
 
   Future<ToolOutput> _monitor(Map<String, Object?> args, Future<void>? cancel) async {
@@ -1594,15 +1648,53 @@ final class ToolRunner {
     );
   }
 
+  /// Runs [exe] for a tool through the supervisor: the session's, stopped (verified) at [timeout] or on [cancel]
+  /// (the user's Stop), its output capped.
+  Future<RunResult> _bounded(
+    String exe,
+    List<String> args, {
+    Duration timeout = const Duration(minutes: 2),
+    Future<void>? cancel,
+    Map<String, String> env = const {},
+    String? cwd,
+  }) => ProcessSupervisor.instance.runBounded(
+    exe,
+    args,
+    timeout: timeout,
+    cancel: cancel,
+    owner: sessionTag.isEmpty ? const AppOwner() : SessionOwner(sessionTag),
+    env: env,
+    cwd: cwd,
+    maxOutputBytes: 32 * 1024 * 1024,
+  );
+
+  /// The tool's error for a run that didn't finish: stopped at its timeout or by the user (and whether that stop
+  /// closed it), or didn't start.
+  static ToolOutput _runFailed(String what, RunResult r) => ToolOutput(switch (r) {
+    TimedOut(:final kill) => 'Error: $what took too long and was stopped${_killNote(kill)}.',
+    Cancelled(:final kill) => 'Error: $what was stopped by the user${_killNote(kill)}.',
+    StartFailed(:final error) => "Error: $what didn't start: $error",
+    Refused(:final reason) => "Error: $what wasn't run: $reason",
+    Finished(:final code, :final stderr) => 'Error: $what exited $code: ${stderr.trim()}',
+  }, isError: true);
+
+  static String _killNote(KillOutcome k) => k is Ended ? '' : ' (${killOutcomeText(k)})';
+
   Future<bool> _hasRg() async {
-    try {
-      return (await Process.run('rg', ['--version'], environment: (await ShellEnv.load()).env)).exitCode == 0;
-    } on ProcessException {
-      return false;
-    }
+    final r = await _bounded(
+      'rg',
+      ['--version'],
+      timeout: const Duration(seconds: 10),
+      env: (await ShellEnv.load()).env,
+    );
+    return switch (r) {
+      Finished(:final code) => code == 0,
+      StartFailed() => false, // not installed
+      TimedOut() || Cancelled() || Refused() => false,
+    };
   }
 
-  Future<ToolOutput> _grep(Map<String, Object?> args) async {
+  Future<ToolOutput> _grep(Map<String, Object?> args, Future<void>? cancel) async {
     final pattern = args['pattern'] as String? ?? '';
     final where = resolvePath(root, args['path'] as String? ?? '');
     final mode = args['output_mode'] as String? ?? 'files_with_matches';
@@ -1612,9 +1704,9 @@ final class ToolRunner {
       return ToolOutput('Error: ${_relative(where)} looks like a secret; grep skips secret files.', isError: true);
     }
     final env = (await ShellEnv.load()).env;
-    final ProcessResult res;
+    final RunResult run;
     if (await _hasRg()) {
-      res = await Process.run(
+      run = await _bounded(
         'rg',
         [
           '--no-heading',
@@ -1632,11 +1724,12 @@ final class ToolRunner {
           pattern,
           where,
         ],
-        environment: env,
-        workingDirectory: root,
+        env: env,
+        cwd: root,
+        cancel: cancel,
       );
     } else {
-      res = await Process.run(
+      run = await _bounded(
         'grep',
         [
           '-rE',
@@ -1654,15 +1747,20 @@ final class ToolRunner {
           pattern,
           where,
         ],
-        environment: env,
-        workingDirectory: root,
+        env: env,
+        cwd: root,
+        cancel: cancel,
       );
     }
-    final out = (res.stdout as String).trim();
-    if (res.exitCode > 1) return ToolOutput('Error: ${(res.stderr as String).trim()}', isError: true);
+    if (run is! Finished) return _runFailed('grep', run);
+    final out = run.stdout.trim();
+    if (run.code > 1) return ToolOutput('Error: ${run.stderr.trim()}', isError: true);
     if (out.isEmpty) return const ToolOutput('No matches.');
     final lines = out.split('\n');
-    final shown = lines.length > 250 ? [...lines.take(250), '[${lines.length - 250} more not shown]'] : lines;
+    final shown = [
+      ...lines.length > 250 ? [...lines.take(250), '[${lines.length - 250} more not shown]'] : lines,
+      if (run.out.truncated) _cutNote,
+    ];
     // Matching lines are file text: hidden characters out, as read does, and lines from files outside the project
     // (see outsideProject) in an untrusted block. Path lists are left alone; scripts parse them.
     final text = shown.map(_relative).join('\n');
@@ -1680,33 +1778,32 @@ final class ToolRunner {
     );
   }
 
+  /// The last line of a grep or glob whose output passed the run's byte cap (the rest was dropped unread).
+  static const _cutNote = '[Output passed 32 MB and was cut: results are incomplete; narrow the path or pattern.]';
+
   /// The file of a content-mode match line (`path:12:text`).
   static final _grepFile = RegExp(r'^([^\n]+?):\d+:');
 
   String _relative(String line) => line.startsWith('$root/') ? line.substring(root.length + 1) : line;
 
-  Future<ToolOutput> _glob(Map<String, Object?> args) async {
+  Future<ToolOutput> _glob(Map<String, Object?> args, Future<void>? cancel) async {
     final pattern = args['pattern'] as String? ?? '';
     final where = resolvePath(root, args['path'] as String? ?? '');
     final env = (await ShellEnv.load()).env;
-    List<String> paths;
+    final RunResult run;
     if (await _hasRg()) {
-      final res = await Process.run(
-        'rg',
-        ['--files', '--glob', pattern, where],
-        environment: env,
-        workingDirectory: root,
-      );
-      paths = const LineSplitter().convert(res.stdout as String);
+      run = await _bounded('rg', ['--files', '--glob', pattern, where], env: env, cwd: root, cancel: cancel);
     } else {
       final name = pattern.split('/').last;
-      final res = await Process.run('find', [where, '-name', name, '-not', '-path', '*/.git/*'], environment: env);
-      paths = const LineSplitter().convert(res.stdout as String);
+      run = await _bounded('find', [where, '-name', name, '-not', '-path', '*/.git/*'], env: env, cancel: cancel);
     }
+    if (run is! Finished) return _runFailed('glob', run);
+    final paths = const LineSplitter().convert(run.stdout);
     if (paths.isEmpty) return const ToolOutput('No files found.');
     final dated = [for (final p in paths) (p, FileStat.statSync(p).modified)]..sort((a, b) => b.$2.compareTo(a.$2));
     final names = [for (final (p, _) in dated.take(200)) _relative(p)];
     if (dated.length > 200) names.add('[${dated.length - 200} more not shown]');
+    if (run.out.truncated) names.add(_cutNote);
     return ToolOutput(names.join('\n'));
   }
 

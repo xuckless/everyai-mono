@@ -1,10 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../../../core/security/untrusted.dart';
 import '../../../skills/data/skill_store_io.dart' show digestOfBytes;
 import '../../../skills/domain/skill_catalog.dart';
 import '../../../skills/domain/skill_format.dart';
+import '../../../../core/process/supervisor.dart' show ProbeOwner;
+import '../short_run.dart';
 import 'briefing_types.dart';
 import 'skill_export.dart' show ExportResult;
 import 'skill_render.dart';
@@ -202,7 +206,16 @@ Future<bool> _put(String root, String rel, _Want w) async {
     await _removeAny(tmp);
   }
   await File(tmp).writeAsBytes(w.bytes);
-  if (w.exec) await Process.run('chmod', ['+x', tmp]);
+  if (w.exec) {
+    final r = await runShort(
+      'chmod',
+      ['+x', tmp],
+      timeout: const Duration(seconds: 10),
+      owner: const ProbeOwner('skills'),
+    );
+    // As before, a file left without its x bit still goes in; the log says why.
+    if (runProblem('chmod +x $tmp', r) case final why?) debugPrint('EveryAI skills: $why');
+  }
   await File(tmp).rename(path);
   return true;
 }

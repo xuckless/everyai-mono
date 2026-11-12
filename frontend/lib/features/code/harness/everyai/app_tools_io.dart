@@ -1,11 +1,16 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/process/pool.dart' show ResourceKind;
+import '../../live/live_pool.dart';
+
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
+import '../../domain/local_ports.dart' show parseSsListen;
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
 import '../../live/app_view.dart';
@@ -226,12 +231,24 @@ Future<String?> _foreignDevTools(AppEndpoint ep, Future<Set<int>> Function()? se
   if (ep.kind != AppKind.electron || sessionPids == null || Platform.isWindows) return null;
   final port = ep.uri.hasPort ? ep.uri.port : null;
   if (port == null) return null;
+  final r = await ProcessSupervisor.instance.runBounded(
+    'lsof',
+    ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t'],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('devtools-check'),
+    maxOutputBytes: 64 * 1024,
+  );
   final Set<int> listeners;
-  try {
-    final r = await Process.run('lsof', ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']);
-    listeners = {for (final l in '${r.stdout}'.split('\n')) ?int.tryParse(l.trim())};
-  } on Object {
-    return null;
+  switch (r) {
+    // 1: nothing listens there (nothing to attach to; the attach itself then fails).
+    case Finished(:final code, :final stdout) when code == 0 || code == 1:
+      listeners = {for (final l in stdout.split('\n')) ?int.tryParse(l.trim())};
+    case Finished() || TimedOut() || Cancelled() || StartFailed() || Refused():
+      // Linux without lsof (or a failing one): ss tells the same.
+      final viaSs = Platform.isLinux ? await _ssListeners(port) : null;
+      // Who listens is unknown: refused, never read as allowed.
+      if (viaSs == null) return "EveryAI couldn't check who listens on port $port ($r), so it won't attach to it.";
+      listeners = viaSs;
   }
   if (listeners.isEmpty) return null;
   final mine = await sessionPids();
@@ -241,6 +258,25 @@ Future<String?> _foreignDevTools(AppEndpoint ep, Future<Set<int>> Function()? se
   return 'port $port belongs to a program this session didn\'t start (perhaps the user\'s own browser, with their '
       'signed-in pages), so EveryAI won\'t attach to it. Start the app from this session (bash run_in_background), '
       'then use its address.';
+}
+
+/// The pids listening on TCP [port] by `ss -Hltnp` (Linux), or null when ss couldn't tell.
+Future<Set<int>?> _ssListeners(int port) async {
+  final r = await ProcessSupervisor.instance.runBounded(
+    'ss',
+    ['-Hltnp'],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('devtools-check'),
+    maxOutputBytes: 4 * 1024 * 1024,
+  );
+  if (r case Finished(code: 0, :final stdout)) {
+    return {
+      for (final l in parseSsListen(stdout))
+        if (l.port == port) l.pid,
+    };
+  }
+  debugPrint('devtools check: ss could not list listeners either ($r).');
+  return null;
 }
 
 /// Whether Metro answers at [metro].
@@ -324,8 +360,23 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
     final sims = Platform.isMacOS ? await IosSimulators.list() : const <SimDevice>[];
     final base = device.replaceFirst(RegExp(r'\s*\(i(?:Pad)?OS [\d.]+\)$'), '').toLowerCase();
     final isSim = sims.any((d) => d.udid == device || d.name.toLowerCase() == base);
+    // A booted simulator or emulator is a pooled resource: the session takes its turn before it boots one.
+    Future<ToolOutput?> turn(ResourceKind kind) async => switch (await LivePool.forAgent(session, kind)) {
+      TurnQueued(:final text) => ToolOutput(text),
+      TurnGranted() => null,
+    };
+    Future<T> booting<T>(ResourceKind kind, Future<T> Function() boot) async {
+      try {
+        return await boot();
+      } catch (e) {
+        if (LivePool.sessionLease(session, kind) case final l?) LivePool.pool.fail(l, '$e');
+        rethrow;
+      }
+    }
+
     if (isSim) {
-      final d = await IosSimulators.boot(device);
+      if (await turn(ResourceKind.simulator) case final queued?) return queued;
+      final d = await booting(ResourceKind.simulator, () => IosSimulators.boot(device));
       if (IosSimulators.claim(d.udid, session) case final other?) {
         return ToolOutput('Error: ${d.name} is booted, but another session ($other) is using it.', isError: true);
       }
@@ -338,7 +389,8 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
     if (AndroidSdk.adb == null) {
       return ToolOutput('Error: no simulator or device called "$device" (devices lists them).', isError: true);
     }
-    final d = await AndroidDevices.boot(device);
+    if (await turn(ResourceKind.emulator) case final queued?) return queued;
+    final d = await booting(ResourceKind.emulator, () => AndroidDevices.boot(device));
     if (AndroidDevices.holds.claim(d.serial, session) case final other?) {
       return ToolOutput('Error: ${d.name} is running, but another session ($other) is using it.', isError: true);
     }

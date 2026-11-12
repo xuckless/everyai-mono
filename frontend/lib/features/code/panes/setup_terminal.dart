@@ -4,11 +4,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../drivers/terminal/terminal_session.dart' show TerminalSession;
 import '../environments/exec_env.dart';
+import '../../../core/process/supervisor.dart' show Ended;
 import 'pty.dart';
 
 /// Starts a shell for the setup terminal in [env] with [home] as its folder; null where there is no pty.
@@ -93,7 +95,7 @@ final class SetupTerminal {
       return;
     }
     if (_disposed) {
-      pty?.kill();
+      if (pty != null) await _end(pty);
       return;
     }
     if (pty == null) {
@@ -119,12 +121,19 @@ final class SetupTerminal {
   /// Types [text] at the prompt without Enter.
   void type(String text) => _pty?.write(Uint8List.fromList(utf8.encode(text)));
 
-  /// Ends the shell and what it started.
+  /// Ends the shell and what it started (verified; one that doesn't close is logged, and stays listed by the
+  /// supervisor as not closed).
   void dispose() {
     _disposed = true;
     _sub?.cancel();
     _sub = null;
-    _pty?.kill();
+    final pty = _pty;
     _pty = null;
+    if (pty != null) unawaited(_end(pty));
+  }
+
+  static Future<void> _end(ShellPty pty) async {
+    final out = await pty.kill();
+    if (out is! Ended) debugPrint('NOT CLOSED: the setup terminal (${pty.pid}): $out');
   }
 }

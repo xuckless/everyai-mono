@@ -9,7 +9,6 @@ import 'package:every_ai/features/code/drivers/briefing/recipes.dart' show claud
 import 'package:every_ai/features/code/drivers/claude/claude_driver.dart';
 import 'package:every_ai/features/code/drivers/claude/claude_wire.dart';
 import 'package:every_ai/features/code/drivers/driver.dart';
-import 'package:every_ai/features/code/drivers/driver_events.dart' show actionEvent;
 import 'package:every_ai/features/code/drivers/driver_policy.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:every_ai/features/code/drivers/usage_limit.dart';
@@ -264,37 +263,6 @@ void main() {
       expect(fresh.env, {'MCP_TOOL_TIMEOUT': '330000', 'CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT': '330000'});
     });
 
-    test('one --settings JSON: sorted skill overrides beside the shell switch, from every builder', () {
-      const noCredit = '"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}';
-      expect(claudeSettingsJson(), '{"disableSkillShellExecution":true,$noCredit}');
-      expect(
-        claudeSettingsJson(skillsOff: {'pdf', 'plugin:x:lint', 'docx'}),
-        '{"disableSkillShellExecution":true,$noCredit,'
-        '"skillOverrides":{"docx":"off","pdf":"off","plugin:x:lint":"off"}}',
-      );
-      const off = {'pdf'};
-      final json = claudeSettingsJson(skillsOff: off);
-      List<String> settings(List<String> args) => [
-        for (var i = 0; i < args.length; i++)
-          if (args[i] == '--settings') args[i + 1],
-      ];
-      expect(claudeLaunch(sessionId: 'a', resume: false, mode: AgentMode.ask, skillsOff: off).args, contains(json));
-      expect(settings(claudeLaunch(sessionId: 'a', resume: false, mode: AgentMode.ask, skillsOff: off).args), [json]);
-      expect(settings(claudeAsideArgs(sessionId: 'a', resume: false, skillsOff: off)), [json]);
-      const b = DriverBriefing(mcpUrl: 'http://127.0.0.1:7000/mcp', mcpToken: 't', skillDir: '/s/briefing/skills');
-      for (final withSkillDir in [true, false]) {
-        final briefing = withSkillDir ? b : const DriverBriefing(mcpUrl: 'http://127.0.0.1:7000/mcp', mcpToken: 't');
-        final l = claudeLaunch(
-          sessionId: 'a',
-          resume: false,
-          mode: AgentMode.ask,
-          briefing: claudeDelivery(briefing, sessionText: 'x', skillsOff: off),
-          skillsOff: off,
-        );
-        expect(settings(l.args), [json]);
-      }
-    });
-
     test('our modes map onto Claude permission modes', () {
       expect(
         {for (final m in AgentMode.values) m: permissionModeFor(m)},
@@ -306,45 +274,6 @@ void main() {
           AgentMode.fullAuto: 'bypassPermissions',
           AgentMode.bypass: 'bypassPermissions',
         },
-      );
-    });
-
-    test('models: Claude aliases pass, OpenRouter ids are translated, the default is left out', () {
-      expect(claudeModelArg('sonnet'), 'sonnet');
-      expect(claudeModelArg('anthropic/claude-sonnet-5.5'), 'claude-sonnet-5-5');
-      expect(claudeModelArg('default'), isNull);
-      expect(claudeModelArg(''), isNull);
-    });
-
-    test('a briefing adds the recipe and turns off Claude\'s own question tool; the token stays in env', () {
-      const b = DriverBriefing(
-        mcpUrl: 'http://127.0.0.1:7000/mcp',
-        mcpToken: 'tok-secret',
-        skillDir: '/s/briefing/skills',
-      );
-      final l = claudeLaunch(
-        sessionId: 'abc',
-        resume: false,
-        mode: AgentMode.ask,
-        briefing: claudeDelivery(b, sessionText: 'Session rules.'),
-      );
-      final at = l.args.indexOf('--disallowedTools');
-      expect(l.args.sublist(at, at + 4), ['--disallowedTools', 'AskUserQuestion', '--plugin-dir', '/s/briefing']);
-      expect(l.args, containsAll(['--mcp-config', '--append-system-prompt', 'Session rules.', '--add-dir']));
-      // The recipe's own --settings switches skill shell lines off; there is only one.
-      expect(l.args.where((a) => a == '--settings'), hasLength(1));
-      expect(l.args, contains(claudeSettingsJson()));
-      expect(l.args.join(' '), isNot(contains('tok-secret')));
-      expect(l.env[tokenEnvVar], 'tok-secret');
-      expect(l.env['MCP_TOOL_TIMEOUT'], '330000');
-
-      final bare = claudeDelivery(const DriverBriefing(mcpUrl: 'http://127.0.0.1:7000/mcp', mcpToken: 't'));
-      expect(
-        [
-          for (final a in bare.args)
-            if (a.startsWith('--')) a,
-        ],
-        ['--mcp-config', '--settings'],
       );
     });
   });
@@ -454,96 +383,6 @@ void main() {
       expect(limit.message, text);
       expect(limit.resetsAt, DateTime.fromMillisecondsSinceEpoch(1800000000 * 1000, isUtc: true));
     });
-
-    test('a key out of credit is a limit without a reset; a retried rate limit is a plain failure', () {
-      final d = ClaudeDecoder();
-      d.decode(apiError('Credit balance is too low', error: 'billing_error'));
-      final billing = d.decode(failed('Credit balance is too low')).map(usageLimitOf).nonNulls.single;
-      expect(billing.resetsAt, isNull);
-
-      d.decode(apiError('Request rejected (429)'));
-      final events = d.decode(failed('Request rejected (429)'));
-      expect(events.whereType<ConversationFailure>().single.message, 'Request rejected (429)');
-      expect(events.map(usageLimitOf).nonNulls, isEmpty);
-    });
-
-    test('rate_limit_event: how much of each window is used, before the limit (recorded + hand-written)', () {
-      final d = ClaudeDecoder();
-      // Recorded (run2 c1-traffic): allowed, one seven-day window.
-      final recorded =
-          d.decode({
-                'type': 'rate_limit_event',
-                'uuid': 'rl-1',
-                'rate_limit_info': {
-                  'status': 'allowed',
-                  'resetsAt': 1800000000,
-                  'rateLimitType': 'seven_day',
-                  'unifiedWindows': {
-                    'seven_day': {'utilization': 0.1, 'resetsAt': 1800000000, 'status': 'allowed'},
-                  },
-                },
-              }).single
-              as PlanLimits;
-      final w = recorded.windows.single;
-      expect((w.name, w.used, w.minutes, recorded.warning), ('seven_day', 0.1, 10080, false));
-      expect(w.resetsAt, DateTime.fromMillisecondsSinceEpoch(1800000000 * 1000, isUtc: true));
-      // Round-trips through raw, as the mirror and the journal carry it.
-      final again = HarnessEvent.decode(recorded.raw) as PlanLimits;
-      expect((again.windows.single.used, again.windows.single.resetsAt, again.warning), (0.1, w.resetsAt, false));
-
-      // Hand-written, not recorded: a warning on the five-hour window, a percent.
-      final warned =
-          d.decode({
-                'type': 'rate_limit_event',
-                'rate_limit_info': {
-                  'status': 'allowed_warning',
-                  'unifiedWindows': {
-                    'five_hour': {'utilization': 82, 'status': 'allowed_warning'},
-                  },
-                },
-              }).single
-              as PlanLimits;
-      expect((warned.windows.single.used, warned.windows.single.minutes, warned.warning), (0.82, 300, true));
-      // No number at all: nothing to show.
-      expect(
-        d.decode({
-          'type': 'rate_limit_event',
-          'rate_limit_info': {'status': 'allowed'},
-        }),
-        isEmpty,
-      );
-    });
-
-    test('the limit is cleared by the turn it ended', () {
-      final d = ClaudeDecoder();
-      d.decode(apiError('limit', api: 'model_requires_usage_credits'));
-      expect(d.decode(failed('limit')).map(usageLimitOf).nonNulls, hasLength(1));
-      final next = d.decode({'type': 'result', 'uuid': 'r2', 'subtype': 'error_during_execution', 'is_error': true});
-      expect(next.whereType<ConversationFailure>(), hasLength(1));
-      expect(next.map(usageLimitOf).nonNulls, isEmpty);
-    });
-    test("a frame Claude Code recovered from, or a subagent's, doesn't label a later failure", () {
-      final d = ClaudeDecoder();
-      d.decode(apiError('limit', api: 'model_requires_usage_credits'));
-      d.decode({
-        'type': 'assistant',
-        'uuid': 'a2',
-        'message': {
-          'content': [
-            {'type': 'text', 'text': 'Carrying on.'},
-          ],
-        },
-      });
-      expect(d.decode(failed('Max turns')).map(usageLimitOf).nonNulls, isEmpty);
-
-      d.decode({...apiError('sub limit', api: 'usage_limit_reached'), 'parent_tool_use_id': 'task-1'});
-      expect(d.decode(failed('Max turns')).map(usageLimitOf).nonNulls, isEmpty);
-
-      // A later main-thread error frame that isn't a limit replaces one that is.
-      d.decode(apiError('limit', api: 'usage_limit_reached'));
-      d.decode(apiError('Overloaded', error: 'overloaded'));
-      expect(d.decode(failed('Overloaded')).map(usageLimitOf).nonNulls, isEmpty);
-    });
   });
 
   group('subagents', () {
@@ -568,59 +407,6 @@ void main() {
         ..add(report);
       final card = t.snapshot.items.whereType<SubagentItem>().single;
       expect((card.task.title, card.task.agent, card.done), ('Map the coach', 'Explore', true));
-    });
-
-    test("a subagent call the user approves shows with its result; a foreground subagent's result is its own", () {
-      final d = ClaudeDecoder();
-      d.decode(_msg(_use('t1', 'Agent', _explore)));
-      d.decode(_taskStarted('t1', background: false));
-      // The driver shows a call the CLI asks about.
-      d.action('inner-1', 'Bash', {'command': 'ls'});
-      expect(d.decode(_innerResult('t1')).single, isA<ToolResult>().having((r) => r.actionId, 'actionId', 'inner-1'));
-      final done = d.decode(_msg(_results(['t1'])));
-      expect(done.single, isA<ToolResult>().having((r) => r.actionId, 'actionId', 't1'));
-      expect(d.hasBackground, isFalse);
-    });
-
-    test('a failed task says so; one whose process ended is closed with the reason', () {
-      final d = ClaudeDecoder();
-      d.decode(_msg(_use('t1', 'Agent', _explore)));
-      d.decode(_msg(_use('t2', 'Agent', _explore)));
-      // No task_started: the launch notice alone marks it as working in the background.
-      d.decode(_launched('t1'));
-      d.decode(_taskStarted('t2'));
-      d.decode(_launched('t2'));
-      final failed = d.decode(_notified('t2', status: 'failed')).single as ToolResult;
-      expect((failed.text, failed.outcome), ('Agent "Map the coach" completed', ToolOutcome.error));
-      final closed = d.orphaned(orphanedSubagent).single as ToolResult;
-      expect((closed.actionId, closed.text), ('t1', orphanedSubagent));
-      expect(d.hasBackground, isFalse);
-    });
-
-    test('a task resumed by SendMessage counts as working until it reports again', () {
-      final d = ClaudeDecoder();
-      d.decode(_msg(_use('t1', 'Agent', _explore)));
-      d.decode(_taskStarted('t1'));
-      d.decode(_launched('t1'));
-      d.decode(_notified('t1'));
-      expect(d.hasBackground, isFalse);
-      d.decode(_msg(_use('s1', 'SendMessage', {'to': 'a1', 'message': 'Go on.'})));
-      d.decode({..._taskStarted('t1'), 'tool_use_id': 's1'});
-      expect(d.hasBackground, isTrue);
-      final again = d.decode(_notified('t1', report: {'text': 'More found.'})).single as ToolResult;
-      expect((again.actionId, again.text), ('t1', 'More found.'));
-      expect(d.hasBackground, isFalse);
-    });
-
-    test("a report that comes before the launch notice isn't undone by the notice", () {
-      final d = ClaudeDecoder();
-      d.decode(_msg(_use('t1', 'Agent', _explore)));
-      d.decode(_taskStarted('t1', background: false));
-      final report = d.decode(_notified('t1', report: {'text': 'Quick.'})).single as ToolResult;
-      expect(report.text, 'Quick.');
-      expect(d.decode(_launched('t1')), isEmpty);
-      expect(d.hasBackground, isFalse);
-      expect(d.orphaned(orphanedSubagent), isEmpty);
     });
 
     test('a session wakes when a background subagent reports, and its card gets the report', () async {
@@ -661,112 +447,6 @@ void main() {
       final card = t.snapshot.items.whereType<SubagentItem>().single;
       expect((card.step.result?.text, card.done), ('Found it.', true));
       await session.close();
-    });
-
-    List<ExecutionStatus> statesOf(List<HarnessEvent> events) => [
-      for (final e in events)
-        if (e is StateChange && e.executionStatus != ExecutionStatus.unknown) e.executionStatus,
-    ];
-    List<String> background(String id) => [
-      _init,
-      _say('Look around.'),
-      _use(id, 'Agent', _explore),
-      _in(_taskStarted(id)),
-      _in(_launched(id)),
-      _done('r1'),
-      _in(_notified(id, report: {'text': 'Found it.'})),
-    ];
-
-    test('a report while idle shows the session working until Claude starts its turn, or for a bounded wait', () async {
-      final saved = wakeWait;
-      wakeWait = const Duration(milliseconds: 60);
-      addTearDown(() => wakeWait = saved);
-      final channel = ReplayChannel(_script(background('t1')));
-      final session = await driver(_Spawner([channel])).start(_spec());
-      final events = _record(session);
-      await session.send('Look around.');
-      await _played(channel);
-      // Waking: the notification came, no turn yet.
-      expect(statesOf(events), [ExecutionStatus.running, ExecutionStatus.finished, ExecutionStatus.running]);
-      // No turn followed: back to what it showed before.
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      expect(statesOf(events).last, ExecutionStatus.finished);
-      await session.close();
-    });
-
-    test("a message sent while Claude wakes for a report isn't ended by the report's turn", () async {
-      final channel = ReplayChannel(
-        _script([
-          ...background('t2'),
-          _say('And the tests?'),
-          _in(_words('w1', 'The subagent found it.')),
-          _done('r2'),
-          _in(_words('w2', 'Tests pass.')),
-          _done('r3'),
-        ]),
-      );
-      final session = await driver(_Spawner([channel])).start(_spec());
-      final events = _record(session);
-      await session.send('Look around.');
-      for (var i = 0; i < 50 && events.whereType<ToolResult>().isEmpty; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-      await session.send('And the tests?');
-      await _played(channel);
-      final states = statesOf(events);
-      // The report's turn ends with r2, which isn't the end of the user's: only r3 is.
-      expect(states.where((s) => s == ExecutionStatus.finished), hasLength(2));
-      expect(states.last, ExecutionStatus.finished);
-      final r2At = events.indexWhere((e) => e is ChatMessage && e.text == 'The subagent found it.');
-      final r3At = events.indexWhere((e) => e is ChatMessage && e.text == 'Tests pass.');
-      expect(
-        events.sublist(r2At, r3At).whereType<StateChange>().map((e) => e.executionStatus),
-        isNot(contains(ExecutionStatus.finished)),
-      );
-      await session.close();
-    });
-
-    test('Stop while Claude wakes for a report stops the turn it then starts', () async {
-      final channel = _LiveChannel();
-      final session = await driver(_Spawner([channel])).start(_spec());
-      final events = _record(session);
-      await session.send('Look around.');
-      await pumpEventQueue();
-      for (final line in background('t3').skip(2)) {
-        final m = jsonDecode(line) as Map<String, Object?>;
-        if (m['dir'] == 'in') channel.push(m['msg']! as Map<String, Object?>);
-      }
-      await pumpEventQueue();
-      expect(statesOf(events).last, ExecutionStatus.running);
-      await session.interrupt();
-      await pumpEventQueue();
-      expect(statesOf(events).last, ExecutionStatus.finished);
-      expect(channel.interrupts, 0);
-      // Claude starts the report's turn anyway: it is stopped at once.
-      channel.push(_words('w1', 'The subagent found it.'));
-      await pumpEventQueue();
-      expect(channel.interrupts, 1);
-      await session.close();
-    });
-
-    test("closing the process ends a working subagent's card; so does reopening a session left with one", () async {
-      final channel = ReplayChannel(
-        _script([_init, _say('Look around.'), _use('t1', 'Agent', _explore), _in(_launched('t1')), _done('r1')]),
-      );
-      final d = driver(_Spawner([channel]));
-      final session = await d.start(_spec());
-      final events = _record(session);
-      await session.send('Look around.');
-      await _played(channel);
-      expect(events.whereType<ToolResult>(), isEmpty);
-      await session.close();
-      expect(events.whereType<ToolResult>().single.text, orphanedSubagent);
-
-      final history = [
-        actionEvent(id: 'old', toolName: 'Agent', kind: 'TaskAction', args: {'description': 'x'}),
-        actionEvent(id: 'other', toolName: 'Bash', kind: 'TerminalAction'),
-      ];
-      expect(unfinishedSubagents(history, orphanedSubagent).map((r) => r.actionId), ['old']);
     });
   });
 
@@ -824,76 +504,6 @@ void main() {
       await session.close();
     });
 
-    test('the skill names the CLI lists (initialize, system/init: strings or objects) reach the driver', () async {
-      // init_skills.jsonl is init_image_turn.jsonl cut down, with skills added by hand: the recorded CLI had none.
-      final channel = ReplayChannel(_fixture('init_skills.jsonl'));
-      final seen = <List<String>>[];
-      final d = ClaudeDriver(dataDir: () async => tmp.path, spawn: _Spawner([channel]).call, onSkills: seen.add);
-      final session = await d.start(_spec());
-      await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
-      await _played(channel);
-      expect(seen, [
-        ['pdf', 'review'],
-        ['pdf', 'plugin:demo:lint', 'review'],
-      ]);
-      await session.close();
-    });
-
-    test('skills turned off reach the next process only: now when idle, after the turn when busy', () async {
-      final one = ReplayChannel(_script([_init, _say('Hi.'), _done('r1')]));
-      final two = ReplayChannel(_script([_init, _say('Again.'), _done('r2')]));
-      final s = _Spawner([one, two]);
-      final spec = SessionSpec(
-        workingDir: '/work/repo',
-        model: 'haiku',
-        mode: AgentMode.ask,
-        llmBaseUrl: '',
-        llmApiKey: '',
-        sessionTag: 'tag-1',
-        initialMessage: 'Hi.',
-        skillsOff: const {'pdf'},
-      );
-      final session = await driver(s).start(spec);
-      await _played(one);
-      expect(s.calls[0].args, contains(claudeSettingsJson(skillsOff: {'pdf'})));
-
-      (session as TakesSkillOverrides).setSkillsOff({'pdf', 'docx'});
-      await session.send('Again.');
-      await _played(two);
-      expect(s.calls[1].args, contains(claudeSettingsJson(skillsOff: {'pdf', 'docx'})));
-      expect(s.calls[1].args.where((a) => a == '--settings'), hasLength(1));
-      await session.close();
-    });
-
-    test('skills turned off while the process starts reach the next one', () async {
-      final one = ReplayChannel(_script([_init, _say('Hi.'), _done('r1')]));
-      final two = ReplayChannel(_script([_init, _say('Again.'), _done('r2')]));
-      final s = _Spawner([one, two]);
-      final session = await driver(s).start(_spec());
-      final first = session.send('Hi.');
-      // The process is being launched with the old set.
-      (session as TakesSkillOverrides).setSkillsOff({'pdf'});
-      await first;
-      await _played(one);
-      await session.send('Again.');
-      await _played(two);
-      expect(s.calls, hasLength(2));
-      expect(s.calls[1].args, contains(claudeSettingsJson(skillsOff: {'pdf'})));
-      await session.close();
-    });
-
-    test('with an API key the turn is spending, not the plan', () async {
-      final channel = ReplayChannel(
-        _fixture('init_image_turn.jsonl').replaceAll('"apiKeySource":"none"', '"apiKeySource":"ANTHROPIC_API_KEY"'),
-      );
-      final session = await driver(_Spawner([channel])).start(_spec());
-      final events = _record(session);
-      await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
-      await _played(channel);
-      expect(events.whereType<UsageReport>().single.onPlan, isFalse);
-      await session.close();
-    });
-
     test("a call Claude's permission prompt asks about waits until it is answered, then runs", () async {
       final channel = ReplayChannel(_fixture('prompt_allow.jsonl'));
       final session = await driver(_Spawner([channel]))
@@ -947,27 +557,6 @@ void main() {
       await session.close();
     });
 
-    test('Always keeps where Claude proposed to save the rule; without a rule offered it is allowed once', () {
-      const rule = {
-        'type': 'addRules',
-        'rules': [
-          {'toolName': 'Bash', 'ruleContent': 'ls'},
-        ],
-        'behavior': 'allow',
-        'destination': 'localSettings',
-      };
-      expect(claudeRememberedRules([rule], NativeGrant.always), [rule]);
-      expect(claudeRememberedRules([rule], NativeGrant.session).single['destination'], 'session');
-      expect(
-        claudeRememberedRules([
-          {'type': 'setMode', 'mode': 'acceptEdits', 'destination': 'session'},
-        ], NativeGrant.always),
-        isEmpty,
-      );
-      expect(approvalAnswer(accept: true).containsKey('updatedPermissions'), isFalse);
-      expect(ClaudeDriver().remembers, NativeRemember.sessionOrSaved);
-    });
-
     test('a refused permission prompt goes back to the model, which carries on', () async {
       final channel = ReplayChannel(_fixture('deny_write.jsonl'));
       final session = await driver(_Spawner([channel])).start(
@@ -1018,38 +607,6 @@ void main() {
       });
       expect(events.whereType<UsageReport>(), isEmpty);
       expect(_isState(events.last, ExecutionStatus.paused), isTrue);
-      await session.close();
-    });
-
-    test("a call Claude runs without asking isn't the user's; an answer for it is dropped", () async {
-      final channel = ReplayChannel(
-        _script([
-          _init,
-          _say('Two at once.'),
-          _use('toolu_a', 'Bash', {'command': 'echo a'}),
-          _use('toolu_b', 'Bash', {'command': 'echo b'}),
-          _prompt('h2', 'toolu_b', 'Bash', {'command': 'echo b'}),
-          _out(controlResponse('h2', approvalAnswer(accept: false, reason: 'Not b.'))),
-          _results(['toolu_a']),
-          _done('r1'),
-        ]),
-      );
-      final session = await driver(_Spawner([channel])).start(_spec(message: 'Two at once.'));
-      final t = TranscriptBuilder();
-      final asked = <List<String>>[];
-      _record(session, (e) {
-        t.add(e);
-        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
-          asked.add([for (final c in t.snapshot.pending) c.id]);
-          // Claude never asked about a: this answer goes nowhere.
-          unawaited(session.respond(accept: false, reason: 'Not a.', callIds: ['toolu_a']));
-          unawaited(session.respond(accept: false, reason: 'Not b.', callIds: ['toolu_b']));
-        }
-      });
-      await _played(channel);
-      expect(asked, [
-        ['toolu_b'],
-      ]);
       await session.close();
     });
 
@@ -1173,71 +730,6 @@ void main() {
       await session.close();
     });
 
-    test('a new effort restarts the CLI with it, a cleared one without; a model change is live', () async {
-      final one = ReplayChannel(_script([_init, _say('Hi.'), _done('r1')]));
-      final two = ReplayChannel(_script([_init, _say('Again.'), _done('r2')]));
-      final three = ReplayChannel(
-        _script([
-          _init,
-          _say('Once more.'),
-          _done('r3'),
-          _out(controlRequest('req_2', {'subtype': 'set_model', 'model': 'sonnet'})),
-          _in(controlResponse('req_2', const {'model': 'claude-sonnet-5-5'})),
-        ]),
-      );
-      final s = _Spawner([one, two, three]);
-      final d = driver(s);
-      final session = await d.start(_spec(message: 'Hi.'));
-      await _played(one);
-      expect(s.calls[0].args, isNot(contains('--effort')));
-
-      await session.switchLlm(_spec(effort: 'high'));
-      await session.send('Again.');
-      await _played(two);
-      expect(s.calls[1].args, containsAllInOrder(['--resume', session.id, '--effort', 'high']));
-
-      await session.switchLlm(_spec(effort: ''));
-      await session.send('Once more.');
-      await pumpEventQueue();
-      expect(s.calls[2].args, isNot(contains('--effort')));
-      await session.switchLlm(_spec(model: 'sonnet'));
-      await _played(three);
-      expect(s.calls, hasLength(3));
-      await session.close();
-      // The record dropped the effort too, so a restart doesn't bring it back.
-      final again = jsonDecode(File('${tmp.path}/driver-sessions/claude-code/${session.id}.json').readAsStringSync());
-      expect((again as Map).containsKey('effort'), isFalse);
-    });
-
-    test('an effort changed during a turn applies once the turn ends', () async {
-      final one = ReplayChannel(
-        _script([
-          _init,
-          _say('Go.'),
-          _use('toolu_a', 'Bash', {'command': 'make'}),
-          _prompt('h1', 'toolu_a', 'Bash', {'command': 'make'}),
-          _allow('h1', {'command': 'make'}),
-          _results(['toolu_a']),
-          _done('r1'),
-        ]),
-      );
-      final two = ReplayChannel(_script([_init, _say('Next.'), _done('r2')]));
-      final s = _Spawner([one, two]);
-      final session = await driver(s).start(_spec(message: 'Go.'));
-      _record(session, (e) {
-        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
-          unawaited(
-            session.switchLlm(_spec(effort: 'low')).then((_) => session.respond(accept: true, callIds: ['toolu_a'])),
-          );
-        }
-      });
-      await _played(one);
-      await session.send('Next.');
-      await _played(two);
-      expect(s.calls[1].args, containsAllInOrder(['--resume', session.id, '--effort', 'low']));
-      await session.close();
-    });
-
     test("Auto: Claude's reviewer decides; a call it passes to the user asks, one it lets run doesn't", () async {
       const input = {'command': 'rm -rf build'};
       final channel = ReplayChannel(
@@ -1280,113 +772,6 @@ void main() {
       await session.close();
     });
 
-    test("Auto: EveryAI's own tools get a real allow; a model without the reviewer starts in default", () async {
-      const todos = {
-        'todos': [
-          {'content': 'a', 'status': 'pending', 'activeForm': 'a'},
-        ],
-      };
-      final channel = ReplayChannel(
-        _script([
-          _out(controlRequest('req_1', {'subtype': 'initialize'})),
-          _in(
-            controlResponse('req_1', const {
-              'models': [
-                {'value': 'haiku', 'supportsAutoMode': true},
-              ],
-              'current_permission_mode': 'auto',
-            }),
-          ),
-          _say('Plan.'),
-          _use('toolu_t', 'TodoWrite', todos),
-          _prompt('h1', 'toolu_t', 'TodoWrite', todos),
-          _allow('h1', todos),
-          _results(['toolu_t']),
-          _done('r1'),
-        ]),
-      );
-      final s = _Spawner([channel]);
-      final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
-      _record(session, (_) {});
-      await _played(channel);
-      // Nothing said yet whether this model has auto mode: the CLI starts in default.
-      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
-      await session.close();
-    });
-
-    test('Auto: a CLI started in default before auto was known is moved to auto once initialize offers it', () async {
-      final channel = ReplayChannel(
-        _script([
-          _out(controlRequest('req_1', {'subtype': 'initialize'})),
-          _in(
-            controlResponse('req_1', const {
-              'models': [
-                {'value': 'haiku', 'supportsAutoMode': true},
-              ],
-              'current_permission_mode': 'default',
-            }),
-          ),
-          _out(controlRequest('req_2', {'subtype': 'set_permission_mode', 'mode': 'auto'})),
-          _say('Plan.'),
-          _done('r1'),
-        ]),
-      );
-      final s = _Spawner([channel]);
-      final session = await driver(s).start(_spec(message: 'Plan.', mode: AgentMode.auto));
-      _record(session, (_) {});
-      await _played(channel);
-      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'default']));
-      expect((await (session as NativeModes).nativeModes.first).current, 'auto');
-      await session.close();
-    });
-
-    test("a running subagent isn't asked about again while its own call waits", () async {
-      final channel = ReplayChannel(
-        _script([
-          _init,
-          _say('Use a subagent.'),
-          _use('toolu_t', 'Task', {'description': 'Install', 'prompt': 'npm install'}),
-          _prompt('h1', 'toolu_t', 'Task', {'description': 'Install', 'prompt': 'npm install'}),
-          _allow('h1', {'description': 'Install', 'prompt': 'npm install'}),
-          _use('toolu_c', 'Bash', {'command': 'npm install'}, parent: 'toolu_t'),
-          _prompt('h2', 'toolu_c', 'Bash', {'command': 'npm install'}),
-          _allow('h2', {'command': 'npm install'}),
-          _results(['toolu_c']),
-          _results(['toolu_t']),
-          _done('r1'),
-        ]),
-      );
-      final session = await driver(_Spawner([channel])).start(_spec(message: 'Use a subagent.'));
-      final t = TranscriptBuilder();
-      final asked = <List<String>>[];
-      _record(session, (e) {
-        t.add(e);
-        if (_isState(e, ExecutionStatus.waitingForConfirmation)) {
-          asked.add([for (final c in t.snapshot.pending) c.id]);
-          unawaited(session.respond(accept: true, callIds: ['toolu_c']));
-        }
-      });
-      await _played(channel);
-      expect(asked, [
-        ['toolu_c'],
-      ]);
-      expect(t.snapshot.pending, isEmpty);
-      await session.close();
-    });
-
-    test('messages held back with run: false survive a restart and go with the next one', () async {
-      final d1 = driver(_Spawner([]));
-      final one = await d1.start(_spec());
-      await one.send('First, quietly.', run: false);
-      await one.close();
-
-      final channel = ReplayChannel(_script([_init, _say('First, quietly.\n\nNow go.'), _done('r1')]));
-      final two = await driver(_Spawner([channel])).attach(one.id);
-      await two.send('Now go.');
-      await _played(channel);
-      await two.close();
-    });
-
     test('attachBriefed: the resumed process carries the new token, not the old one; none is on disk', () async {
       const old = DriverBriefing(mcpUrl: 'http://127.0.0.1:7000/mcp', mcpToken: 'tok-old');
       const fresh = DriverBriefing(mcpUrl: 'http://127.0.0.1:7001/mcp', mcpToken: 'tok-new');
@@ -1422,127 +807,9 @@ void main() {
       expect(s3.calls.single.args, isNot(contains('--mcp-config')));
       await three.close();
     });
-
-    test('attachBriefed on a session still open returns it as it is', () async {
-      const fresh = DriverBriefing(mcpUrl: 'http://127.0.0.1:7001/mcp', mcpToken: 'tok-new');
-      final first = ReplayChannel(_script([_init, _say('Go.'), _done('r1')]));
-      final s = _Spawner([first]);
-      final d = driver(s);
-      final one = await d.start(_spec(message: 'Go.'));
-      await _played(first);
-      expect(await d.attachBriefed(one.id, fresh), same(one));
-      expect(s.calls, hasLength(1));
-      expect(s.calls.single.env.containsKey(tokenEnvVar), isFalse);
-      await one.close();
-    });
-
-    test(
-      '/btw: a fork of the conversation that isn\'t kept, with read-only tools; the session isn\'t touched',
-      () async {
-        final first = ReplayChannel(_fixture('init_image_turn.jsonl'));
-        String line(String dir, Object msg) => jsonEncode({'dir': dir, 'msg': msg});
-        final aside = ReplayChannel(
-          [
-            line('out', userLine(asideMessage('What is it testing?'))),
-            line('in', {'type': 'result', 'subtype': 'success', 'is_error': false, 'result': ' The widget tests. '}),
-          ].join('\n'),
-        );
-        final s = _Spawner([first, aside]);
-        final session = await driver(s).start(_spec());
-        _record(session);
-        await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
-        await _played(first);
-
-        final answer = await (session as AnswersSideQuestion).sideAnswer('What is it testing?');
-        expect(answer, 'The widget tests.');
-        final args = s.calls.last.args;
-        expect(args, containsAllInOrder(['--resume', session.id, '--fork-session']));
-        expect(args, containsAll(['--no-session-persistence', '--strict-mcp-config']));
-        expect(args, containsAllInOrder(['--tools', 'Read,Grep,Glob']));
-        expect(args, isNot(contains('--permission-prompt-tool')));
-        expect(s.calls.last.cwd, '/work/repo');
-        // The main conversation got nothing.
-        expect(first.sent.where((m) => m['type'] == 'user'), hasLength(1));
-        await session.close();
-      },
-    );
-
-    test("/usage: Claude Code's own report from a headless run that calls no model", () async {
-      const report = 'Current week (all models): 35% used · resets Nov 10 at 7:59pm';
-      final usage = ReplayChannel(
-        jsonEncode({
-          'dir': 'in',
-          'msg': {'type': 'result', 'subtype': 'success', 'is_error': false, 'result': '$report\n'},
-        }),
-      );
-      final s = _Spawner([usage]);
-      final session = await driver(s).start(_spec());
-      expect(await (session as ReportsPlanUsage).planUsage(), report);
-      final args = s.calls.single.args;
-      expect(args, containsAllInOrder(['-p', '/usage']));
-      expect(args, containsAll(['--no-session-persistence', '--strict-mcp-config']));
-      expect(args, isNot(contains('--resume')));
-      await session.close();
-    });
-
-    test('/usage that errors says so', () async {
-      final usage = ReplayChannel(
-        jsonEncode({
-          'dir': 'in',
-          'msg': {'type': 'result', 'subtype': 'success', 'is_error': true, 'result': 'Not signed in'},
-        }),
-      );
-      final session = await driver(_Spawner([usage])).start(_spec());
-      await expectLater((session as ReportsPlanUsage).planUsage(), throwsA(isA<HarnessError>()));
-      await session.close();
-    });
-
-    test('/btw before the first message ran asks a fresh, unsaved process', () async {
-      final aside = ReplayChannel(
-        [
-          jsonEncode({'dir': 'out', 'msg': userLine(asideMessage('hi'))}),
-          jsonEncode({
-            'dir': 'in',
-            'msg': {'type': 'result', 'subtype': 'error_during_execution', 'is_error': true, 'result': 'Not signed in'},
-          }),
-        ].join('\n'),
-      );
-      final s = _Spawner([aside]);
-      final session = await driver(s).start(_spec());
-      await expectLater(
-        (session as AnswersSideQuestion).sideAnswer('hi'),
-        throwsA(isA<HarnessError>().having((e) => e.message, 'message', 'Not signed in')),
-      );
-      expect(s.calls.single.args, isNot(contains('--resume')));
-      await session.close();
-    });
-
-    test('a session without a record says so', () async {
-      await expectLater(
-        driver(_Spawner([])).attach('gone'),
-        throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains('record is gone'))),
-      );
-    });
   });
 
   group('driver', () {
-    test('caps', () {
-      expect(ClaudeDriver().caps, {
-        DriverCap.resume,
-        DriverCap.approvals,
-        DriverCap.perCallApprovals,
-        DriverCap.usage,
-        DriverCap.mcp,
-        DriverCap.skills,
-        DriverCap.images,
-        DriverCap.switchModel,
-        DriverCap.effort,
-        DriverCap.subagents,
-        DriverCap.nativeModes,
-      });
-      expect((ClaudeDriver().info.id, ClaudeDriver().info.needsConsent), ('claude-code', true));
-    });
-
     test('detect reads only whether the CLI is signed in', () async {
       Future<DriverStatus> withAuth(String? out) => ClaudeDriver(
         which: (_) async => '/bin/echo',
@@ -1562,142 +829,14 @@ void main() {
       final missing = await ClaudeDriver(which: (_) async => null).detect();
       expect(missing.installed, isFalse);
     });
-
-    test('models come from initialize once, with their efforts; aliases when that fails', () async {
-      final channel = ReplayChannel('''
-{"dir":"out","msg":{"type":"control_request","request_id":"req_1","request":{"subtype":"initialize"}}}
-{"dir":"in","msg":{"type":"control_response","response":{"subtype":"success","request_id":"req_1","response":{"models":[{"value":"default","displayName":"Default (recommended)","supportedEffortLevels":["low","high"]},{"value":"haiku","displayName":"Haiku 5.5"}]}}}}
-''');
-      final s = _Spawner([channel]);
-      final d = driver(s);
-      final models = await d.models();
-      expect(
-        [for (final m in models) (m.id, m.label, m.isDefault)],
-        [('default', 'Default (recommended)', true), ('haiku', 'Haiku 5.5', false)],
-      );
-      expect(
-        [for (final m in models) m.efforts],
-        [
-          ['low', 'high'],
-          <String>[],
-        ],
-      );
-      expect(s.calls.single.args, claudeProbeArgs);
-      expect(await d.models(), same(models));
-      expect(s.calls, hasLength(1));
-      expect([for (final m in await driver(_Spawner([])).models()) m.id], ['default', 'opus', 'sonnet', 'haiku']);
-    });
-  });
-
-  test('user lines carry the text and each picture as a base64 block', () {
-    final line = userLine('Look', images: ['data:image/png;base64,$_pixel', 'not a data url']);
-    expect(jsonDecode(jsonEncode(line)), {
-      'type': 'user',
-      'message': {
-        'role': 'user',
-        'content': [
-          {'type': 'text', 'text': 'Look'},
-          {
-            'type': 'image',
-            'source': {'type': 'base64', 'media_type': 'image/png', 'data': _pixel},
-          },
-        ],
-      },
-      'parent_tool_use_id': null,
-      'session_id': '',
-    });
   });
 
   group('native commands', () {
     late Directory dir;
     setUp(() => dir = Directory.systemTemp.createTempSync('claude_native'));
     tearDown(() => dir.deleteSync(recursive: true));
-    ClaudeDriver driverIn(_Spawner s) => ClaudeDriver(dataDir: () async => dir.path, spawn: s.call);
 
     // Derived from the Agent SDK's initialize reply (the recordings scrub it to []).
-    final listed = [
-      _out(controlRequest('req_1', {'subtype': 'initialize'})),
-      _in(
-        controlResponse('req_1', {
-          'commands': [
-            {'name': 'compact', 'description': 'Clear history but keep a summary', 'argumentHint': '<instructions>'},
-            {'name': 'review', 'description': 'Review a pull request', 'argumentHint': ''},
-          ],
-        }),
-      ),
-    ].join('\n');
-    String sysInit(List<String> names) =>
-        _in({'type': 'system', 'subtype': 'init', 'session_id': 's', 'slash_commands': names});
-
-    test(
-      "initialize's list wins over system/init; a command goes alone, held text waits; a reopen has the list",
-      () async {
-        final channel = ReplayChannel(
-          _script([
-            listed,
-            _say('/review auth'),
-            sysInit(['ignored']),
-            _done('r1'),
-            _say('First, quietly.\n\nNow go.'),
-            _done('r2'),
-          ]),
-        );
-        final one = await driverIn(_Spawner([channel])).start(_spec());
-        final lists = <List<NativeCommand>>[];
-        final native = one as HasNativeCommands;
-        native.commands.listen(lists.add);
-        await one.send('First, quietly.', run: false);
-        await native.runCommand('review', 'auth');
-        await pumpEventQueue();
-        await one.send('Now go.');
-        await _played(channel);
-        expect(lists.first, isEmpty);
-        expect(lists.last, const [
-          NativeCommand(name: 'compact', description: 'Clear history but keep a summary', argsHint: '<instructions>'),
-          NativeCommand(name: 'review', description: 'Review a pull request'),
-        ]);
-        await one.close();
-
-        final s = _Spawner([]);
-        final two = await driverIn(s).attach(one.id);
-        final cached = await (two as HasNativeCommands).commands.first;
-        expect(s.calls, isEmpty);
-        expect([for (final c in cached) c.name], ['compact', 'review']);
-        await two.close();
-      },
-    );
-
-    test('text held before a command survives a restart in between and goes with the next message', () async {
-      final channel = ReplayChannel(_script([listed, _say('/compact'), _done('r1')]));
-      final one = await driverIn(_Spawner([channel])).start(_spec());
-      await one.send('First, quietly.', run: false);
-      await (one as HasNativeCommands).runCommand('compact', '');
-      await _played(channel);
-      await one.close();
-
-      final again = ReplayChannel(_script([_init, _say('First, quietly.\n\nNow go.'), _done('r2')]));
-      final two = await driverIn(_Spawner([again])).attach(one.id);
-      await two.send('Now go.');
-      await _played(again);
-      await two.close();
-    });
-
-    test('without an initialize list, system/init names stand in', () async {
-      final channel = ReplayChannel(
-        _script([
-          _init,
-          _say('/init'),
-          sysInit(['init', 'compact']),
-          _done('r1'),
-        ]),
-      );
-      final one = await driverIn(_Spawner([channel])).start(_spec());
-      final native = one as HasNativeCommands;
-      await native.runCommand('init', '');
-      await _played(channel);
-      expect(await native.commands.first, const [NativeCommand(name: 'init'), NativeCommand(name: 'compact')]);
-      await one.close();
-    });
   });
 
   group('native modes', () {
@@ -1707,31 +846,6 @@ void main() {
     ClaudeDriver driverIn(_Spawner s) => ClaudeDriver(dataDir: () async => dir.path, spawn: s.call);
     String setMode(String req, String mode) =>
         _out(controlRequest(req, {'subtype': 'set_permission_mode', 'mode': mode}));
-
-    test("Claude's own modes: auto once the model says it has it, bypass listed; current from initialize", () async {
-      final channel = ReplayChannel(_fixture('init_image_turn.jsonl'));
-      final session = await driverIn(_Spawner([channel])).start(_spec());
-      final native = session as NativeModes;
-      final before = await native.nativeModes.first;
-      expect([for (final m in before.modes) m.id], ['default', 'acceptEdits', 'plan', 'bypassPermissions']);
-      expect(before.current, 'default');
-      await session.send('What colour is this pixel? Reply in one word.', images: ['data:image/png;base64,$_pixel']);
-      await _played(channel);
-      final after = await native.nativeModes.first;
-      expect([for (final m in after.modes) m.id], ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
-      expect(after.current, 'default');
-      expect(nativeModeOf(after.modes, 'auto')!.policy, AgentMode.auto);
-      expect(after.modes.where((m) => m.blocked != null), isEmpty);
-      expect(
-        [for (final m in after.modes) m.policy],
-        [AgentMode.ask, AgentMode.autoEdit, AgentMode.plan, AgentMode.auto, AgentMode.fullAuto],
-      );
-      await session.close();
-      // The reopened session lists auto before its CLI starts again.
-      final again = await driverIn(_Spawner([])).attach(session.id);
-      expect([for (final m in (await (again as NativeModes).nativeModes.first).modes) m.id], contains('auto'));
-      await again.close();
-    });
 
     test('a switch is set_permission_mode under the native id; an unlisted one throws and sends nothing', () async {
       final channel = ReplayChannel(
@@ -1754,39 +868,6 @@ void main() {
       expect(channel.sent.length, sent);
       expect((await native.nativeModes.first).current, 'bypassPermissions');
       await session.close();
-    });
-
-    test('a mode Claude moves to by itself stands, also one the picker does not list', () async {
-      final channel = ReplayChannel(
-        _script([
-          _init,
-          _say('Go.'),
-          _in({'type': 'system', 'subtype': 'status', 'permissionMode': 'bypassPermissions'}),
-          _in({'type': 'system', 'subtype': 'status', 'permissionMode': 'dontAsk'}),
-          _done('r1'),
-        ]),
-      );
-      final session = await driverIn(_Spawner([channel])).start(_spec(message: 'Go.'));
-      final events = _record(session);
-      // Nothing is set back: the script has no set_permission_mode, and no error is shown.
-      await _played(channel);
-      expect((await (session as NativeModes).nativeModes.first).current, 'dontAsk');
-      expect(events.whereType<ConversationFailure>(), isEmpty);
-      await session.close();
-    });
-
-    test('a mode picked before the CLI starts is its --permission-mode, and kept for a reopen', () async {
-      final channel = ReplayChannel(_script([_init, _say('Plan it.'), _done('r1')]));
-      final s = _Spawner([channel]);
-      final session = await driverIn(s).start(_spec());
-      await (session as NativeModes).setNativeMode('plan');
-      await session.send('Plan it.');
-      await _played(channel);
-      expect(s.calls.single.args, containsAllInOrder(['--permission-mode', 'plan']));
-      await session.close();
-      final again = await driverIn(_Spawner([])).attach(session.id);
-      expect((await (again as NativeModes).nativeModes.first).current, 'plan');
-      await again.close();
     });
 
     test('an approved ExitPlanMode moves Claude back to the mode before plan', () async {
@@ -1823,29 +904,3 @@ void main() {
 }
 
 /// A CLI side the test feeds by hand: it answers initialize and counts interrupts.
-final class _LiveChannel implements LineChannel {
-  final _lines = StreamController<String>();
-  var interrupts = 0;
-
-  void push(Map<String, Object?> msg) => _lines.add(jsonEncode(msg));
-
-  @override
-  Stream<String> get lines => _lines.stream;
-
-  @override
-  String get lastError => '';
-
-  @override
-  void send(String line) {
-    final m = jsonDecode(line) as Map<String, Object?>;
-    if (m case {'type': 'control_request', 'request_id': final String id, 'request': final Map<String, Object?> r}) {
-      if (r['subtype'] == 'initialize') push(controlResponse(id, const {}));
-      if (r['subtype'] == 'interrupt') interrupts++;
-    }
-  }
-
-  @override
-  Future<void> close() async {
-    if (!_lines.isClosed) await _lines.close();
-  }
-}

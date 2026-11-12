@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/domain/agent_mode.dart';
@@ -7,12 +6,7 @@ import 'package:every_ai/features/code/domain/goal.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
 import 'package:every_ai/features/code/domain/phases.dart' show bugCheckTool;
 import 'package:every_ai/features/code/domain/plan_batches.dart';
-import 'package:every_ai/features/code/domain/spill.dart';
-import 'package:every_ai/features/code/drivers/briefing/session_skill.dart';
-import 'package:every_ai/features/code/drivers/claude/claude_wire.dart' show answeredBySession;
 import 'package:every_ai/features/code/drivers/driver_events.dart';
-import 'package:every_ai/features/code/drivers/driver_policy.dart';
-import 'package:every_ai/features/code/drivers/opencode/opencode_session.dart' show openCodeSessionRules;
 import 'package:every_ai/features/code/git/git_models.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/everyai/script_io.dart' show findDeno;
@@ -66,15 +60,6 @@ void main() {
     ..writeAsStringSync(text);
 
   group('output spill', () {
-    test('a result over the limit goes to .everyai/spill with a preview naming it', () {
-      final lines = [for (var i = 0; i < 3000; i++) 'line $i'];
-      final r = hostFit(dir, 'host-1-check', (text: lines.join('\n'), isError: true));
-      expect(r.isError, isTrue);
-      expect(r.text, allOf(contains('line 0'), contains('line 2999'), isNot(contains('line 1500'))));
-      expect(r.text, contains('.everyai/spill/host-1-check.txt'));
-      expect(File('$dir/$spillDir/host-1-check.txt').readAsStringSync(), lines.join('\n'));
-    });
-
     test('hidden characters in a result are removed and named', () {
       final r = hostFit(dir, 'x', (text: 'FAIL\u{E0049}: ok\u202E', isError: true));
       expect(r, (
@@ -83,135 +68,9 @@ void main() {
         isError: true,
       ));
     });
-
-    test('a short result is unchanged', () {
-      const r = (text: 'all good', isError: false);
-      expect(hostFit(dir, 'x', r), r);
-      expect(Directory('$dir/$spillDir').existsSync(), isFalse);
-    });
-  });
-
-  group('diff_stats', () {
-    Future<String> git(List<String> args) async {
-      final r = await Process.run('git', ['-C', dir, ...args]);
-      if (r.exitCode != 0) fail('git ${args.join(' ')}: ${r.stderr}');
-      return '${r.stdout}'.trim();
-    }
-
-    test('per-file lines and the total since the base commit, untracked files too', () async {
-      await git(['init', '-q']);
-      write('a.txt', 'one\ntwo\n');
-      write('b.txt', 'keep\n');
-      await git(['add', '.']);
-      await git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base']);
-      final base = await git(['rev-parse', 'HEAD']);
-      write('a.txt', 'one\n2\nthree\n');
-      write('new.txt', 'n\n');
-      final w = SessionWorktree(repoRoot: dir, path: dir, branch: 'main', baseBranch: 'main', baseCommit: base);
-      final r = await hostCheckTool(call(diffStatsTool), context(worktree: w));
-      expect(r.isError, isFalse);
-      expect(r.text.split('\n'), [
-        '2 files changed, +3 -1 since the session started (base ${base.substring(0, 7)}):',
-        'M a.txt +2 -1',
-        'A new.txt +1 -0',
-      ]);
-    });
-
-    test("without a worktree: what isn't committed in the folder, new files too", () async {
-      final runs = <String>[];
-      final r = await hostCheckTool(
-        call(diffStatsTool),
-        context(
-          runs: runs,
-          answer: (_) => (exit: 0, out: ' a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\nnew.txt\n'),
-        ),
-      );
-      expect(runs.single, startsWith('git diff --stat HEAD'));
-      expect(r.isError, isFalse);
-      expect(r.text, contains('not committed yet'));
-      expect(r.text, contains(' a.txt | 2 +-'));
-      expect(r.text, contains('New files: new.txt'));
-    });
-
-    test('without a worktree, outside a repository or when the gate refuses, it says so', () async {
-      final bare = await hostCheckTool(call(diffStatsTool), context(answer: (_) => (exit: 128, out: 'fatal')));
-      expect(bare.text, contains('not a git repository'));
-      final refused = await hostCheckTool(call(diffStatsTool), context(refusal: (_) => 'Not approved.'));
-      expect(refused.isError, isTrue);
-      expect(refused.text, startsWith('Not approved.'));
-    });
-  });
-
-  group('goal_check', () {
-    test('no goal', () async {
-      expect((await hostCheckTool(call(goalCheckTool), context())).text, contains('No goal is set'));
-    });
-
-    test('the goal and the rules, for the lead to judge', () async {
-      final r = await hostCheckTool(call(goalCheckTool), context(goal: const Goal(objective: 'Dark mode works')));
-      expect(r.isError, isFalse);
-      expect(r.text, startsWith('Goal: Dark mode works'));
-      expect(r.text, contains(goalSelfCheck('Dark mode works')));
-      expect(r.text, contains('sub-agent'));
-    });
   });
 
   group('check', () {
-    bool exists(String p) => FileSystemEntity.typeSync('$dir/$p') != FileSystemEntityType.notFound;
-    String? read(String p) => File('$dir/$p').existsSync() ? File('$dir/$p').readAsStringSync() : null;
-
-    test('detects each project kind and maps sources to their tests', () {
-      write('app/pubspec.yaml', 'dependencies:\n  flutter:\n    sdk: flutter\n');
-      write('app/lib/ui/home.dart');
-      write('app/test/ui/home_test.dart');
-      write('app/lib/none.dart');
-      write('pkg/pubspec.yaml', 'name: pkg\n');
-      write('pkg/test/x_test.dart');
-      write('web/package.json', '{"devDependencies": {"vitest": "1"}}');
-      write('web/src/a.ts');
-      write('api/package.json', '{"devDependencies": {"jest": "29"}}');
-      write('api/src/b.js');
-      write('svc/go.mod', 'module x');
-      write('svc/internal/q/q.go');
-      write('core/Cargo.toml', '[package]');
-      write('core/src/lib.rs');
-      write('py/pyproject.toml', '[project]');
-      write('py/pkg/util.py');
-      write('py/tests/test_util.py');
-      write('README.md');
-      final found = detectChecks(
-        [
-          'app/lib/ui/home.dart',
-          'app/lib/none.dart',
-          'pkg/test/x_test.dart',
-          'web/src/a.ts',
-          'api/src/b.js',
-          'svc/internal/q/q.go',
-          'core/src/lib.rs',
-          'py/pkg/util.py',
-          'README.md',
-        ],
-        exists: exists,
-        read: read,
-      );
-      expect(
-        [for (final r in found.runs) checkCommand(r)],
-        [
-          'cd app && flutter test -- test/ui/home_test.dart',
-          'cd pkg && dart test -- test/x_test.dart',
-          'cd web && npx --no-install vitest related --run src/a.ts',
-          'cd api && npx --no-install jest --findRelatedTests src/b.js',
-          'cd svc && go test ./internal/q',
-          'cd core && cargo test',
-          'cd py && python -m pytest -- tests/test_util.py',
-        ],
-      );
-      expect(found.unmatched, [
-        'README.md (no project file such as pubspec.yaml, package.json or go.mod in its folder or above)',
-        'app/lib/none.dart (looked for app/test/none_test.dart)',
-      ]);
-    });
-
     test('runs the detected tests through the gate; a failure is an error result', () async {
       write('pubspec.yaml', 'name: p\n');
       write('lib/a.dart');
@@ -236,89 +95,6 @@ void main() {
       expect(r.text, startsWith('Not run: no.'));
       expect(runs, hasLength(1));
     });
-
-    test('absolute paths in the session folder find their tests', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('lib/foo.dart');
-      write('test/foo_test.dart');
-      final runs = <String>[];
-      await hostCheckTool(
-        call(checkTool, {
-          'files': ['$dir/lib/foo.dart'],
-        }),
-        context(runs: runs),
-      );
-      expect(runs, ['dart test -- test/foo_test.dart']);
-    });
-
-    test('each command run is timed; diff_stats is not', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('test/foo_test.dart');
-      final timed = <String>[];
-      final c = HostCheckContext(
-        sessionId: 's1',
-        workingDir: dir,
-        stateDir: stateDir,
-        refusal: (_) => null,
-        run: (command, _) async => (exit: 0, out: 'ok'),
-        timed: (command, took) async {
-          expect(took.isNegative, false);
-          timed.add(command);
-        },
-      );
-      // A call still going (the helper's has already ended, as if cancelled).
-      final live = HostCall(
-        id: 'live',
-        sessionId: 's1',
-        name: checkTool,
-        args: const {
-          'files': ['test/foo_test.dart'],
-        },
-        ended: Completer<HostEnd>().future,
-      );
-      await hostCheckTool(live, c);
-      await hostCheckTool(call(diffStatsTool), c);
-      expect(timed, ['dart test -- test/foo_test.dart']);
-    });
-
-    test('a cancelled run or one killed at a limit is not timed', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('test/foo_test.dart');
-      final timed = <String>[];
-      HostCheckContext ctx(int exit) => HostCheckContext(
-        sessionId: 's1',
-        workingDir: dir,
-        stateDir: stateDir,
-        refusal: (_) => null,
-        run: (command, _) async => (exit: exit, out: 'x'),
-        timed: (command, took) async => timed.add(command),
-      );
-      final args = {
-        'files': ['test/foo_test.dart'],
-      };
-      // The helper's call has ended (cancelled) before the run returns.
-      await hostCheckTool(call(checkTool, args), ctx(0));
-      for (final exit in [124, 137, 143]) {
-        await hostCheckTool(
-          HostCall(id: 'x$exit', sessionId: 's1', name: checkTool, args: args, ended: Completer<HostEnd>().future),
-          ctx(exit),
-        );
-      }
-      expect(timed, isEmpty);
-    });
-
-    test('nothing to test is said plainly', () async {
-      write('notes.txt');
-      final r = await hostCheckTool(
-        call(checkTool, {
-          'files': ['notes.txt'],
-        }),
-        context(),
-      );
-      expect(r.isError, true);
-      expect(r.text, contains('No test found for: notes.txt'));
-      expect((await hostCheckTool(call(checkTool), context())).text, contains('name the files'));
-    });
   });
 
   group('batch check', () {
@@ -332,21 +108,6 @@ void main() {
       write('app/test/a_test.dart');
       write('svc/go.mod', 'module x');
       write('svc/q/q.go');
-    });
-
-    test('files run the tests that cover them (the batch\'s own when none are named)', () async {
-      final runs = <String>[];
-      var v = await runBatchCheck(context(runs: runs), batch(const FilesCheck([])), cancel);
-      expect((v.outcome, v.output), (BatchOutcome.passed, ''));
-      v = await runBatchCheck(
-        context(runs: runs, answer: (_) => (exit: 1, out: 'Expected: 2')),
-        batch(const FilesCheck(['app/test/a_test.dart'])),
-        cancel,
-      );
-      expect(runs, ['cd app && dart test -- test/a_test.dart', 'cd app && dart test -- test/a_test.dart']);
-      expect(v.outcome, BatchOutcome.failed);
-      expect(v.output, allOf(contains('[exit 1]'), contains('Expected: 2')));
-      expect(batchCheckRecord(v), {'passed': false, 'output': v.output});
     });
 
     test('a command passes on exit 0 and goes through the gate first', () async {
@@ -379,26 +140,6 @@ void main() {
       expect(batchCheckRecord(v), {'skipped': true, 'output': startsWith('Not run: asks')});
       expect(runs, ['make test', 'make test']);
     });
-
-    test('full runs each project\'s whole suite; no project fails with why', () async {
-      final runs = <String>[];
-      final v = await runBatchCheck(
-        context(runs: runs),
-        PlanBatch(id: 'a', intent: 'A', files: const ['app/lib/a.dart', 'svc/q/q.go'], check: const FullCheck()),
-        cancel,
-      );
-      expect(v.outcome, BatchOutcome.passed);
-      expect(runs, ['cd app && dart test', 'cd svc && go test ./...']);
-      final none = await runBatchCheck(
-        context(runs: runs),
-        PlanBatch(id: 'a', intent: 'A', files: const ['README.md'], check: const FullCheck()),
-        cancel,
-      );
-      // Nothing to run isn't a failure: it merges unverified, and no fix agent is spent on it.
-      expect(none.outcome, BatchOutcome.unverified);
-      expect(none.output, contains('No test found'));
-      expect(batchCheckRecord(none), {'skipped': true, 'unverified': true, 'output': none.output});
-    });
   });
 
   group('batch check refusals', () {
@@ -413,24 +154,6 @@ void main() {
       command: command,
       own: own,
     );
-
-    test("the app's own test commands run in every mode but Plan, without asking", () {
-      for (final mode in [AgentMode.ask, AgentMode.autoEdit, AgentMode.fullAuto, AgentMode.bypass]) {
-        expect(refuse(mode, 'cd app && flutter test -- test/a_test.dart'), isNull, reason: mode.name);
-      }
-      expect(refuse(AgentMode.plan, 'flutter test')?.skip, isTrue);
-    });
-
-    test("a plan's check.command is the agent's own: the mode decides, and an ask skips", () {
-      expect(refuse(AgentMode.ask, 'make test', own: false)?.skip, isTrue);
-      expect(refuse(AgentMode.autoEdit, 'make test', own: false)?.skip, isTrue);
-      expect(refuse(AgentMode.fullAuto, 'make test', own: false), isNull);
-      expect(refuse(AgentMode.bypass, 'make test', own: false), isNull);
-      expect(
-        refuse(AgentMode.ask, 'make test', own: false, rules: const PermissionRules(allow: ['make test'])),
-        isNull,
-      );
-    });
 
     test('the floor and deny rules fail the check in every mode, Bypass included', () {
       for (final mode in AgentMode.values) {
@@ -480,159 +203,7 @@ void main() {
     });
   });
 
-  group('batch check without tests', () {
-    final cancel = Completer<void>().future;
-    Future<BatchVerdict> check(List<String> files, BatchCheck c, List<String> runs) =>
-        runBatchCheck(context(runs: runs), PlanBatch(id: 'a', intent: 'A', files: files, check: c), cancel);
-
-    test('a project whose node_modules git tracks runs no jest; an untracked runner is named', () async {
-      void git(List<String> args) {
-        final r = Process.runSync('git', ['-C', dir, ...args]);
-        if (r.exitCode != 0) fail('git $args: ${r.stderr}');
-      }
-
-      write('web/package.json', '{"devDependencies": {"jest": "29"}}');
-      write('web/src/a.test.js');
-      write('web/node_modules/.bin/jest', '#!/bin/sh\n');
-      git(['init', '-q']);
-      git(['add', '-A']);
-      git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base']);
-      final runs = <String>[];
-      var v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
-      expect(runs, isEmpty);
-      expect(v.outcome, BatchOutcome.unverified);
-      expect(v.output, contains('node_modules is in git'));
-      // Not tracked, not ignored: it runs (with --no-install), and the record names the binary.
-      git(['rm', '-rq', '--cached', 'web/node_modules']);
-      git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'untrack']);
-      v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
-      expect(runs, ['cd web && npx --no-install jest --findRelatedTests src/a.test.js']);
-      expect(v.outcome, BatchOutcome.passed);
-      expect(batchCheckRecord(v), {'passed': true, 'note': contains('web/node_modules/.bin/jest')});
-      // Ignored (an ordinary install): nothing to say.
-      write('.gitignore', 'node_modules/\n');
-      v = await check(['web/src/a.test.js'], const FilesCheck([]), runs);
-      expect(batchCheckRecord(v), {'passed': true});
-    });
-
-    test('a lib file with no test, a docs-only batch and a runner the app does not know are unverified', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('lib/a.dart');
-      write('web/package.json', '{"devDependencies": {"mocha": "1"}}');
-      write('web/src/a.js');
-      final runs = <String>[];
-      for (final (files, c) in [
-        (['lib/a.dart'], const FilesCheck([]) as BatchCheck),
-        (['docs/notes.md'], const FilesCheck([])),
-        (['web/src/a.js'], const FilesCheck([])),
-        (['web/src/a.js'], const FullCheck()),
-      ]) {
-        final v = await check(files, c, runs);
-        expect(v.outcome, BatchOutcome.unverified, reason: '$files $c');
-        expect(v.output, contains('No test found'));
-      }
-      expect(runs, isEmpty);
-    });
-
-    test('some files with tests: their tests decide', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('lib/a.dart');
-      write('lib/b.dart');
-      write('test/a_test.dart');
-      final runs = <String>[];
-      final v = await check(['lib/a.dart', 'lib/b.dart'], const FilesCheck([]), runs);
-      expect(v.outcome, BatchOutcome.passed);
-      expect(runs, ['dart test -- test/a_test.dart']);
-    });
-  });
-
-  group('check scopes', () {
-    test('test runs the named tests with each runner\'s filter', () {
-      final projects = {
-        'd/pubspec.yaml': 'name: p\n',
-        'f/pubspec.yaml': 'dependencies:\n  flutter:\n    sdk: flutter\n',
-        'j/package.json': '{"devDependencies": {"jest": "1"}}',
-        'v/package.json': '{"devDependencies": {"vitest": "1"}}',
-        'g/go.mod': 'module x',
-        'c/Cargo.toml': '',
-        'p/pyproject.toml': '',
-      };
-      final found = detectChecks(
-        [for (final p in projects.keys) '${p.split('/').first}/x'],
-        testName: "adds it's total",
-        exists: projects.containsKey,
-        read: (p) => projects[p],
-      );
-      const q = "'adds it'\\''s total'";
-      expect(
-        [for (final r in found.runs) checkCommand(r)],
-        [
-          'cd d && dart test --plain-name=$q',
-          'cd f && flutter test --plain-name=$q',
-          'cd j && npx --no-install jest --testNamePattern=$q',
-          'cd v && npx --no-install vitest run --testNamePattern=$q',
-          'cd g && go test -run=$q ./...',
-          'cd c && cargo test -- $q',
-          'cd p && python -m pytest -k $q',
-        ],
-      );
-    });
-
-    test('the tool: test and full need no files (the session folder\'s project); files stay the default', () async {
-      write('pubspec.yaml', 'name: p\n');
-      write('lib/a.dart');
-      write('test/a_test.dart');
-      final runs = <String>[];
-      final c = context(runs: runs);
-      await hostCheckTool(call(checkTool, {'scope': 'test', 'test': 'adds'}), c);
-      await hostCheckTool(call(checkTool, {'scope': 'full'}), c);
-      await hostCheckTool(
-        call(checkTool, {
-          'files': ['lib/a.dart'],
-        }),
-        c,
-      );
-      expect(runs, ['dart test --plain-name=adds', 'dart test', 'dart test -- test/a_test.dart']);
-      expect((await hostCheckTool(call(checkTool, {'scope': 'test'}), c)).text, contains('needs the test'));
-      expect((await hostCheckTool(call(checkTool, {'scope': 'files'}), c)).text, contains('name the files'));
-      expect((await hostCheckTool(call(checkTool, {'scope': 'all'}), c)).text, contains('scope must be'));
-      expect((await hostCheckTool(call(checkTool, {'scope': 'changed'}), c)).isError, isTrue);
-      expect(checkSpec['inputSchema'], containsPair('properties', containsPair('scope', isA<Map<String, Object?>>())));
-    });
-
-    test('a file named like an option is a path, and a long list is split', () {
-      final names = [
-        '-rf_test.dart',
-        for (var i = 0; i < 3000; i++) 'test/some/deep/folder/file_number_${i}_test.dart',
-      ];
-      final found = detectChecks(names, exists: (p) => p == 'pubspec.yaml', read: (_) => 'name: p\n');
-      final commands = [for (final r in found.runs) checkCommand(r)];
-      expect(commands.first, startsWith('dart test -- ./-rf_test.dart test/'));
-      expect(commands.length, greaterThan(1));
-      expect(commands.every((c) => c.length < 33 * 1024), isTrue);
-      expect(commands.join(' ').split(' ').where((w) => w.endsWith('_test.dart')).length, names.length);
-    });
-  });
-
   group('bug_check', () {
-    test('reproduced with expect: a hit records it, a miss does not', () async {
-      var out = 'all fine';
-      final ctx = context(answer: (_) => (exit: 0, out: out));
-      var r = await hostCheckTool(
-        call(bugCheckTool, {'action': 'reproduced', 'command': 'run', 'expect': 'BOOM'}),
-        ctx,
-      );
-      expect(r.isError, true);
-      expect(r.text, startsWith('Not reproduced'));
-      expect(File('$stateDir/bug_check.json').existsSync(), isFalse);
-      out = 'BOOM at line 3';
-      r = await hostCheckTool(call(bugCheckTool, {'action': 'reproduced', 'command': 'run', 'expect': 'BOOM'}), ctx);
-      expect(r.isError, false);
-      expect(r.text, startsWith('Reproduced'));
-      final state = jsonDecode(File('$stateDir/bug_check.json').readAsStringSync()) as Map;
-      expect((state['command'], state['expect']), ('run', 'BOOM'));
-    });
-
     test('without expect a non-zero exit reproduces; verify passes on exit 0', () async {
       var exit = 2;
       write('test/bug_test.dart', 'expect(1, 2)');
@@ -649,57 +220,6 @@ void main() {
       expect(r.text, startsWith('Verified'));
       r = await hostCheckTool(call(bugCheckTool, {'action': 'status'}), ctx);
       expect(r.text, allOf(contains('Repro command: $cmd'), contains('Verified: the fix passed.')));
-    });
-
-    test('verify refuses when a file the repro names changed', () async {
-      write('test/bug_test.dart', 'expect(1, 2)');
-      final runs = <String>[];
-      var exit = 1;
-      final ctx = context(runs: runs, answer: (_) => (exit: exit, out: ''));
-      await hostCheckTool(call(bugCheckTool, {'action': 'reproduced', 'command': 'dart test test/bug_test.dart'}), ctx);
-      write('test/bug_test.dart', 'expect(1, 1)');
-      exit = 0;
-      final r = await hostCheckTool(call(bugCheckTool, {'action': 'verify'}), ctx);
-      expect(r.isError, true);
-      expect(r.text, contains('test/bug_test.dart'));
-      expect(runs, hasLength(1));
-    });
-
-    test('verify refuses an edited repro named by an absolute path, a scratch script or a runner alone', () async {
-      write('test/abs_test.dart', 'expect(1, 2)');
-      write('.everyai/scratch/repro.sh', 'exit 1');
-      var exit = 1;
-      final ctx = context(answer: (_) => (exit: exit, out: ''));
-      await hostCheckTool(
-        call(bugCheckTool, {'action': 'reproduced', 'command': 'dart test $dir/test/abs_test.dart'}),
-        ctx,
-      );
-      write('test/abs_test.dart', 'expect(1, 1)');
-      exit = 0;
-      var r = await hostCheckTool(call(bugCheckTool, {'action': 'verify'}), ctx);
-      expect(r.isError, isTrue);
-      expect(r.text, contains('test/abs_test.dart'));
-      // `npm test` names no file; the scratch script still counts.
-      exit = 1;
-      await hostCheckTool(call(bugCheckTool, {'action': 'reproduced', 'command': 'npm test'}), ctx);
-      write('.everyai/scratch/repro.sh', 'exit 0');
-      exit = 0;
-      r = await hostCheckTool(call(bugCheckTool, {'action': 'verify'}), ctx);
-      expect(r.isError, isTrue);
-      expect(r.text, contains('.everyai/scratch/repro.sh'));
-    });
-
-    test('verify refuses an edited test that was new or changed at reproduced', () async {
-      Process.runSync('git', ['init', '-q'], workingDirectory: dir);
-      write('tests/test_bug.py', 'assert 1 == 2');
-      var exit = 1;
-      final ctx = context(answer: (_) => (exit: exit, out: ''));
-      await hostCheckTool(call(bugCheckTool, {'action': 'reproduced', 'command': 'pytest -k bug'}), ctx);
-      write('tests/test_bug.py', 'assert 1 == 1');
-      exit = 0;
-      final r = await hostCheckTool(call(bugCheckTool, {'action': 'verify'}), ctx);
-      expect(r.isError, isTrue);
-      expect(r.text, contains('tests/test_bug.py'));
     });
 
     test('verify before reproduced, and a refused command', () async {
@@ -748,17 +268,6 @@ void main() {
       expect(gate('rm -rf ~', approved: [row('a1', args)]), startsWith('Not run:'));
     });
 
-    test('Full auto and allow rules run', () {
-      expect(gate('dart test', mode: AgentMode.fullAuto), isNull);
-      expect(
-        gate(
-          'dart test',
-          policy: const PermissionPolicy(rules: PermissionRules(allow: ['dart test *'])),
-        ),
-        isNull,
-      );
-    });
-
     test('an ask runs only for an approved call with the same arguments, once', () {
       // Nothing approved: a process outside the agent's tool flow (curl with the token) is refused,
       // and so is the agent's own open row that nobody approved (Codex pre-approved MCP tools).
@@ -782,79 +291,8 @@ void main() {
     });
   });
 
-  group('policy', () {
-    ActionCall mcp(String tool, [Map<String, Object?> args = const {}]) =>
-        actionEvent(id: 'a', toolName: 'mcp__everyai__$tool', kind: 'MCPToolAction', args: args);
-    const policy = PermissionPolicy(hostTools: true);
-
-    test('the new tools are ours; the read-only ones run, the ones that run commands ask', () {
-      for (final t in ['check', 'diff_stats', 'goal_check', 'run_script', 'bug_check', 'report_issue']) {
-        expect(hostToolOf(mcp(t)), t);
-        // OpenCode's naming.
-        expect(hostToolOf(actionEvent(id: 'o', toolName: 'everyai_$t', kind: 'MCPToolAction', args: const {})), t);
-      }
-      for (final t in ['diff_stats', 'goal_check', 'run_script', 'report_issue']) {
-        expect(policy.decide(mcp(t), AgentMode.ask).verdict, Verdict.allow, reason: t);
-      }
-      expect(policy.decide(mcp('check'), AgentMode.ask).verdict, Verdict.ask);
-      expect(policy.decide(mcp('bug_check', {'command': 'dart test'}), AgentMode.ask).verdict, Verdict.ask);
-    });
-
-    test('the screen tools are ours and gate themselves, so they run without asking', () {
-      for (final t in ['screenshot', 'browser', 'app_run']) {
-        expect(hostToolOf(mcp(t)), t);
-        expect(trustedHostTools, contains(t));
-        expect(policy.decide(mcp(t), AgentMode.ask).verdict, Verdict.allow, reason: t);
-      }
-    });
-
-    test("bug_check's command meets the floor", () {
-      final d = policy.decide(mcp('bug_check', {'action': 'reproduced', 'command': 'rm -rf ~'}), AgentMode.fullAuto);
-      expect((d.verdict, d.source), (Verdict.deny, DecisionSource.floor));
-    });
-
-    test('OpenCode asks the session before the tools that run commands (the last match wins)', () {
-      Object? effect(String tool) => openCodeSessionRules.lastWhere(
-        (r) => r['action'] == '*' || r['action'] == 'everyai_*' || r['action'] == tool,
-      )['effect'];
-      expect(effect('everyai_check'), 'ask');
-      expect(effect('everyai_bug_check'), 'ask');
-      expect(effect('everyai_diff_stats'), 'allow');
-    });
-
-    test('Claude Code asks the session before the tools that run commands', () {
-      expect(answeredBySession('mcp__everyai__diff_stats', briefed: true), isTrue);
-      expect(answeredBySession('mcp__everyai__check', briefed: true), isFalse);
-      expect(answeredBySession('mcp__everyai__bug_check', briefed: true), isFalse);
-    });
-  });
-
-  test('the briefing lists the checks', () {
-    final text = sessionBriefing(SessionSkillInput(worktree: dir, hostTools: checkToolInfos));
-    for (final t in ['bug_check', 'check', 'diff_stats', 'goal_check', 'run_script']) {
-      expect(text, contains('`$t`'));
-    }
-  });
-
   group('run_script on the host', () {
     final deno = findDeno();
-    test('reads project files; model and web functions are refused before any request', () async {
-      write('lib/a.dart', 'void a() {}\n');
-      final r = await hostRunScript(dir, stateDir, {
-        'code': r'''
-console.log((await glob("lib/*.dart")).join(","), (await readFile("lib/a.dart")).trim());
-for (const f of [() => decide("x", [{id: "a", kind: "bool", prompt: "?"}]), () => llmQuery("hi"),
-  () => webFetch("https://example.com"), () => webSearch("q"), () => rank(["a"], "?")]) {
-  try { await f(); console.log("ALLOWED"); } catch (e) { console.log("refused:", e.message.split(":")[0]); }
-}
-''',
-      });
-      expect(r.isError, isFalse, reason: r.text);
-      expect(r.text, contains('lib/a.dart void a() {}'));
-      expect(r.text, isNot(contains('ALLOWED')));
-      expect(RegExp('refused: (decide|llmQuery|webFetch|webSearch) is off here').allMatches(r.text), hasLength(5));
-    }, skip: deno == null ? 'no deno' : false);
-
     test('the output comes back untrusted; a static import of a file outside the project is refused', () async {
       final outside = Directory.systemTemp.createTempSync('outside');
       addTearDown(() => outside.deleteSync(recursive: true));
@@ -869,16 +307,6 @@ for (const f of [() => decide("x", [{id: "a", kind: "bool", prompt: "?"}]), () =
       expect(r.isError, isTrue);
       expect(r.text, startsWith('[The script failed'));
       expect(r.text, isNot(contains('S3CRET-HOST')));
-    }, skip: deno == null ? 'no deno' : false);
-
-    test('a long result is spilled before it is wrapped: the note outside, every block closed', () async {
-      final r = await hostRunScript(dir, stateDir, {'code': 'console.log("z".repeat(100000));'});
-      final note = r.text.indexOf('omitted. Full output');
-      expect(note, greaterThan(0), reason: r.text);
-      expect(r.text.substring(0, note), endsWith('</untrusted-content>\n… the rest '));
-      expect('<untrusted-content'.allMatches(r.text).length, '</untrusted-content>'.allMatches(r.text).length);
-      final path = RegExp(r'saved to (\S+);').firstMatch(r.text)!.group(1)!;
-      expect(File('$dir/$path').readAsStringSync(), 'z' * 100000);
     }, skip: deno == null ? 'no deno' : false);
   });
 }

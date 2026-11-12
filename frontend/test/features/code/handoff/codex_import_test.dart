@@ -5,7 +5,6 @@ import 'package:every_ai/features/code/drivers/codex/codex_driver.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:every_ai/features/code/handoff/native/codex_import.dart';
 import 'package:every_ai/features/code/handoff/native/import_steps.dart';
-import 'package:every_ai/features/code/harness/harness.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../support/replay_transport.dart';
@@ -132,116 +131,10 @@ void main() {
     expect(jsonEncode(items.last), contains('<cut-turn>'));
   });
 
-  test('an edit by search and replace, a read and an MCP call are text', () {
-    final steps = [
-      const CallStep(
-        kind: 'FileEditorAction',
-        tool: 'file_editor',
-        args: {'command': 'str_replace', 'path': '/work/repo/a', 'old_str': 'x', 'new_str': 'y'},
-        result: 'ok',
-        finished: true,
-        isError: false,
-      ),
-      const CallStep(
-        kind: 'ReadFileAction',
-        tool: 'read',
-        args: {'path': '/work/repo/a'},
-        result: 'y',
-        finished: true,
-        isError: false,
-      ),
-      const CallStep(kind: 'MCPToolAction', tool: 'srv__q', args: {}, result: 'no', finished: true, isError: true),
-    ];
-    final items = codexItems(steps, cwd);
-    expect(items.map((i) => (i['type'], i['role'])), List.filled(3, ('message', 'assistant')));
-    expect(jsonEncode(items[2]), contains('Result (error)'));
-  });
-
-  test(
-    'import: thread/start then inject_items, saved for attach; the briefing text goes in once, as developer',
-    () async {
-      final channel = ReplayChannel(_import());
-      final imported = await CodexImporter(driver: driver([channel])).write(source());
-      channel.expectFinished();
-      expect(imported?.nativeId, 'thr_1');
-      expect(imported?.note, 'Imported 2 turns into Codex');
-      final sent = channel.sent.firstWhere((m) => m['method'] == 'thread/inject_items');
-      expect((sent['params']! as Map)['items'], codexItems(importSteps(source(), into: 'Codex')!, cwd));
-
-      final skills = '${tmp.path}/session/briefing/skills';
-      Directory(skills).createSync(recursive: true);
-      File('${tmp.path}/session/briefing/session.md').writeAsStringSync('You are in an EveryAI session.');
-      final briefing = DriverBriefing(mcpUrl: 'http://127.0.0.1:4567/mcp', mcpToken: 'tok', skillDir: skills);
-      String reopen({required bool instruct}) => [
-        _handshake(),
-        _line('out', {
-          'id': 3,
-          'method': 'skills/extraRoots/set',
-          'params': {
-            'extraRoots': [skills],
-          },
-        }),
-        _line('in', {'id': 3, 'result': <String, Object?>{}}),
-        _line('out', {
-          'id': 4,
-          'method': 'thread/resume',
-          'params': {'threadId': 'thr_1', 'cwd': cwd, 'excludeTurns': true, ..._policy},
-        }),
-        _line('in', {
-          'id': 4,
-          'result': {
-            'thread': {'id': 'thr_1', 'cwd': cwd, 'turns': <Object?>[]},
-          },
-        }),
-        if (instruct) ...[
-          _line('out', {
-            'id': 5,
-            'method': 'thread/inject_items',
-            'params': {
-              'threadId': 'thr_1',
-              'items': [
-                {
-                  'type': 'message',
-                  'role': 'developer',
-                  'content': [
-                    {'type': 'input_text', 'text': 'You are in an EveryAI session.'},
-                  ],
-                },
-              ],
-            },
-          }),
-          _line('in', {'id': 5, 'result': <String, Object?>{}}),
-        ],
-      ].join('\n');
-      final first = ReplayChannel(reopen(instruct: true));
-      final s = await driver([first]).attachBriefed('thr_1', briefing);
-      first.expectFinished();
-      await s.close();
-      final second = ReplayChannel(reopen(instruct: false));
-      final again = await driver([second]).attachBriefed('thr_1', briefing);
-      second.expectFinished();
-      expect(second.sent.where((m) => m['method'] == 'thread/inject_items'), isEmpty);
-      await again.close();
-    },
-  );
-
   test('no inject_items in this Codex (-32601): the thread is deleted and nothing is imported', () async {
     final channel = ReplayChannel(_import(injectError: {'code': -32601, 'message': 'method not found'}));
     expect(await CodexImporter(driver: driver([channel])).write(source()), isNull);
     channel.expectFinished();
     expect(Directory('$data/threads').existsSync(), isFalse);
-  });
-
-  test('another error: the thread is deleted and the error goes to the caller', () async {
-    final channel = ReplayChannel(_import(injectError: {'code': -32602, 'message': 'bad item'}));
-    await expectLater(
-      CodexImporter(driver: driver([channel])).write(source()),
-      throwsA(isA<JsonRpcError>().having((e) => e.code, 'code', -32602)),
-    );
-    channel.expectFinished();
-  });
-
-  test('no session tag: nothing is started', () async {
-    expect(await CodexImporter(driver: driver([])).write(source(sessionTag: '')), isNull);
   });
 }

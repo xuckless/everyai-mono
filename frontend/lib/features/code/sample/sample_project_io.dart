@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../../core/process/supervisor.dart' show ProbeOwner;
+import '../drivers/short_run.dart';
+
 Future<String> createSampleProject() async {
   final root = Directory('${(await getApplicationSupportDirectory()).path}/sample-projects');
   var dir = Directory('${root.path}/counter-app');
@@ -25,14 +28,14 @@ Future<String> createSampleProject() async {
     await f.writeAsString(value);
   }
   Future<void> git(List<String> args) async {
-    final r = await Process.run('git', [
-      '-c',
-      'user.name=EveryAI',
-      '-c',
-      'user.email=sample@everyai.invalid',
-      ...args,
-    ], workingDirectory: dir.path);
-    if (r.exitCode != 0) debugPrint('git ${args.first}: ${r.stderr}');
+    final r = await runShort(
+      'git',
+      ['-c', 'user.name=EveryAI', '-c', 'user.email=sample@everyai.invalid', ...args],
+      timeout: const Duration(minutes: 1),
+      cwd: dir.path,
+      owner: const ProbeOwner('git'),
+    );
+    if (runProblem('git ${args.first}', r) case final why?) debugPrint(why);
   }
 
   await git(['init', '-q']);

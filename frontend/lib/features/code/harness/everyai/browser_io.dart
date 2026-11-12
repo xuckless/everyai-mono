@@ -4,7 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint, visibleForTesting;
 
 import '../../live/browser_page.dart';
 import '../../live/frames.dart';
@@ -13,17 +13,19 @@ import '../../live/key_map.dart';
 import '../../live/login_wall.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
-import '../../../../core/process/child_processes.dart';
+import '../../../../core/process/supervisor.dart';
 
 export '../../live/browser_page.dart';
 
-/// Where a profile's Chrome is.
+/// Where a profile's Chrome is. Every move goes through [chromeEdge] (a refused one asserts and is recorded):
 ///
 /// ```
-///   closed ──use──▶ launching ──up──▶ up ──stop / idle──▶ stopping ──gone──▶ closed
-///     │  ▲             │ fail / stop ▲                                  ▲
-///     │  └─────────────┘ (a launch that lands after a stop is ended)     │
-///     └──signIn──▶ signingIn ──window closed────────────────────────────┘
+///   closed ──use──▶ launching ──up──▶ up ──stop / idle──▶ stopping ──ended──▶ closed
+///     │  ▲             │ fail / stop ▲          │ exited      │ not ended
+///     │  └─────────────┘ (a launch that lands after a stop is ended)       ▼
+///     │                                 closed ◀─┘     notClosed(outcome) ──stop──▶ stopping
+///     └──signIn──▶ signingIn ──window closed (ended)──▶ closed
+///                     └──── window not ended ──▶ notClosed
 /// ```
 sealed class ChromeHostState {
   const ChromeHostState();
@@ -42,13 +44,13 @@ final class ChromeLaunching extends ChromeHostState {
 final class ChromeUp extends ChromeHostState {
   const ChromeUp(this.generation, this.process, this.endpoint);
   final int generation;
-  final Process process;
+  final SupervisedProcess process;
   final Uri endpoint;
 }
 
 final class ChromeStopping extends ChromeHostState {
   const ChromeStopping(this.done);
-  final Future<void> done;
+  final Future<KillOutcome> done;
 }
 
 final class ChromeSigningIn extends ChromeHostState {
@@ -56,8 +58,32 @@ final class ChromeSigningIn extends ChromeHostState {
   final Future<void> done;
 }
 
+/// A stop signalled Chrome, but it (or one of its helpers) wasn't seen to end: the profile may still be locked. A
+/// stop tries again; a use waits for that.
+final class ChromeNotClosed extends ChromeHostState {
+  const ChromeNotClosed(this.process, this.outcome);
+  final SupervisedProcess? process;
+  final KillOutcome outcome;
+}
+
+/// Whether a host may move from [from] to [to].
+bool chromeEdge(ChromeHostState from, ChromeHostState to) => switch ((from, to)) {
+  (ChromeClosed(), ChromeLaunching() || ChromeSigningIn()) => true,
+  (ChromeLaunching(), ChromeUp() || ChromeClosed() || ChromeStopping() || ChromeNotClosed()) => true,
+  (ChromeUp(), ChromeStopping() || ChromeClosed()) => true,
+  (ChromeStopping(), ChromeClosed() || ChromeNotClosed()) => true,
+  (ChromeSigningIn(), ChromeClosed() || ChromeNotClosed()) => true,
+  (ChromeNotClosed(), ChromeStopping() || ChromeClosed()) => true,
+  _ => false,
+};
+
+/// Refused host moves, for tests and diagnostics.
+final refusedChromeTransitions = <(ChromeHostState, ChromeHostState)>[];
+
 /// One Chrome per profile folder (Chrome locks a profile, so sessions of one project share the process and get a
-/// page each). Started on first use, stopped a little after its last page closes, and at quit ([stopAll]).
+/// page each). Started on first use, stopped a little after its last page closes, and at quit ([stopAll]). Chrome
+/// and the sign-in window are children of the process supervisor (the app owns them; the profile is in the ledger's
+/// detail), ended with a verified stop after a polite `Browser.close`.
 final class ChromeHost {
   ChromeHost._(this.profileDir, this.executable);
 
@@ -67,8 +93,9 @@ final class ChromeHost {
   static ChromeHost of(String profileDir, {String? executable}) =>
       _hosts.putIfAbsent(profileDir, () => ChromeHost._(profileDir, executable));
 
-  /// Stops every profile's Chrome (the app quits).
-  static Future<void> stopAll() => Future.wait([for (final h in _hosts.values.toList()) h.stop()]);
+  /// Stops every profile's Chrome (the app quits): the merged outcome.
+  static Future<KillOutcome> stopAll() async =>
+      KillOutcome.merge(await Future.wait([for (final h in _hosts.values.toList()) h.stop()]));
 
   final String profileDir;
   final String? executable;
@@ -83,6 +110,17 @@ final class ChromeHost {
 
   bool get running => _state is ChromeUp;
 
+  void _to(ChromeHostState next) {
+    if (identical(next, _state)) return;
+    if (!chromeEdge(_state, next)) {
+      refusedChromeTransitions.add((_state, next));
+      debugPrint('Refused Chrome host transition ($profileDir): ${_state.runtimeType} → ${next.runtimeType}');
+      assert(false, 'Refused Chrome host transition: ${_state.runtimeType} → ${next.runtimeType}');
+      return;
+    }
+    _state = next;
+  }
+
   /// The browser-level DevTools address, starting Chrome when needed.
   Future<Uri> endpoint({required int width, required int height}) async {
     while (true) {
@@ -91,13 +129,19 @@ final class ChromeHost {
           return endpoint;
         case ChromeLaunching(:final ready):
           return ready;
-        case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+        case ChromeStopping(:final done):
           await done;
+        case ChromeSigningIn(:final done):
+          await done;
+        case ChromeNotClosed():
+          // The old Chrome may still hold the profile: a stop again, and a launch only once it ended.
+          final outcome = await stop();
+          if (outcome is! Ended) throw BrowserError('The browser of this project did not close: $outcome');
         case ChromeClosed():
           final generation = ++_generation;
           final ready = Completer<Uri>();
           // The state first: a launch that fails at once settles it back to closed.
-          _state = ChromeLaunching(generation, ready.future);
+          _to(ChromeLaunching(generation, ready.future));
           unawaited(_launch(generation, width, height).then(ready.complete, onError: ready.completeError));
           return ready.future;
       }
@@ -124,6 +168,17 @@ final class ChromeHost {
     'about:blank',
   ];
 
+  /// Chrome's own goodbye: `Browser.close` over its DevTools socket (its profile is written out cleanly).
+  static Future<void> _browserClose(Uri endpoint) async {
+    final ws = await WebSocket.connect('$endpoint').timeout(const Duration(seconds: 1));
+    try {
+      ws.add(jsonEncode({'id': 1, 'method': 'Browser.close'}));
+      await ws.first.timeout(const Duration(seconds: 1));
+    } finally {
+      await ws.close();
+    }
+  }
+
   Future<Uri> _launch(int generation, int width, int height) async {
     final exe = executable ?? HeadlessBrowser.find();
     if (exe == null) {
@@ -131,24 +186,42 @@ final class ChromeHost {
       throw const BrowserError(noBrowserMessage);
     }
     Directory(profileDir).createSync(recursive: true);
-    final Process process;
+    Uri? said;
+    final SupervisedProcess process;
     try {
-      process = await Process.start(exe, launchArgs(profileDir, width, height));
+      process = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: const AppOwner(),
+          kind: ProcessKind.browser,
+          exe: exe,
+          args: launchArgs(profileDir, width, height),
+          label: 'Chrome',
+          detail: 'profile $profileDir',
+          politeStop: PoliteStop((_) async {
+            if (said case final e?) await _browserClose(e);
+          }, grace: const Duration(seconds: 2)),
+        ),
+      );
     } on Object catch (e) {
       _settle(generation, const ChromeClosed());
       throw BrowserError('The browser did not start: $e');
     }
-    ChildProcesses.track(process.pid, label: 'Chrome ($profileDir)', executable: exe, exited: process.exitCode);
-    unawaited(process.stdout.drain<void>());
+    unawaited(process.stdout.drain<void>().catchError((Object e) => debugPrint('Chrome stdout: $e')));
     // Chrome says where its DevTools endpoint is on stderr.
     final endpoint = Completer<Uri>();
     process.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
       final m = RegExp(r'DevTools listening on (ws://\S+)').firstMatch(line);
-      if (m != null && !endpoint.isCompleted) endpoint.complete(Uri.parse(m[1]!));
-    }, onError: (Object _) {});
+      if (m != null && !endpoint.isCompleted) endpoint.complete(said = Uri.parse(m[1]!));
+    }, onError: (Object e) => debugPrint('Chrome stderr: $e'));
     unawaited(
       process.exitCode.then((_) {
-        if (_state case ChromeUp(process: final p) when identical(p, process)) _state = const ChromeClosed();
+        // Exited by itself (a crash, killed elsewhere): what its helpers left is ended, then the host is closed.
+        if (_state case ChromeUp(process: final p) when identical(p, process)) {
+          _generation++;
+          final done = process.stop();
+          _to(ChromeStopping(done));
+          unawaited(_settleStop(done, process));
+        }
         if (!endpoint.isCompleted) endpoint.completeError(const BrowserError('The browser exited at start.'));
       }),
     );
@@ -159,22 +232,44 @@ final class ChromeHost {
         onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
       );
     } on Object {
-      await ChildProcesses.stop(process.pid);
-      _settle(generation, const ChromeClosed());
+      final outcome = await process.stop();
+      if (outcome is! Ended) debugPrint('NOT CLOSED: Chrome ($profileDir) after a failed start: $outcome');
+      // Stopped meanwhile: the stop waiting on this launch takes what didn't end (it keeps the process to retry).
+      if (generation != _generation && outcome is! Ended) _launchedAfterStop = (process, outcome);
+      _settle(generation, outcome is Ended ? const ChromeClosed() : ChromeNotClosed(process, outcome));
       rethrow;
     }
-    // Stopped while it started: this Chrome isn't wanted any more.
+    // Stopped while it started: this Chrome isn't wanted any more (the stop waits on this launch, then on this).
     if (generation != _generation) {
-      await ChildProcesses.stop(process.pid);
+      final outcome = await process.stop();
+      _launchedAfterStop = outcome is Ended ? null : (process, outcome);
       throw const BrowserError('The browser was stopped while it started.');
     }
-    _state = ChromeUp(generation, process, e);
+    _to(ChromeUp(generation, process, e));
     return e;
   }
 
+  /// A Chrome that landed after its stop, when that stop didn't end it.
+  (SupervisedProcess, KillOutcome)? _launchedAfterStop;
+
   /// Moves to [next] when [generation] is still the current one.
   void _settle(int generation, ChromeHostState next) {
-    if (generation == _generation) _state = next;
+    if (generation == _generation) _to(next);
+  }
+
+  Future<void> _settleStop(Future<KillOutcome> done, SupervisedProcess? process) async =>
+      _settled(done, await done, process);
+
+  /// The stop [done] ended with [outcome]: closed, or not closed keeping [process] so a later stop retries it.
+  void _settled(Future<KillOutcome> done, KillOutcome outcome, SupervisedProcess? process) {
+    if (_state case ChromeStopping(done: final d) when !identical(d, done)) return;
+    if (_state is! ChromeStopping) return;
+    if (outcome is Ended) {
+      _to(const ChromeClosed());
+    } else {
+      debugPrint('NOT CLOSED: Chrome ($profileDir): $outcome');
+      _to(ChromeNotClosed(process, outcome));
+    }
   }
 
   void _opened() {
@@ -186,32 +281,74 @@ final class ChromeHost {
     if (--_pages > 0) return;
     _pages = 0;
     _idle?.cancel();
-    _idle = Timer(const Duration(seconds: 30), () => unawaited(stop()));
+    _idle = Timer(const Duration(seconds: 30), () {
+      stop().then(
+        (o) => o is Ended ? null : debugPrint('NOT CLOSED: Chrome ($profileDir) after its last page: $o'),
+        onError: (Object e) => debugPrint('NOT CLOSED: Chrome ($profileDir): the stop failed: $e'),
+      );
+    });
   }
 
-  /// Ends Chrome (a launch under way is ended when it lands); a stop under way is joined.
-  Future<void> stop() {
+  /// Ends Chrome (a launch under way is ended when it lands); a stop under way is joined. The outcome is the
+  /// stop's (verified); anything but [Ended] leaves the host [ChromeNotClosed].
+  Future<KillOutcome> stop() {
     _idle?.cancel();
     switch (_state) {
-      case ChromeStopping(:final done) || ChromeSigningIn(:final done):
+      case ChromeStopping(:final done):
         return done;
+      case ChromeSigningIn(:final done):
+        return done.then(
+          (_) => switch (_state) {
+            ChromeNotClosed(:final outcome) => outcome,
+            _ => const Ended([]),
+          },
+        );
       case ChromeClosed():
-        return Future.value();
+        return Future.value(const Ended([]));
       case ChromeLaunching(:final ready):
         // The launch that lands is ended by its generation check; until then the old Chrome holds the profile, so
         // a new start waits for it.
         _generation++;
-        final done = ready.then<void>((_) {}, onError: (Object _) {}).whenComplete(() {
-          if (_state is ChromeStopping) _state = const ChromeClosed();
+        _launchedAfterStop = null;
+        // What the launch left when it landed: its process travels with the outcome, so a not-closed Chrome can be
+        // stopped again later.
+        final landed = ready
+            .then<(SupervisedProcess?, KillOutcome)>(
+              (_) => (null, const Ended([])),
+              onError: (Object _) => (null, const Ended([])),
+            )
+            .then((o) {
+              final left = _launchedAfterStop;
+              _launchedAfterStop = null;
+              return left ?? o;
+            });
+        late final Future<KillOutcome> done;
+        // Settled before the stop's caller resumes: it finds the host closed (or not closed, with the process).
+        done = landed.then((l) {
+          _settled(done, l.$2, l.$1);
+          return l.$2;
         });
-        _state = ChromeStopping(done);
+        _to(ChromeStopping(done));
         return done;
-      case ChromeUp(:final process):
+      case ChromeUp(:final process) || ChromeNotClosed(process: final process?):
         _generation++;
-        final done = ChildProcesses.stop(process.pid).whenComplete(() {
-          if (_state is ChromeStopping) _state = const ChromeClosed();
-        });
-        _state = ChromeStopping(done);
+        final done = process.stop();
+        _to(ChromeStopping(done));
+        unawaited(_settleStop(done, process));
+        return done;
+      case ChromeNotClosed(process: null):
+        // The process isn't known here: what the supervisor still lists for this profile is stopped again (a later
+        // stop or use retries; the old outcome is never handed back as if current).
+        final left = [
+          for (final c in ProcessSupervisor.instance.children)
+            if (c.state.live && c.spec.kind == ProcessKind.browser && c.detail == 'profile $profileDir') c,
+        ];
+        _generation++;
+        final done = left.isEmpty
+            ? Future<KillOutcome>.value(const Ended([]))
+            : Future.wait([for (final c in left) c.stop()]).then(KillOutcome.merge);
+        _to(ChromeStopping(done));
+        unawaited(_settleStop(done, null));
         return done;
     }
   }
@@ -226,29 +363,45 @@ final class ChromeHost {
     _stoppingForSignIn = true;
     final done = Completer<void>();
     try {
-      await stop();
+      final stopped = await stop();
+      if (stopped is! Ended) throw BrowserError("The project's browser did not close, so it can't sign in: $stopped");
     } on Object {
       _stoppingForSignIn = false;
       rethrow;
     }
     Directory(profileDir).createSync(recursive: true);
-    _state = ChromeSigningIn(done.future);
+    _to(ChromeSigningIn(done.future));
+    ChromeHostState after = const ChromeClosed();
     try {
-      final p = await Process.start(exe, [
-        '--user-data-dir=$profileDir',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--use-mock-keychain',
-        '--password-store=basic',
-        '--new-window',
-        url,
-      ]);
-      ChildProcesses.track(p.pid, label: 'Chrome sign-in ($profileDir)', executable: exe, exited: p.exitCode);
-      unawaited(p.stdout.drain<void>());
-      unawaited(p.stderr.drain<void>());
+      final p = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: const AppOwner(),
+          kind: ProcessKind.browser,
+          exe: exe,
+          args: [
+            '--user-data-dir=$profileDir',
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--use-mock-keychain',
+            '--password-store=basic',
+            '--new-window',
+            url,
+          ],
+          label: 'Chrome sign-in',
+          detail: 'profile $profileDir',
+        ),
+      );
+      unawaited(p.stdout.drain<void>().catchError((Object e) => debugPrint('Chrome sign-in stdout: $e')));
+      unawaited(p.stderr.drain<void>().catchError((Object e) => debugPrint('Chrome sign-in stderr: $e')));
       await p.exitCode;
+      // The window closed; Chrome's helpers end with it (checked).
+      final left = await p.stop();
+      if (left is! Ended) {
+        debugPrint('NOT CLOSED: Chrome sign-in ($profileDir): $left');
+        after = ChromeNotClosed(p, left);
+      }
     } finally {
-      _state = const ChromeClosed();
+      _to(after);
       _stoppingForSignIn = false;
       done.complete();
     }
@@ -262,9 +415,11 @@ final class ChromeHost {
   /// Whether Chrome is stopped for, or open in, a sign-in window ([signIn]): its pages closed on purpose.
   bool get closedForSignIn => _stoppingForSignIn || signingIn;
 
-  /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu.
+  /// Deletes the profile (sign-ins, cookies, storage): "Clear" in the project menu. Refused (a [BrowserError])
+  /// while its Chrome isn't closed.
   Future<void> clear() async {
-    await stop();
+    final stopped = await stop();
+    if (stopped is! Ended) throw BrowserError("The project's browser did not close, so its profile stays: $stopped");
     final d = Directory(profileDir);
     if (d.existsSync()) d.deleteSync(recursive: true);
   }
@@ -1367,6 +1522,17 @@ final class HeadlessBrowser implements StreamedPage {
         final t = params['targetInfo'] as Map<String, Object?>? ?? const {};
         final id = '${t['targetId']}';
         if (t['type'] == 'page' && _tabList.any((x) => x.id == t['openerId']) && !_tabList.any((x) => x.id == id)) {
+          if (_tabList.length >= maxSessionTabs) {
+            final note = tabCapNote('${t['url'] ?? ''}');
+            _log.add(note);
+            debugPrint('EveryAI browser: $note');
+            unawaited(
+              _sendOn(_browserSocket, 'Target.closeTarget', {
+                'targetId': id,
+              }).then((_) {}, onError: (Object e) => debugPrint('NOT CLOSED: a tab past the cap ($id): $e')),
+            );
+            return;
+          }
           _tabList.add((id: id, url: '${t['url'] ?? ''}', title: '${t['title'] ?? ''}'));
           // Opened with a handle on its opener (window.open, a link without noopener): they share a renderer, so a
           // dialog in one holds up the other.

