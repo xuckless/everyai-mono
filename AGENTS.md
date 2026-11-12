@@ -1050,13 +1050,13 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   `parsePrStatus`, `prChecksOf`) for the session's PR (`prTarget`: its `prNumber`, else its worktree branch, else a
   non-default branch) while the card shows: every minute with one, five without, doubling up to ten minutes after a
   failure, ten when gh isn't signed in; late answers dropped by generation. "PR #12 · Checks pass · Approved", and on a
-  Done card "Ready to merge +120 −30" with Merge; `GitService.mergePr` merges the way the
+  Done card "Ready to merge +120 −30" with Merge (confirm naming the PR; `GitService.mergePr` merges the way the
   repository allows, `prMergeFlag`). Not seen in the running app; no real gh call was made.
   Review fixes: Resume sends a carry-on turn to every lead (`resumeAfterLimit`, `boardResumeProvider`; `retry` left
   Codex, OpenCode and ACP leads idle) and says why when nothing started. Merge shows only on Done cards, checks the
   session's folder first (`prMergeBlocker`: uncommitted changes, or HEAD isn't the PR's `headRefOid`), merges only that
   commit (`--match-head-commit`, `--repo` from the PR's URL) with the method its own repository allows (`PrMergeMethod`:
-  squash, then merge commit, then rebase; no confirm, per the owner: no new friction), and `readyToMerge` needs
+  squash, then merge commit, then rebase; named in the confirm), and `readyToMerge` needs
   passing or no checks, no review still needed, and `mergeStateStatus` CLEAN or HAS_HOOKS. `prStatus` throws on a
   failure to ask (only gh's "no pull request" is none), so the chip stays and polling backs off; one `BoardGhGate`
   shares the sign-in check (`gh auth status --hostname github.com`) and one in-flight `pr view` per folder and

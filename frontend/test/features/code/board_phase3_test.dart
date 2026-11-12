@@ -309,7 +309,7 @@ void main() {
       expect(prPollDelay(found: true, failures: 9), const Duration(minutes: 10));
     });
 
-    testWidgets('the chip shows the pull request; Merge runs once, without a confirm', (tester) async {
+    testWidgets('the chip shows the pull request; Merge asks first and runs once', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final db = AppDatabase(NativeDatabase.memory());
       final prefs = await Preferences.load(db);
@@ -368,8 +368,20 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
       blocker = null;
 
-      // One click merges (no confirm), and a second click while it runs does nothing.
+      // Cancelled: nothing merges. The confirm says how it merges.
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
+      await tester.pumpAndSettle();
+      expect(find.text('Merge pull request #12?'), findsOneWidget);
+      expect(find.textContaining('squash and merge'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(merges, isEmpty);
+
+      // Confirmed: one merge, and a second click while it runs does nothing.
+      await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
+      await tester.pumpAndSettle();
+      // The dialog's Merge (the chip's own sits under the dialog).
+      await tester.tap(find.text('Merge').last);
       await tester.pump(const Duration(milliseconds: 10));
       await tester.pump(const Duration(milliseconds: 10));
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')), warnIfMissed: false);

@@ -297,6 +297,15 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
       }
       final method = await source.method(dir, shown);
       if (!mounted) return pr.cancelMerge();
+      final ok = await showAdaptiveConfirm(
+        context,
+        title: 'Merge pull request #${shown.number}?',
+        message:
+            '"${widget.info.title}" merges into its base branch on GitHub: ${method.label.toLowerCase()}, at the '
+            'commit shown here.',
+        confirmLabel: 'Merge',
+      );
+      if (!ok) return pr.cancelMerge();
       await pr.merge(dir, shown, method);
       if (mounted) showAdaptiveToast(context, 'Merged #${shown.number}');
     } on Object catch (e) {
