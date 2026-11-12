@@ -8,6 +8,7 @@ import 'package:xterm/xterm.dart';
 import '../../../core/preferences.dart';
 import '../../../core/process/supervisor.dart'
     show
+        ChildDisowned,
         ChildExited,
         ChildKilling,
         ChildLaunched,
@@ -18,7 +19,8 @@ import '../../../core/process/supervisor.dart'
         ChildState,
         ChildTerming,
         ChildUnverified,
-        Ended;
+        Ended,
+        TerminalOwner;
 import '../code_providers.dart';
 import '../domain/local_ports.dart';
 import 'processes.dart';
@@ -150,6 +152,7 @@ TerminalPhase terminalPhaseOf(ChildState s, int pid) => switch (s) {
   ChildExited(:final code) => TerminalExited(code),
   ChildNotClosed(:final survivors, :final reason) => TerminalNotClosed([for (final p in survivors) p.pid], reason),
   ChildStartFailed() => const TerminalExited(null),
+  ChildDisowned(:final pid, :final why) => TerminalNotClosed([pid], 'not ours any more: $why'),
 };
 
 /// The shell in the Terminal pane: where it is ([phase]), and the local URLs it printed (oldest first).
@@ -182,7 +185,8 @@ final sessionTerminalProvider = NotifierProvider.family<SessionTerminal, Termina
 
 /// A session's terminal: an xterm buffer fed by a shell in the session's
 /// folder. It outlives the pane, so switching tabs keeps the shell and its
-/// scrollback. Its shell is owned by the app (see [startShell]: quit and the sweep end it, an agent's Stop doesn't).
+/// scrollback. Its shell belongs to the session's terminals ([TerminalOwner]): quit, the sweep and deleting the
+/// session end it, an agent's Stop doesn't.
 final class SessionTerminal extends Notifier<TerminalStatus> {
   SessionTerminal(this.sessionId);
   final String sessionId;
@@ -215,6 +219,7 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
       columns: terminal.viewWidth,
       // Every tab of a session carries the session's id (a tab's own id is `<session>#<n>`).
       env: {'EVERYAI_TERMINAL': sessionId.split('#').first},
+      owner: TerminalOwner(sessionId.split('#').first),
     );
     if (pty == null) {
       terminal.write('No shell on this platform.\r\n');

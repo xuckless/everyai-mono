@@ -1,5 +1,4 @@
 import '../../../core/process/process_model.dart' show KillOutcome, ScanFailed;
-import '../domain/local_ports.dart';
 import 'processes.dart';
 
 Future<ProcessListing> listSessionProcesses({
@@ -10,9 +9,9 @@ Future<ProcessListing> listSessionProcesses({
   Set<int> terminalShells = const {},
 }) async => const ProcessesListed([]);
 
-Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async => const [];
+Future<PortScan> scanListeningPorts(Iterable<int> pids) async => const PortsUnreadable('not on this platform');
 
-Future<KillOutcome> killProcess(int pid, {bool force = false}) async =>
+Future<KillOutcome> killProcess(int pid, {bool force = false, String? expectedStart}) async =>
     const ScanFailed('processes are not stopped on this platform');
 
 Future<String?> outputFileOf(int pid) async => null;

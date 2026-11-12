@@ -189,7 +189,7 @@ fi
           final eq = line.indexOf('=');
           if (eq > 0) facts[line.substring(0, eq)] = line.substring(eq + 1).trim();
         }
-      default:
+      case TimedOut() || Cancelled() || StartFailed() || Refused():
         // Without the probe the block still names the folder and shell.
         debugPrint('The environment probe in $workingDir did not finish: $res');
     }

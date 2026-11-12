@@ -125,6 +125,7 @@ ProcessTable tableOf(ProcessList list, {required bool windows, required int self
           tag: r.tag(sessionEnvVar),
           owner: r.tag(ownerEnvVar),
           app: r.tag(appEnvVar),
+          start: r.start.isEmpty ? null : r.start,
         ),
   ]);
 }
@@ -150,7 +151,7 @@ Future<(Map<int, String>?, String)> _lsofCwds(List<int> pids) async {
       return (out, '');
     case Finished(:final code, :final stderr):
       return (null, 'lsof exited $code: ${stderr.trim()}');
-    default:
+    case TimedOut() || Cancelled() || StartFailed() || Refused():
       return (null, 'lsof: $r');
   }
 }

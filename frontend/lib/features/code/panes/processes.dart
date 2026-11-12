@@ -18,6 +18,7 @@ final class SessionProcess {
     required this.command,
     required this.origin,
     this.ports = const [],
+    this.start,
   });
 
   final int pid;
@@ -25,6 +26,10 @@ final class SessionProcess {
   final String command;
   final ProcessOrigin origin;
   final List<ListeningPort> ports;
+
+  /// When it started (the supervisor's `startToken`), if known: Stop/Force quit then end it only while the pid is
+  /// still this process.
+  final String? start;
 
   /// The program's name, without its folder or arguments.
   String get name {
@@ -77,19 +82,49 @@ Future<ProcessListing> listSessionProcesses({
   terminalShells: terminalShells,
 );
 
-/// The TCP ports [pids] listen on (none where that can't be found).
-Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) => impl.listeningPorts(pids);
+/// What a look for the TCP ports some processes listen on found.
+@immutable
+sealed class PortScan {
+  const PortScan();
+}
+
+final class PortsListed extends PortScan {
+  const PortsListed(this.ports);
+  final List<ListeningPort> ports;
+}
+
+/// The ports couldn't be read (lsof/ss failed, timed out or wasn't run): unknown, not "none".
+final class PortsUnreadable extends PortScan {
+  const PortsUnreadable(this.why);
+  final String why;
+}
+
+/// The TCP ports [pids] listen on, or why they couldn't be read.
+Future<PortScan> scanListeningPorts(Iterable<int> pids) => impl.scanListeningPorts(pids);
+
+/// The TCP ports [pids] listen on, for callers where they are a detail: an unreadable scan is logged and gives none.
+Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async => switch (await scanListeningPorts(pids)) {
+  PortsListed(:final ports) => ports,
+  PortsUnreadable(:final why) => () {
+    debugPrint('Listening ports could not be read: $why');
+    return const <ListeningPort>[];
+  }(),
+};
 
 /// Ends [pid] and its tree with the supervisor's verified kill (with [force], SIGKILL without a grace): what came
 /// of it. Only [Ended]-type outcomes mean gone.
-Future<KillOutcome> killProcess(int pid, {bool force = false}) => impl.killProcess(pid, force: force);
+/// With [expectedStart], a pid that is gone or now another process's is left alone (an [Ended] with `skipped`).
+Future<KillOutcome> killProcess(int pid, {bool force = false, String? expectedStart}) =>
+    impl.killProcess(pid, force: force, expectedStart: expectedStart);
 
 /// The toast for a Stop/Kill of [name] ([pid]) that came to [out]: "Stopped" only when it is proven gone.
 String killToast(KillOutcome out, String name, int pid, {bool force = false}) => switch (out) {
-  Ended() => '${force ? 'Killed' : 'Stopped'} $name ($pid)',
+  Ended(skipped: final String why) => '$name ($pid) had already gone: $why',
+  Ended(maybeEscaped: []) => '${force ? 'Killed' : 'Stopped'} $name ($pid)',
+  Ended(:final maybeEscaped) =>
+    '${force ? 'Killed' : 'Stopped'} $name ($pid). Warning: ${maybeEscaped.join(', ')} may have left its tree',
   Survived(:final pids) => 'Not closed: ${pids.join(', ')} still running after SIGKILL',
   ScanFailed(:final why) => "Couldn't check that $name ($pid) stopped: $why",
-  _ => 'Not closed: $out',
 };
 
 /// The regular file [pid]'s standard output goes to (a process an outside lead started with its output in a file),

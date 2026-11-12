@@ -45,7 +45,7 @@ Future<ProcessListing> listSessionProcesses({
   }
   origin.remove(pid);
   if (origin.isEmpty) return const ProcessesListed([]);
-  final ports = await listeningPorts(origin.keys);
+  final ports = await listeningPorts(origin.keys); // unreadable ports: logged; the processes still show
   return ProcessesListed(
     [
       for (final MapEntry(key: p, value: o) in origin.entries)
@@ -55,6 +55,7 @@ Future<ProcessListing> listSessionProcesses({
             ppid: row.ppid,
             command: row.command,
             origin: o,
+            start: row.start,
             ports: [
               for (final l in ports)
                 if (l.pid == p) l,
@@ -64,10 +65,8 @@ Future<ProcessListing> listSessionProcesses({
   );
 }
 
-/// The ports [pids] listen on. A listing that fails is logged and gives none (the processes still show; their
-/// ports are a detail).
-Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async {
-  if (pids.isEmpty) return const [];
+Future<PortScan> scanListeningPorts(Iterable<int> pids) async {
+  if (pids.isEmpty) return const PortsListed([]);
   Future<RunResult> run(String exe, List<String> args) => _sup.runBounded(
     exe,
     args,
@@ -79,22 +78,23 @@ Future<List<ListeningPort>> listeningPorts(Iterable<int> pids) async {
   if (Platform.isLinux) {
     final r = await run('ss', ['-Hltnp']);
     if (r case Finished(code: 0, :final stdout)) {
-      return parseSsListen(stdout).where((l) => pids.contains(l.pid)).toList();
+      return PortsListed(parseSsListen(stdout).where((l) => pids.contains(l.pid)).toList());
     }
   }
   final r = await run('lsof', ['-nP', '-a', '-iTCP', '-sTCP:LISTEN', '-p', pids.join(','), '-Fpn']);
   switch (r) {
     // 1: none of them listens (or some are gone); what it printed still counts.
     case Finished(:final code, :final stdout) when code == 0 || code == 1:
-      return parseLsofListen(stdout);
-    default:
-      debugPrint('Listening ports could not be read: $r');
-      return const [];
+      return PortsListed(parseLsofListen(stdout));
+    case Finished(:final code, :final stderr):
+      return PortsUnreadable('lsof exited $code: ${stderr.trim()}');
+    case TimedOut() || Cancelled() || StartFailed() || Refused():
+      return PortsUnreadable('lsof: $r');
   }
 }
 
-Future<KillOutcome> killProcess(int pid, {bool force = false}) =>
-    _sup.killTree(pid, termWait: force ? Duration.zero : null);
+Future<KillOutcome> killProcess(int pid, {bool force = false, String? expectedStart}) =>
+    _sup.killTree(pid, termWait: force ? Duration.zero : null, expectedStart: expectedStart);
 
 Future<String?> outputFileOf(int pid) async {
   try {

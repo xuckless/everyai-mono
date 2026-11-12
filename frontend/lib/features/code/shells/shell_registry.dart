@@ -97,14 +97,16 @@ ShellState shellStateOf(ChildState s) => switch (s) {
   ChildExited(:final code, :final at) => ShellExited(code, at),
   ChildNotClosed(:final survivors, :final reason) => ShellNotClosed([for (final p in survivors) p.pid], reason),
   ChildStartFailed() => ShellExited(null, DateTime.now()),
+  // Its pid turned out not to be the process started (gone or reused): never signalled, so not known closed.
+  ChildDisowned(:final pid, :final why) => ShellNotClosed([pid], 'not ours any more: $why'),
 };
 
 /// [o] in words, for tool results and notes: what is still running and why.
 String killOutcomeText(KillOutcome o) => switch (o) {
-  Ended() => 'stopped',
+  Ended(maybeEscaped: []) => 'stopped',
+  Ended(:final maybeEscaped) => 'stopped (warning: pids ${maybeEscaped.join(', ')} may have left its tree unseen)',
   Survived(:final pids, :final reason) => 'not closed: pids ${pids.join(', ')} $reason',
   ScanFailed(:final why) => 'not closed: its end could not be checked ($why)',
-  _ => 'not closed: $o',
 };
 
 /// One process EveryAI started (or watches) for a session: what it runs, how

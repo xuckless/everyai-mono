@@ -82,7 +82,7 @@ Future<SvgScriptRun> runSvgScript(String code) async {
         failed =
             'it ran past ${_timeout.inSeconds} s and was stopped'
             '${kill is Ended ? '' : ', but it is not closed ($kill)'}.';
-      default:
+      case Cancelled() || StartFailed() || Refused():
         text = '';
         failed = "it didn't run: $r";
     }

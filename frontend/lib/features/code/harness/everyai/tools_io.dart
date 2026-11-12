@@ -27,6 +27,7 @@ import '../../../../core/process/supervisor.dart'
         Finished,
         KillOutcome,
         ProcessSupervisor,
+        Refused,
         RunResult,
         SessionOwner,
         StartFailed,
@@ -1649,7 +1650,8 @@ final class ToolRunner {
     TimedOut(:final kill) => 'Error: $what took too long and was stopped${_killNote(kill)}.',
     Cancelled(:final kill) => 'Error: $what was stopped by the user${_killNote(kill)}.',
     StartFailed(:final error) => "Error: $what didn't start: $error",
-    _ => 'Error: $what: $r',
+    Refused(:final reason) => "Error: $what wasn't run: $reason",
+    Finished(:final code, :final stderr) => 'Error: $what exited $code: ${stderr.trim()}',
   }, isError: true);
 
   static String _killNote(KillOutcome k) => k is Ended ? '' : ' (${killOutcomeText(k)})';
@@ -1664,7 +1666,7 @@ final class ToolRunner {
     return switch (r) {
       Finished(:final code) => code == 0,
       StartFailed() => false, // not installed
-      _ => false,
+      TimedOut() || Cancelled() || Refused() => false,
     };
   }
 

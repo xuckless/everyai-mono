@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../../../../core/motion/motion.dart';
+import '../../../../core/process/supervisor.dart' show LaunchFailed, ProcessSupervisor;
 import '../../../../core/theme/every_theme.dart';
 import '../../../../core/ui/adaptive.dart';
 import '../../../../core/ui/anchored_popover.dart';
@@ -437,7 +438,10 @@ class BrowserDownloadsButton extends StatelessWidget {
         ? ('explorer', ['/select,', path])
         : ('xdg-open', [File(path).parent.path]);
     // The file manager it opens isn't the app's to end.
-    // TODO(supervisor): launchDetached
-    unawaited(Process.run(cmd, args).then((_) {}, onError: (Object e) => debugPrint("Couldn't reveal $path: $e")));
+    unawaited(
+      ProcessSupervisor.instance.launchDetached(cmd, args, label: 'reveal').then((r) {
+        if (r case LaunchFailed(:final error)) debugPrint("Couldn't reveal $path: $error");
+      }),
+    );
   }
 }

@@ -75,18 +75,14 @@ final class ShellEnv {
     }
     // Interactive + login, so rc files that set PATH run; output before the
     // marker (banners, prompts) is skipped. Bounded: an rc file that waits for input is stopped (verified).
-    // In the root zone: it is captured once for the whole run, so its process and the supervisor's timers belong to
-    // the app, not to whichever caller (a widget test's fake clock) asked first.
-    final res = await Zone.root.run(
-      () => ProcessSupervisor.instance.runBounded(
-        shell,
-        ['-ilc', 'printf "\\n$_marker\\n"; env -0'],
-        timeout: const Duration(seconds: 10),
-        stdoutEncoding: utf8,
-        env: const {'TERM': 'dumb'},
-        owner: const ProbeOwner('login-env'),
-        label: 'login shell environment',
-      ),
+    final res = await ProcessSupervisor.instance.runBounded(
+      shell,
+      ['-ilc', 'printf "\\n$_marker\\n"; env -0'],
+      timeout: const Duration(seconds: 10),
+      stdoutEncoding: utf8,
+      env: const {'TERM': 'dumb'},
+      owner: const ProbeOwner('login-env'),
+      label: 'login shell environment',
     );
     switch (res) {
       case Finished(:final stdout):
@@ -100,7 +96,7 @@ final class ShellEnv {
           if (env.containsKey('PATH')) return ShellEnv._(shell, _withCommonDirs(_clean(env)));
         }
         debugPrint('The login shell printed no environment; commands use the app\'s own.');
-      default:
+      case TimedOut() || Cancelled() || StartFailed() || Refused():
         // Timed out, cancelled, didn't start, or the app is quitting: the app's own environment below.
         debugPrint('The login shell environment could not be read ($res); commands use the app\'s own.');
     }

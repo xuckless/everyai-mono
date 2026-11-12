@@ -51,7 +51,10 @@ Future<ShellPty?> spawnPty(
   }
   final spec = SpawnSpec(owner: owner, kind: ProcessKind.shell, exe: executable, args: args, label: label);
   try {
-    return _PtyShell(pty, supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode));
+    return _PtyShell(
+      pty,
+      supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode, startedWithin: const Duration(seconds: 60)),
+    );
   } on SupervisorClosed {
     // Started while the app quits: nothing would own it.
     pty.kill(ProcessSignal.sigkill);

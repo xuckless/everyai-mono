@@ -40,7 +40,7 @@ Future<({int exitCode, String stdout, String stderr})> osascriptRunner(String sc
   return switch (r) {
     Finished(:final code, :final stdout, :final stderr) => (exitCode: code, stdout: stdout, stderr: stderr),
     TimedOut(:final kill) => (exitCode: -1, stdout: '', stderr: 'timed out${kill is Ended ? '' : ' ($kill)'}'),
-    _ => (exitCode: -1, stdout: '', stderr: '$r'),
+    Cancelled() || StartFailed() || Refused() => (exitCode: -1, stdout: '', stderr: '$r'),
   };
 }
 

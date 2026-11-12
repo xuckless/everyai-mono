@@ -87,7 +87,7 @@ Future<String?> captureWindow(int id, String path) async {
   final file = File(path);
   final err = switch (res) {
     Finished(:final stderr) => stderr.trim(),
-    _ => '$res',
+    TimedOut() || Cancelled() || StartFailed() || Refused() => '$res',
   };
   if (res case Finished(code: 0) when file.existsSync() && file.lengthSync() > 0) return null;
   return 'screencapture failed${err.isEmpty ? '' : ': $err'}. '

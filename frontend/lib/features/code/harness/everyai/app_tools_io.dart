@@ -239,7 +239,7 @@ Future<String?> _foreignDevTools(AppEndpoint ep, Future<Set<int>> Function()? se
     // 1: nothing listens there (nothing to attach to; the attach itself then fails).
     case Finished(:final code, :final stdout) when code == 0 || code == 1:
       listeners = {for (final l in stdout.split('\n')) ?int.tryParse(l.trim())};
-    default:
+    case Finished() || TimedOut() || Cancelled() || StartFailed() || Refused():
       // Who listens is unknown: refused, never read as allowed.
       return "EveryAI couldn't check who listens on port $port ($r), so it won't attach to it.";
   }

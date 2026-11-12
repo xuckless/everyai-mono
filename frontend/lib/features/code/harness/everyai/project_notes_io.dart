@@ -73,7 +73,7 @@ Future<bool> _tracked(String root, String path) async {
     // No git here: nothing can track it.
     StartFailed() => false,
     // It hung or the app quits: unknown, so it counts as the repository's (not loaded).
-    _ => true,
+    TimedOut() || Cancelled() || Refused() => true,
   };
 }
 

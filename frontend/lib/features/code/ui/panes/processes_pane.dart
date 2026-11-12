@@ -28,7 +28,7 @@ class ProcessesPane extends ConsumerWidget {
   final CodeSessionInfo session;
 
   Future<void> _kill(BuildContext context, WidgetRef ref, SessionProcess p, {bool force = false}) async {
-    final out = await killProcess(p.pid, force: force);
+    final out = await killProcess(p.pid, force: force, expectedStart: p.start);
     if (context.mounted) showAdaptiveToast(context, killToast(out, p.name, p.pid, force: force));
     ref.invalidate(sessionProcessesProvider(session.id));
   }

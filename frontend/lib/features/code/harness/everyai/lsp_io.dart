@@ -623,7 +623,7 @@ final class LspHub {
           throw '${stderr.trim().split('\n').last} (npm ci)';
         case TimedOut(:final kill):
           throw 'npm ci took over 5 minutes (offline?)${kill is Ended ? '' : '; it is not closed: $kill'}';
-        default:
+        case Cancelled() || StartFailed() || Refused():
           throw 'npm ci: $r';
       }
       File('${tmp.path}/.installed').writeAsStringSync('');

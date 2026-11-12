@@ -42,6 +42,10 @@ ShellPty? startShell({
   return _adopt(pty, SpawnSpec(owner: who, kind: ProcessKind.pty, exe: shell.exe, args: shell.args, label: 'Terminal'));
 }
 
+/// How recently a pty's process must have started for its pid to be taken as the one just started: it is the app's
+/// own unreaped child, so this only guards against a mix-up, and is generous for a loaded machine.
+const adoptWithin = Duration(seconds: 60);
+
 /// The supervisor terminals belong to (tests swap in their own).
 @visibleForTesting
 ProcessSupervisor? debugPtySupervisor;
@@ -51,7 +55,7 @@ ProcessSupervisor get supervisor => debugPtySupervisor ?? ProcessSupervisor.inst
 /// [pty], adopted by the supervisor; ended at once (and null) when the app is quitting.
 ShellPty? _adopt(Pty pty, SpawnSpec spec) {
   try {
-    return _Pty(pty, supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode));
+    return _Pty(pty, supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode, startedWithin: adoptWithin));
   } on SupervisorClosed catch (e) {
     // Started while the app quits: it must not outlive it, and nothing will own it.
     debugPrint('${spec.label} (${pty.pid}) started while quitting ($e); ending it.');

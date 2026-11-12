@@ -84,6 +84,7 @@ final class ProcessRow {
     this.tag,
     this.owner,
     this.app,
+    this.start,
   });
 
   final int pid;
@@ -103,6 +104,10 @@ final class ProcessRow {
 
   /// The supervisor's app tag (`EVERYAI_APP`, `<app pid>:<start>`), when set and visible.
   final String? app;
+
+  /// Its start time as the supervisor's `startToken`, when the table had one: a later kill checks the pid is still
+  /// this process.
+  final String? start;
 
   /// The program's name: no folder, and no `.exe` on Windows, where the
   /// path may be quoted (`"C:\Program Files\Git\bin\bash.exe" -c …`).

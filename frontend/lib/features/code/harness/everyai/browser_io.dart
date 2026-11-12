@@ -4,7 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint, visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 
 import '../../live/browser_page.dart';
 import '../../live/frames.dart';
@@ -13,7 +13,7 @@ import '../../live/key_map.dart';
 import '../../live/login_wall.dart';
 import '../../live/live_session.dart';
 import '../../live/page_snapshot.dart';
-import '../../../../core/process/supervisor.dart';
+import '../../../../core/process/child_processes.dart';
 
 export '../../live/browser_page.dart';
 
@@ -42,7 +42,7 @@ final class ChromeLaunching extends ChromeHostState {
 final class ChromeUp extends ChromeHostState {
   const ChromeUp(this.generation, this.process, this.endpoint);
   final int generation;
-  final SupervisedProcess process;
+  final Process process;
   final Uri endpoint;
 }
 
@@ -131,21 +131,14 @@ final class ChromeHost {
       throw const BrowserError(noBrowserMessage);
     }
     Directory(profileDir).createSync(recursive: true);
-    final SupervisedProcess process;
+    final Process process;
     try {
-      process = await ProcessSupervisor.instance.spawn(
-        SpawnSpec(
-          owner: const AppOwner(),
-          kind: ProcessKind.browser,
-          exe: exe,
-          args: launchArgs(profileDir, width, height),
-          label: 'Chrome ($profileDir)',
-        ),
-      );
+      process = await Process.start(exe, launchArgs(profileDir, width, height));
     } on Object catch (e) {
       _settle(generation, const ChromeClosed());
       throw BrowserError('The browser did not start: $e');
     }
+    ChildProcesses.track(process.pid, label: 'Chrome ($profileDir)', executable: exe, exited: process.exitCode);
     unawaited(process.stdout.drain<void>());
     // Chrome says where its DevTools endpoint is on stderr.
     final endpoint = Completer<Uri>();
@@ -166,23 +159,17 @@ final class ChromeHost {
         onTimeout: () => throw const BrowserError('The browser did not start within 20 s.'),
       );
     } on Object {
-      await _stopChrome(process);
+      await ChildProcesses.stop(process.pid);
       _settle(generation, const ChromeClosed());
       rethrow;
     }
     // Stopped while it started: this Chrome isn't wanted any more.
     if (generation != _generation) {
-      await _stopChrome(process);
+      await ChildProcesses.stop(process.pid);
       throw const BrowserError('The browser was stopped while it started.');
     }
     _state = ChromeUp(generation, process, e);
     return e;
-  }
-
-  /// The supervisor's verified stop of a Chrome; one that doesn't close is logged loudly (and stays listed).
-  static Future<void> _stopChrome(SupervisedProcess process) async {
-    final out = await process.stop();
-    if (out is! Ended) debugPrint('NOT CLOSED: Chrome ${process.pid}: $out');
   }
 
   /// Moves to [next] when [generation] is still the current one.
@@ -221,7 +208,7 @@ final class ChromeHost {
         return done;
       case ChromeUp(:final process):
         _generation++;
-        final done = _stopChrome(process).whenComplete(() {
+        final done = ChildProcesses.stop(process.pid).whenComplete(() {
           if (_state is ChromeStopping) _state = const ChromeClosed();
         });
         _state = ChromeStopping(done);
@@ -247,23 +234,16 @@ final class ChromeHost {
     Directory(profileDir).createSync(recursive: true);
     _state = ChromeSigningIn(done.future);
     try {
-      final p = await ProcessSupervisor.instance.spawn(
-        SpawnSpec(
-          owner: const AppOwner(),
-          kind: ProcessKind.browser,
-          exe: exe,
-          args: [
-            '--user-data-dir=$profileDir',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--use-mock-keychain',
-            '--password-store=basic',
-            '--new-window',
-            url,
-          ],
-          label: 'Chrome sign-in ($profileDir)',
-        ),
-      );
+      final p = await Process.start(exe, [
+        '--user-data-dir=$profileDir',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--use-mock-keychain',
+        '--password-store=basic',
+        '--new-window',
+        url,
+      ]);
+      ChildProcesses.track(p.pid, label: 'Chrome sign-in ($profileDir)', executable: exe, exited: p.exitCode);
       unawaited(p.stdout.drain<void>());
       unawaited(p.stderr.drain<void>());
       await p.exitCode;
