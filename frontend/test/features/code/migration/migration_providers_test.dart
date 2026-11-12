@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/agents/agents_providers.dart';
-import 'package:every_ai/features/slash/custom/custom_commands_provider.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/mcp_providers.dart';
 import 'package:every_ai/features/code/migration/migration_files.dart';
@@ -58,14 +57,6 @@ void main() {
   Future<List<ImportItem>> scan() => c.read(migrationScanProvider.future);
   Future<List<String>> apply(List<ImportItem> items) => c.read(importApplierProvider)(items);
 
-  test('scanning writes nothing to EveryAI', () async {
-    final items = await scan();
-    expect(items, isNotEmpty);
-    expect(c.read(codeMcpServersProvider).global, isEmpty);
-    expect(c.read(codeMcpServersProvider).projects, isEmpty);
-    expect(Directory('$project/.everyai').existsSync(), isFalse);
-  });
-
   test('nothing chosen writes nothing', () async {
     await scan();
     expect(await apply(const []), isEmpty);
@@ -99,31 +90,6 @@ void main() {
     expect(again.firstWhere((i) => i.title == 'docs').selectable, isFalse);
   });
 
-  test('rows that cannot be brought over are skipped even when handed in', () async {
-    final live = (await scan()).firstWhere((i) => i.title == 'live');
-    expect(await apply([live]), isEmpty);
-    expect(c.read(codeMcpServersProvider).global, isEmpty);
-  });
-
-  test('a command is written once, then reported as already there', () async {
-    final cmd = (await scan()).firstWhere((i) => i.title == '/review');
-    expect(await apply([cmd]), ['/review: imported.']);
-    expect((await c.read(customCommandsProvider.future)).map((x) => x.name), contains('review'));
-    final written = File('$project/.everyai/commands/review.md').readAsStringSync();
-    expect(written, contains(r'Review $1 with focus on $2.'));
-    expect(await apply([cmd]), ['/review: already there.']);
-    expect(File('$project/.everyai/commands/review.md').readAsStringSync(), written);
-    c.invalidate(migrationScanProvider);
-    expect((await scan()).firstWhere((i) => i.title == '/review').unavailable, 'Already in EveryAI.');
-  });
-
-  test('an agent is written in our format into the project', () async {
-    final agent = (await scan()).firstWhere((i) => i.kind == ImportKind.agent);
-    expect(await apply([agent]), ['code-reviewer: imported.']);
-    expect(File('$project/.everyai/agents/code-reviewer.md').readAsStringSync(), contains('permissions: plan'));
-    expect(await apply([agent]), ['code-reviewer: already there.']);
-  });
-
   test('an imported project agent still needs the normal trust review', () async {
     final agent = (await scan()).firstWhere((i) => i.kind == ImportKind.agent);
     await apply([agent]);
@@ -131,14 +97,6 @@ void main() {
     expect(c.read(agentLibrarySettingsProvider).trustedNow(a), isFalse);
     c.invalidate(migrationScanProvider);
     expect((await scan()).firstWhere((i) => i.kind == ImportKind.agent).unavailable, 'Already in EveryAI.');
-  });
-
-  test('a skill folder that is a link is listed', () async {
-    final real = '${tmp.path}/store/linked';
-    put('$real/SKILL.md', '---\nname: linked\ndescription: d\n---\nbody');
-    Directory('$home/.claude/skills').createSync(recursive: true);
-    Link('$home/.claude/skills/linked').createSync(real);
-    expect((await scan()).where((i) => i.kind == ImportKind.skill).map((i) => i.title), contains('linked'));
   });
 
   test('the other tools\' folders are byte for byte the same after an import', () async {

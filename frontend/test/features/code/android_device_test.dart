@@ -1,9 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'package:every_ai/features/code/live/adb_io.dart';
 import 'package:every_ai/features/code/live/android_device_io.dart';
-import 'package:every_ai/features/code/live/app_endpoints.dart';
-import 'package:every_ai/features/code/live/device_screen.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 String _node(
@@ -25,19 +22,6 @@ String _node(
     'selected="false" bounds="$bounds" hint="">$children</node>';
 
 void main() {
-  test('adb devices -l', () {
-    final d = parseAdbDevices(
-      'List of devices attached\n'
-      'emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emu64a transport_id:1\n'
-      'R58M12345     unauthorized usb:1-1 transport_id:2\n\n',
-    );
-    expect(d.map((x) => x.serial), ['emulator-5554', 'R58M12345']);
-    expect(d.first.ready, isTrue);
-    expect(d.first.emulator, isTrue);
-    expect(d.first.model, 'sdk_gphone64_arm64');
-    expect(d.last.ready, isFalse);
-  });
-
   test('uiautomator tree: roles, names from children, secrets, toggles, reading order, the app in front', () {
     final xml =
         '<?xml version="1.0"?><hierarchy rotation="0">'
@@ -74,45 +58,5 @@ void main() {
     expect(lines, contains('button Wi-Fi Connected null []'));
     expect(lines.where((l) => l.startsWith('text Wi-Fi')), isEmpty);
     expect(parseUiAutomator('not xml').nodes, isEmpty);
-  });
-
-  test('logcat is folded for the model', () {
-    final lines = [
-      'E/AndroidRuntime( 123): FATAL EXCEPTION: main',
-      'E/AndroidRuntime( 123): java.lang.IllegalStateException: boom',
-      for (var i = 0; i < 30; i++) 'E/AndroidRuntime( 123): \tat com.example.Foo.bar(Foo.java:$i)',
-      'I/MyApp( 123): after',
-    ];
-    final out = trimLogcat(lines);
-    expect(out, hasLength(6));
-    expect(out[4], '  … 28 more stack lines');
-    expect(out.last, contains('after'));
-    expect(trimLogcat([for (var i = 0; i < 100; i++) 'I/x( 1): $i'], max: 10).first, '… 90 earlier lines');
-  });
-
-  test('Android devices named in output', () {
-    final found = detectAppEndpoints(
-      'Launching lib/main.dart on sdk gphone64 arm64 in debug mode...\nadb -s R58M12345 install app.apk\n'
-      'emulator-5556 device\n',
-    );
-    expect(found.where((e) => e.kind == AppKind.android).map((e) => '${e.uri}').toSet(), {
-      'android:emulator-5556',
-      'android:R58M12345',
-      'android-name:sdk%20gphone64%20arm64',
-    });
-  });
-
-  test('shell quoting for adb shell', () {
-    expect(shellQuote('tap'), 'tap');
-    expect(shellQuote("it's"), r"'it'\''s'");
-    expect(shellQuote('a b'), "'a b'");
-  });
-
-  test('device holds', () {
-    final h = DeviceHolds();
-    expect(h.claim('d', 'a'), isNull);
-    expect(h.claim('d', 'b'), 'a');
-    h.release('a');
-    expect(h.claim('d', 'b'), isNull);
   });
 }

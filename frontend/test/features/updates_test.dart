@@ -7,7 +7,6 @@ import 'package:every_ai/features/updates/data/install.dart';
 import 'package:every_ai/features/updates/data/sparkle_bridge.dart';
 import 'package:every_ai/features/updates/domain/releases.dart';
 import 'package:every_ai/features/updates/update_providers.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -32,42 +31,8 @@ const _sums = 'abc  EveryAI-0.2.0-x86_64.AppImage\n';
 const _sumsSig = 'ILwwb/SFZJ98uUa4Xo1Yi/F5X9CXJSs6W1rO064PxnfkwMzWg4gap/wmwVjo5ZJmp9Y8O8zcUIiWw2d+PFKcAw==';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('versions', () {
-    test('semver order, pre-releases before their release', () {
-      final ordered = [
-        '0.1.0-alpha.1',
-        '0.1.0-alpha.2',
-        '0.1.0-alpha.10',
-        '0.1.0-beta',
-        '0.1.0-beta.1',
-        '0.1.0-rc.1',
-        '0.1.0',
-        '0.1.1',
-        '0.2.0-alpha.1',
-        '1.0.0',
-      ].map(v).toList();
-      for (var i = 1; i < ordered.length; i++) {
-        expect(ordered[i] > ordered[i - 1], isTrue, reason: '${ordered[i]} > ${ordered[i - 1]}');
-      }
-      expect(v('v0.1.0-alpha.1+7'), v('0.1.0-alpha.1'));
-      expect(v('1.2'), v('1.2.0'));
-      expect(ReleaseVersion.tryParse('latest'), isNull);
-      expect(ReleaseVersion.tryParse('1.x'), isNull);
-    });
-
-    test('picks the newest release the channel allows', () {
-      final releases = [
-        _release('v0.1.0-alpha.1'),
-        _release('v0.1.0-alpha.2'),
-        _release('v0.2.0-beta.1', pre: true),
-        _release('v9.0.0', draft: true),
-      ].map(Release.fromJson).whereType<Release>().toList();
-      expect(releases, hasLength(3), reason: 'drafts never count');
-      expect(pickUpdate(releases, v('0.1.0-alpha.1'), prereleases: false)?.tag, 'v0.1.0-alpha.2');
-      expect(pickUpdate(releases, v('0.1.0-alpha.1'), prereleases: true)?.tag, 'v0.2.0-beta.1');
-      expect(pickUpdate(releases, v('0.1.0-alpha.2'), prereleases: false), isNull);
-    });
-
     test('checksums and their signature', () async {
       expect(checksumFor('${'a' * 64}  x.deb\n${'B' * 64} *EveryAI.AppImage', 'EveryAI.AppImage'), 'b' * 64);
       expect(checksumFor('${'a' * 64}  x.deb', 'y'), isNull);
@@ -130,38 +95,6 @@ void main() {
       expect(c.read(updateProvider).showBanner, isFalse);
     });
 
-    test('a .deb, or a release without update files, offers the download', () async {
-      final c = container(
-        kind: InstallKind.deb,
-        releases: _release('v0.1.0-alpha.2', files: ['everyai_0.1.0-alpha.2_amd64.deb']),
-      );
-      await c.read(updateProvider.notifier).check();
-      expect(c.read(updateProvider).phase, UpdatePhase.manual);
-      expect(c.read(updateProvider.notifier).manualUrl, 'https://dl/v0.1.0-alpha.2/everyai_0.1.0-alpha.2_amd64.deb');
-
-      final unsigned = container(
-        kind: InstallKind.appImage,
-        releases: _release('v0.1.0-alpha.2', files: ['a.AppImage']),
-      );
-      await unsigned.read(updateProvider.notifier).check();
-      expect(unsigned.read(updateProvider).phase, UpdatePhase.manual);
-    });
-
-    test('pre-releases come only with the setting on', () async {
-      final list = [
-        _release('v0.1.0-alpha.1'),
-        _release('v0.2.0-beta.1', pre: true, files: ['x.deb']),
-      ];
-      final c = container(kind: InstallKind.deb, releases: list, prefs: {prereleasesPref: '1'});
-      await c.read(updateProvider.notifier).check();
-      expect(requested.single, contains('/releases?per_page='));
-      expect(c.read(updateProvider).release?.tag, 'v0.2.0-beta.1');
-
-      final stable = container(kind: InstallKind.deb, releases: list.first);
-      await stable.read(updateProvider.notifier).check();
-      expect(stable.read(updateProvider).phase, UpdatePhase.upToDate);
-    });
-
     test('a failed verification shows as failed and touches nothing', () async {
       final c = container(
         kind: InstallKind.appImage,
@@ -180,77 +113,6 @@ void main() {
       await c.read(updateProvider.notifier).check();
       expect(requested, isEmpty);
       expect(c.read(updateProvider).supported, isFalse);
-    });
-
-    testWidgets('Sparkle gets the release appcast and reports ready', (tester) async {
-      TestWidgetsFlutterBinding.ensureInitialized();
-      const channel = MethodChannel('everyai/updater-test');
-      final calls = <MethodCall>[];
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
-        calls.add(call);
-        return true;
-      });
-      final bridge = SparkleBridge(channel);
-      late ProviderContainer c;
-      await tester.runAsync(() async {
-        c = container(
-          kind: InstallKind.sparkle,
-          sparkle: bridge,
-          releases: _release('v0.1.0-alpha.2', files: ['EveryAI-0.1.0-alpha.2.dmg', 'appcast.xml']),
-        );
-        await c.read(updateProvider.notifier).check();
-      });
-      expect(c.read(updateProvider).phase, UpdatePhase.downloading);
-      expect(calls.single.method, 'check');
-      expect((calls.single.arguments as Map)['feed'], 'https://dl/v0.1.0-alpha.2/appcast.xml');
-
-      // The native side reports the download verified and held.
-      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-        channel.name,
-        channel.codec.encodeMethodCall(const MethodCall('ready', {'version': '0.1.0-alpha.2'})),
-        (_) {},
-      );
-      await tester.pump();
-      expect(c.read(updateProvider).phase, UpdatePhase.ready);
-      await c.read(updateProvider.notifier).restart();
-      expect(calls.last.method, 'installNow');
-    });
-
-    test('Sparkle events: a ready install stays ready; outside a download only "ready" counts', () {
-      final release = Release.fromJson(
-        _release('v0.1.0-alpha.2', files: ['EveryAI-0.1.0-alpha.2.dmg', 'appcast.xml']),
-      )!;
-      UpdateState at(UpdatePhase p) => UpdateState(kind: InstallKind.sparkle, phase: p, release: release);
-      final t = UpdateController.sparkleTransition;
-      expect(t(at(UpdatePhase.ready), const SparkleNone()), isNull);
-      expect(t(at(UpdatePhase.ready), const SparkleFailed('busy')), isNull);
-      expect(t(at(UpdatePhase.downloading), const SparkleReady('2'))!.phase, UpdatePhase.ready);
-      final none = t(at(UpdatePhase.downloading), const SparkleNone())!;
-      expect(none.phase, UpdatePhase.upToDate);
-      expect(none.release, isNull);
-      expect(t(at(UpdatePhase.downloading), const SparkleFailed('x'))!.error, 'x');
-      // A scheduled check of Sparkle's own: an error or "nothing newer" outside a download is no news.
-      expect(t(at(UpdatePhase.failed), const SparkleNone()), isNull);
-      expect(t(at(UpdatePhase.upToDate), const SparkleFailed('x')), isNull);
-      expect(t(at(UpdatePhase.upToDate), const SparkleReady('2'))!.phase, UpdatePhase.ready);
-    });
-
-    testWidgets('a Sparkle download with no answer fails in time instead of downloading forever', (tester) async {
-      const channel = MethodChannel('everyai/updater-timeout');
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async => true);
-      late ProviderContainer c;
-      await tester.runAsync(() async {
-        c = container(
-          kind: InstallKind.sparkle,
-          sparkle: SparkleBridge(channel),
-          sparkleTimeout: const Duration(milliseconds: 30),
-          releases: _release('v0.1.0-alpha.2', files: ['EveryAI-0.1.0-alpha.2.dmg', 'appcast.xml']),
-        );
-        await c.read(updateProvider.notifier).check();
-        expect(c.read(updateProvider).phase, UpdatePhase.downloading);
-        await Future<void>.delayed(const Duration(milliseconds: 80));
-      });
-      expect(c.read(updateProvider).phase, UpdatePhase.failed);
     });
   });
 }

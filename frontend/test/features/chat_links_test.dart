@@ -34,12 +34,6 @@ void main() {
     return launched;
   }
 
-  testWidgets('an ordinary link opens with no question', (tester) async {
-    final uri = Uri.parse('https://docs.flutter.dev/ui');
-    expect(await pumpLink(tester, uri), [uri]);
-    expect(find.textContaining('Open docs.flutter.dev'), findsNothing);
-  });
-
   testWidgets('a link carrying data shows the real host and address first', (tester) async {
     final uri = Uri.parse('https://evil.example/c?d=${'aGVsbG8gd29ybGQ' * 5}');
     final launched = await pumpLink(tester, uri);

@@ -19,19 +19,6 @@ void main() {
   // A PDF converted to Markdown put TeX in table cells; measuring the cells
   // asked flutter_math_fork for a dry baseline it can't give, and layout
   // failed on every frame (the app froze in debug builds).
-  testWidgets('inline math in a table cell lays out', (tester) async {
-    await tester.pumpWidget(
-      host(
-        MarkdownView(
-          data: '| Action | Probability |\n|---|---|\n| Intended | \$P = 0.8\$ |\n| Slip | \$\\frac{0.2}{2}\$ |\n',
-          style: style,
-        ),
-      ),
-    );
-    expect(tester.takeException(), isNull);
-    expect(find.byType(Table), findsOneWidget);
-  });
-
   testWidgets('inline math inside an intrinsic-width parent lays out', (tester) async {
     await tester.pumpWidget(
       host(

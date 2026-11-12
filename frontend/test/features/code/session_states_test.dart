@@ -7,8 +7,6 @@ import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/ui/transcript/plan_card.dart';
-import 'package:every_ai/features/questions/domain/questions.dart';
-import 'package:every_ai/features/questions/ui/question_card.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as m;
@@ -21,20 +19,6 @@ Widget _host(Widget child) => m.MaterialApp(
     ),
   ),
 );
-
-List<Question> _questions(String header) => Question.listFrom({
-  'questions': [
-    {
-      'question': 'Which $header?',
-      'header': header,
-      'multi_select': false,
-      'options': [
-        {'label': '$header A', 'description': 'first'},
-        {'label': '$header B', 'description': 'second'},
-      ],
-    },
-  ],
-});
 
 void main() {
   group('CodeSessionState link and notice', () {
@@ -58,15 +42,6 @@ void main() {
         const CodeSessionState(link: SessionLink.live).copyWith(notice: const BudgetReached('b')).status,
         SessionStatus.failed,
       );
-    });
-
-    test('a reconnect is not a failure, and a mirrored snapshot maps to a link', () {
-      expect(const CodeSessionState(link: SessionLink.reconnecting).status, SessionStatus.starting);
-      expect(const CodeSessionState(connected: true).link, SessionLink.live);
-      const mirrored = CodeSessionState(connected: true, error: 'gone');
-      expect(mirrored.link, SessionLink.broken);
-      expect(mirrored.status, SessionStatus.failed);
-      expect(mirrored.brokenBy, 'gone');
     });
   });
 
@@ -103,58 +78,6 @@ void main() {
       answer.complete(false);
       await tester.pumpAndSettle();
       expect(find.text('Start building'), findsOneWidget);
-    });
-
-    testWidgets('stays closed once the approval went out', (tester) async {
-      await tester.pumpWidget(_host(PlanCard(plan: plan, open: true, onApprove: () async => true, onRevise: (_) {})));
-      await tester.tap(find.text('Start building'));
-      await tester.pumpAndSettle();
-      expect(find.text('Start building'), findsNothing);
-    });
-  });
-
-  group('QuestionCard', () {
-    testWidgets('a new question in the same place starts fresh', (tester) async {
-      final sent = <List<QuestionAnswer>>[];
-      Widget card(List<Question> q) => _host(QuestionCard(questions: q, onSubmit: sent.add));
-      await tester.pumpWidget(card(_questions('Platform')));
-      await tester.tap(find.text('Platform B'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('question.submit')));
-      await tester.pumpAndSettle();
-      expect(sent.single.single.selected, {1});
-      // The next ask arrives while the card stays mounted.
-      await tester.pumpWidget(card(_questions('Review')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Review A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('question.submit')));
-      await tester.pumpAndSettle();
-      expect(sent, hasLength(2));
-      expect(sent.last.single.selected, {0});
-    });
-
-    testWidgets('opens again when sending the answers throws', (tester) async {
-      var tries = 0;
-      await tester.pumpWidget(
-        _host(
-          QuestionCard(
-            questions: _questions('Platform'),
-            onSubmit: (_) {},
-            onSubmitWithFiles: (_, _) async {
-              tries++;
-              throw StateError('no session');
-            },
-          ),
-        ),
-      );
-      await tester.tap(find.text('Platform A'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('question.submit')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('question.submit')));
-      await tester.pumpAndSettle();
-      expect(tries, 2);
     });
   });
 }

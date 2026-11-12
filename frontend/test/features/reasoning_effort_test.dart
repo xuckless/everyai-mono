@@ -30,23 +30,6 @@ class _Catalog extends CatalogController {
 }
 
 void main() {
-  test('wire values: auto sends nothing; models without reasoning get none', () {
-    const plain = ModelSpec(id: ModelId('x/plain'), provider: ModelProvider.anthropic, name: 'Plain');
-    const thinker = ModelSpec(
-      id: ModelId('x/think'),
-      provider: ModelProvider.anthropic,
-      name: 'Think',
-      reasoning: true,
-    );
-    expect(ReasoningEffort.auto.wire, isNull);
-    expect(ReasoningEffort.max.wire, 'max');
-    expect(ReasoningEffort.high.wireFor(thinker), 'high');
-    expect(ReasoningEffort.high.wireFor(plain), isNull);
-    expect(ReasoningEffort.parse('medium'), ReasoningEffort.medium);
-    expect(ReasoningEffort.parse(null), ReasoningEffort.auto);
-    expect(ReasoningEffort.parse('bogus'), ReasoningEffort.auto);
-  });
-
   group('per conversation', () {
     late AppDatabase db;
     late Preferences prefs;

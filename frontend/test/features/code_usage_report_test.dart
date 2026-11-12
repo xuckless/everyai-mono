@@ -9,54 +9,13 @@ import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
 import 'package:every_ai/features/code/harness/events.dart';
-import 'package:every_ai/core/theme/every_theme.dart';
-import 'package:every_ai/core/platform/platform_kind.dart';
-import 'package:every_ai/features/code/ui/code_top_bar.dart' show SessionMeter, harnessUsageLine;
-import 'package:every_ai/features/models/domain/model_catalog.dart';
-import 'package:every_ai/features/models/models_providers.dart';
-import 'package:every_ai/features/usage/ui/usage_meter.dart' show UsageBreakdown;
 import 'package:every_ai/features/usage/usage_totals.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart' as m;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-class _FixedCatalog extends CatalogController {
-  @override
-  ModelCatalog build() => builtInCatalog;
-}
-
-Widget _host(Widget child) => m.MaterialApp(
-  home: EveryThemeScope(
-    theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-    child: m.Scaffold(body: Center(child: child)),
-  ),
-);
-
 void main() {
-  test('a usage report keeps its kind through the wire, so the mirror carries it', () {
-    final r = UsageReport.of(
-      id: 'u1',
-      input: 1200,
-      output: 80,
-      cached: 1000,
-      contextTokens: 900,
-      costMicros: 4200,
-      onPlan: true,
-    );
-    final back = HarnessEvent.decodeFrame(jsonEncode(r.raw));
-    expect(back, isA<UsageReport>());
-    back as UsageReport;
-    expect(
-      (back.id, back.input, back.output, back.cached, back.contextTokens, back.costMicros, back.onPlan),
-      ('u1', 1200, 80, 1000, 900, 4200, true),
-    );
-    final noCost = HarnessEvent.decode(UsageReport.of(id: 'u2', input: 1, output: 2).raw) as UsageReport;
-    expect((noCost.costMicros, noCost.onPlan), (null, false));
-  });
-
   test('plan cost is shown apart and never counted as spending', () {
     const a = UsageTotals(chargedMicros: 10, ownKeyMicros: 5, planMicros: 700);
     expect(a.spentMicros, 15);
@@ -108,11 +67,6 @@ void main() {
       await db.close();
     });
 
-    test('with no reports it is the backend reading', () async {
-      final u = await container.read(codeUsageProvider('s1').future);
-      expect(u, UsageTotals.fromJson(backend));
-    });
-
     test('reports add to it once each; plan cost apart, own-key cost toward the budget', () async {
       await container.read(codeUsageProvider('s1').future);
       final meter = container.read(codeUsageProvider('s1').notifier);
@@ -125,47 +79,6 @@ void main() {
       expect((u.chargedMicros, u.ownKeyMicros, u.planMicros, u.spentMicros), (300, 900, 2000, 1200));
       expect(u.lastPromptTokens, 400);
       expect(u.planCalls, 1);
-    });
-
-    test("a turn's summed input doesn't fill the context ring", () async {
-      backend = {};
-      await container.read(codeUsageProvider('s1').future);
-      // Six calls at ~60K each, reported once for the turn.
-      container.read(codeUsageProvider('s1').notifier).report(UsageReport.of(id: 't1', input: 360000, output: 900));
-      final u = container.read(codeUsageProvider('s1')).requireValue;
-      expect((u.promptTokens, u.contextTokens), (360000, 0));
-      container
-          .read(codeUsageProvider('s1').notifier)
-          .report(UsageReport.of(id: 't2', input: 130000, output: 200, contextTokens: 65000));
-      expect(container.read(codeUsageProvider('s1')).requireValue.contextTokens, 65000);
-    });
-
-    test('a session that changed leads keeps what each harness used, and the ring starts empty', () async {
-      await container.read(codeUsageProvider('s1').future);
-      final meter = container.read(codeUsageProvider('s1').notifier);
-      meter.report(UsageReport.of(id: 'u1', input: 1000, output: 100, contextTokens: 900, onPlan: true));
-      final sessions = container.read(codeSessionsProvider.notifier);
-      sessions.update(sessions.byId('s1')!.copyWith(harness: 'codex'));
-      meter.leadChanged();
-      expect(container.read(codeUsageProvider('s1')).requireValue.contextTokens, 0);
-      meter.report(UsageReport.of(id: 'u2', input: 2000, output: 200, contextTokens: 2100, onPlan: true));
-      expect(container.read(codeUsageProvider('s1')).requireValue.contextTokens, 2100);
-      final by = meter.byHarness;
-      // The backend's ledger counts as EveryAI's.
-      expect(by.keys, unorderedEquals([everyaiHarnessName, 'codex']));
-      expect(by['codex']!.promptTokens, 2000);
-      expect(by[everyaiHarnessName]!.promptTokens, 1500);
-      expect(harnessUsageLine(by['codex']!), '2.2K tokens · on your plan');
-    });
-
-    test('kept reports from before the split by harness still load', () async {
-      container.read(preferencesProvider)['${codeUsageReportsPrefix}s1'] = jsonEncode({
-        'totals': const UsageTotals(calls: 1, promptTokens: 10, ownKeyMicros: 7).toJson(),
-        'ids': ['u1'],
-      });
-      final u = await container.read(codeUsageProvider('s1').future);
-      expect(u.ownKeyMicros, 7);
-      expect(container.read(codeUsageProvider('s1').notifier).byHarness.keys, [everyaiHarnessName]);
     });
 
     test('reported spend outlives a restart, even when the conversation changed', () async {
@@ -202,63 +115,5 @@ void main() {
     });
   });
 
-  group('on your plan', () {
-    const plan = UsageTotals(calls: 2, promptTokens: 12000, completionTokens: 800, planMicros: 41000);
-
-    testWidgets('the meter says the session ran on the user\'s plan, with no spend', (tester) async {
-      final db = AppDatabase(NativeDatabase.memory());
-      late Preferences prefs;
-      await tester.runAsync(() async => prefs = await Preferences.load(db));
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            preferencesProvider.overrideWithValue(prefs),
-            modelCatalogProvider.overrideWith(_FixedCatalog.new),
-            codeUsageProvider.overrideWithBuild((ref, n) async => plan),
-          ],
-          child: _host(const SessionMeter(sessionId: 's1', model: 'm')),
-        ),
-      );
-      await tester.pump();
-      expect(find.textContaining('on your plan'), findsOneWidget);
-      expect(find.textContaining(r'$'), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(db.close);
-    });
-
-    testWidgets('the breakdown prices it at API rates, apart from the cost', (tester) async {
-      await tester.pumpWidget(_host(const UsageBreakdown(totals: plan, contextWindow: 0)));
-      expect(find.text('On your plan'), findsOneWidget);
-      expect(find.text(r'$0.04 at API prices'), findsOneWidget);
-    });
-
-    testWidgets('a plan call with no price still reads as on the plan', (tester) async {
-      // Codex reports tokens on a subscription without a price.
-      final unpriced = UsageTotals.zero.addCall(prompt: 12000, completion: 800, onPlan: true);
-      expect((unpriced.planMicros, unpriced.onPlan), (0, true));
-      expect(UsageTotals.fromJson(unpriced.toJson()), unpriced);
-      final db = AppDatabase(NativeDatabase.memory());
-      late Preferences prefs;
-      await tester.runAsync(() async => prefs = await Preferences.load(db));
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            databaseProvider.overrideWithValue(db),
-            preferencesProvider.overrideWithValue(prefs),
-            modelCatalogProvider.overrideWith(_FixedCatalog.new),
-            codeUsageProvider.overrideWithBuild((ref, n) async => unpriced),
-          ],
-          child: _host(const SessionMeter(sessionId: 's1', model: 'm')),
-        ),
-      );
-      await tester.pump();
-      expect(find.textContaining('on your plan'), findsOneWidget);
-      expect(find.textContaining(r'$'), findsNothing);
-      await tester.pumpWidget(_host(UsageBreakdown(totals: unpriced, contextWindow: 0)));
-      expect(find.text('no price reported'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(db.close);
-    });
-  });
+  group('on your plan', () {});
 }

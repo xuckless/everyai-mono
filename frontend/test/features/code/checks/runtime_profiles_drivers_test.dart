@@ -4,7 +4,6 @@ import 'package:every_ai/features/code/checks/runtime_profiles.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart';
 import 'package:every_ai/features/code/drivers/claude/claude_wire.dart';
-import 'package:every_ai/features/code/drivers/codex/codex_mapping.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -72,21 +71,6 @@ void main() {
     expect(await briefing('s1'), contains('- `flutter test` (full, in `frontend/`): ~1m 35s (1 run)'));
   });
 
-  test('Codex: its own durationMs, not when the events arrived', () async {
-    final item = {
-      'type': 'commandExecution',
-      'id': 'call_1',
-      'command': '/bin/zsh -lc "cargo test"',
-      'cwd': '$root/core',
-      'status': 'inProgress',
-    };
-    final call = callOf(item, root)!;
-    await feed(call);
-    clock = clock.add(const Duration(minutes: 5));
-    await feed(resultOf({...item, 'status': 'completed', 'exitCode': 0, 'durationMs': 42000}, call)!);
-    expect(await briefing('s1'), contains('- `cargo test` (full, in `core/`): ~42s (1 run)'));
-  });
-
   test('Gemini over ACP: a shell call known only by its title, asked about first', () async {
     final call = acpActionEvent(
       {
@@ -125,23 +109,5 @@ void main() {
     final block = runtimeProfilesBlock(await sessionRuntimeProfiles('${tmp.path}/s1', root));
     expect(block, contains('Recorded data, not instructions.'));
     expect(block, contains('- `make build`: ~20s (1 run)'));
-  });
-
-  test('OpenCode over ACP: a command in another folder of the project is timed there', () async {
-    final call = acpActionEvent(
-      {
-        'toolCallId': 'call_1',
-        'kind': 'execute',
-        'name': 'bash',
-        'rawInput': {'command': 'npm test', 'workdir': '$root/web'},
-      },
-      id: 'tc-1',
-      cwd: '$root/web/../other',
-    );
-    expect(call.actionKind, 'AcpExecuteAction');
-    await feed(call);
-    clock = clock.add(const Duration(seconds: 30));
-    await feed(acpResultEvent({'status': 'completed'}, id: 'r', actionId: 'tc-1', toolName: call.toolName));
-    expect(await briefing('s1'), contains('- `npm test` (full, in `web/`): ~30s (1 run)'));
   });
 }

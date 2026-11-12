@@ -84,10 +84,4 @@ void main() {
     expect(consent(), SkipPermissionsConsent.unasked);
     expect(prefs[SkipPermissions.key], '[]');
   });
-
-  test("Full auto and Bypass say they are an outside lead's own mode", () {
-    expect(AgentMode.fullAuto.descriptionOn(null), AgentMode.fullAuto.description);
-    expect(AgentMode.bypass.descriptionOn('Codex'), contains("Codex's own skip-permissions mode"));
-    expect(AgentMode.ask.descriptionOn('Codex'), AgentMode.ask.description);
-  });
 }

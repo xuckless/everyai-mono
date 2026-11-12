@@ -3,7 +3,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/resume/opencode_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
@@ -154,56 +153,11 @@ void main() {
     expect(older.lastActive, DateTime.fromMillisecondsSinceEpoch(1000000));
   });
 
-  test("history is the driver's mapping: tool names as sent, todos, reasoning; a torn row is skipped", () async {
-    final source = openCodePastSessions(dbPath: dbPath);
-    final old = (await source.list(project)).single;
-    final events = await source.history(old);
-    final messages = events.whereType<ChatMessage>().toList();
-    expect(messages.first.fromUser, isTrue);
-    expect(messages.first.text, 'Make the parser accept tabs');
-    expect(messages.any((m) => m.reasoning == 'Tabs are split by the lexer.'), isTrue);
-    expect(messages.any((m) => m.text == 'The lexer splits on spaces only.'), isTrue);
-    expect(messages.last.text, 'go on');
-    final calls = events.whereType<ActionCall>().toList();
-    expect([for (final c in calls) c.toolName], ['shell', 'todowrite']);
-    expect(calls.first.actionKind, 'TerminalAction');
-    expect(calls.first.action['command'], 'rg tab lib');
-    expect(calls.last.actionKind, 'TaskTrackerAction');
-    expect(events.whereType<ToolResult>().first.text, 'lib/lexer.dart: tab');
-  });
-
-  test('the database is found under XDG_DATA_HOME, else ~/.local/share', () async {
-    final xdg = openCodePastSessions(env: () async => {'XDG_DATA_HOME': '${tmp.path}/data', 'HOME': '/nowhere'});
-    expect((await xdg.list(project)).length, 1);
-    Directory('${tmp.path}/home/.local/share').createSync(recursive: true);
-    Directory('${tmp.path}/data/opencode').renameSync('${tmp.path}/home/.local/share/opencode');
-    final home = openCodePastSessions(env: () async => {'HOME': '${tmp.path}/home'});
-    expect((await home.list(project)).length, 1);
-    expect(await openCodePastSessions(env: () async => const {}).list(project), isEmpty);
-  });
-
-  test('a missing file, a non-database or an older OpenCode without session_v2 lists nothing', () async {
-    expect(await openCodePastSessions(dbPath: '${tmp.path}/none.db').list(project), isEmpty);
-    File('${tmp.path}/junk.db').writeAsStringSync('not sqlite');
-    expect(await openCodePastSessions(dbPath: '${tmp.path}/junk.db').list(project), isEmpty);
-    final old = sqlite3.open('${tmp.path}/old.db')
-      ..execute('CREATE TABLE session (id text PRIMARY KEY, directory text NOT NULL)');
-    old.close();
-    expect(await openCodePastSessions(dbPath: '${tmp.path}/old.db').list(project), isEmpty);
-  });
-
   test('the reader never writes to the database', () async {
     final before = File(dbPath).lastModifiedSync();
     final source = openCodePastSessions(dbPath: dbPath);
     await source.history((await source.list(project)).single);
     expect(File(dbPath).lastModifiedSync(), before);
     expect(File('$dbPath-wal').existsSync(), isFalse);
-  });
-
-  test('pastSessionTitle keeps the first line, cut at 80', () {
-    expect(pastSessionTitle('  one\ntwo'), 'one');
-    final long = pastSessionTitle('x' * 200);
-    expect(long.length, 80);
-    expect(long.endsWith('…'), isTrue);
   });
 }

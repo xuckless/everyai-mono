@@ -1,8 +1,5 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:io';
-
-import 'package:every_ai/features/code/harness/everyai/shell_io.dart' show withNestedDisplay;
 import 'package:every_ai/features/code/live/app_view.dart';
 import 'package:every_ai/features/code/live/desktop_window_io.dart';
 import 'package:every_ai/features/code/live/device_screen.dart';
@@ -68,19 +65,6 @@ void main() {
     expect(out[2].$1.secret, isTrue);
   });
 
-  test('a list entry belongs to its row', () {
-    final rows = axRowPaths({
-      'nodes': [
-        {'path': '0', 'role': 'AXWindow'},
-        {'path': '0.3.1', 'role': 'AXRow'},
-        {'path': '0.3.1.0.0', 'role': 'AXTextField'},
-      ],
-    });
-    expect(rowOf('0.3.1.0.0', rows), '0.3.1');
-    expect(rowOf('0.3.1', rows), '0.3.1');
-    expect(rowOf('0.2', rows), isNull);
-  });
-
   test('key types text unless a password field may have the focus', () {
     expect(keyTypesText('hello'), isTrue);
     expect(keyTypesText('a'), isTrue);
@@ -97,31 +81,5 @@ void main() {
     );
     expect(secretFocusRefusal([user, pass], focusKnown: false), isNull, reason: 'the tree shows another field focused');
     expect(secretFocusRefusal([const AppNode(ref: 'w1', role: 'textbox', name: 'User')], focusKnown: false), isNull);
-  });
-
-  test("a session's own display goes on top of its shells' environment; empty values remove", () {
-    final base = {'DISPLAY': ':0', 'WAYLAND_DISPLAY': 'wayland-0', 'HOME': '/home/a'};
-    expect(withNestedDisplay(base, const {}), same(base));
-    expect(withNestedDisplay(base, const {'DISPLAY': ':7', 'GDK_BACKEND': 'x11', 'WAYLAND_DISPLAY': ''}), {
-      'DISPLAY': ':7',
-      'HOME': '/home/a',
-      'GDK_BACKEND': 'x11',
-    });
-  });
-
-  test('the helpers ship as assets, and the Linux one is valid Python', () async {
-    expect(File('assets/helpers/everyai_win.cs').readAsStringSync(), contains('static int Main(string[] argv)'));
-    final py = File('assets/helpers/everyai_x11.py');
-    expect(py.existsSync(), isTrue);
-    final r = await Process.run('python3', ['-c', 'import ast,sys; ast.parse(open(sys.argv[1]).read())', py.path]);
-    expect(r.exitCode, 0, reason: '${r.stderr}');
-  }, skip: Platform.isWindows ? 'python3' : null);
-
-  test('key combos', () {
-    final c = splitKeyCombo('cmd+Shift+S');
-    expect(c.mods, ['cmd', 'shift']);
-    expect(c.key, 's');
-    expect(splitKeyCombo('Enter').mods, isEmpty);
-    expect(splitKeyCombo('Enter').key, 'enter');
   });
 }

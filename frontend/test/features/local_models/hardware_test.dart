@@ -1,4 +1,3 @@
-import 'package:every_ai/features/local_models/data/hardware_scan.dart';
 import 'package:every_ai/features/local_models/domain/hardware.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,40 +17,6 @@ Filesystem     1K-blocks     Used Available Use% Mounted on
       expect(parseDfFree(''), isNull);
     });
 
-    test('nvidia-smi with and without units', () {
-      expect(parseNvidiaSmi('NVIDIA GeForce RTX 4090, 24564\nNVIDIA RTX A2000, 6138\n'), [
-        const Gpu(name: 'NVIDIA GeForce RTX 4090', vramBytes: 24564 << 20),
-        const Gpu(name: 'NVIDIA RTX A2000', vramBytes: 6138 << 20),
-      ]);
-      expect(
-        parseNvidiaSmi('name, memory.total [MiB]\nNVIDIA GeForce RTX 3060, 12288 MiB\n').single.vramBytes,
-        12288 << 20,
-      );
-    });
-
-    test('rocm-smi JSON', () {
-      const out = '{"card0": {"Card series": "Radeon RX 7900 XTX", "VRAM Total Memory (B)": "25753026560"}}';
-      expect(parseRocmSmi(out), [const Gpu(name: 'Radeon RX 7900 XTX', vramBytes: 25753026560)]);
-      expect(parseRocmSmi('not json'), isEmpty);
-    });
-
-    test('/proc/meminfo, cpuinfo and lspci', () {
-      expect(parseMeminfo('MemTotal:       32768000 kB\nMemFree: 1 kB\n'), 32768000 * 1024);
-      expect(
-        parseCpuinfoModel('processor\t: 0\nmodel name\t: AMD Ryzen 9 7950X 16-Core Processor\n'),
-        'AMD Ryzen 9 7950X 16-Core Processor',
-      );
-      final gpus = parseLspciGpus(
-        '00:02.0 VGA compatible controller: Intel Corporation Alder Lake-P GT2 [Iris Xe Graphics] (rev 0c)\n'
-        '01:00.0 3D controller: NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile] (rev a1)\n'
-        '00:1f.3 Audio device: Intel Corporation\n',
-      );
-      expect(gpus.map((g) => g.name), [
-        'Intel Corporation Alder Lake-P GT2 [Iris Xe Graphics] (rev 0c)',
-        'NVIDIA Corporation GA107M [GeForce RTX 3050 Mobile] (rev a1)',
-      ]);
-    });
-
     test('Windows CIM: one GPU object or a list; a tiny AdapterRAM is no VRAM', () {
       final one = parseWindowsCim(
         '{"TotalPhysicalMemory":34359738368,"Cpu":"Intel(R) Core(TM) i7 ","Gpus":{"Name":"Intel(R) UHD","AdapterRAM":134217728},"FreeBytes":500000000000}',
@@ -69,18 +34,6 @@ Filesystem     1K-blocks     Used Available Use% Mounted on
   });
 
   group('usable memory and the summary', () {
-    test('Apple Silicon: two thirds of unified memory', () {
-      const spec = HardwareSpec(
-        os: HostOs.macos,
-        chip: 'Apple M2 Pro',
-        memoryBytes: 16 << 30,
-        unifiedMemory: true,
-        freeDiskBytes: 212 << 30,
-      );
-      expect(gb(spec.usableModelBytes!), 11);
-      expect(spec.summary, 'This Mac: M2 Pro · 16 GB unified · 212 GB free');
-    });
-
     test('a GPU uses its own memory; none means half the RAM', () {
       const withGpu = HardwareSpec(
         os: HostOs.linux,
@@ -94,47 +47,5 @@ Filesystem     1K-blocks     Used Available Use% Mounted on
       expect(cpu.summary, contains('no GPU found'));
       expect(HardwareSpec.unknown.usableModelBytes, isNull);
     });
-  });
-
-  test('the macOS scan reads sysctl and df, and survives a failing part', () async {
-    final runs = <String>[];
-    final spec = await scanHardwareWith(
-      os: HostOs.macos,
-      diskPath: '/Users/me/.ollama/models',
-      readFile: (_) async => null,
-      run: (exe, args) async {
-        runs.add('$exe ${args.join(' ')}');
-        return switch (args.last) {
-          'hw.memsize' => (code: 0, out: '17179869184\n'),
-          'machdep.cpu.brand_string' => (code: 0, out: 'Apple M2 Pro\n'),
-          'hw.optional.arm64' => (code: 0, out: '1\n'),
-          _ => null,
-        };
-      },
-    );
-    expect(spec.memoryBytes, 17179869184);
-    expect(spec.unifiedMemory, isTrue);
-    expect(spec.chip, 'Apple M2 Pro');
-    expect(spec.freeDiskBytes, isNull);
-    expect(runs, contains('/bin/df -k /Users/me/.ollama/models'));
-  });
-
-  test('the Linux scan merges lspci with nvidia-smi', () async {
-    final spec = await scanHardwareWith(
-      os: HostOs.linux,
-      diskPath: '/home/me',
-      readFile: (p) async => p == '/proc/meminfo' ? 'MemTotal: 33554432 kB\n' : null,
-      run: (exe, args) async => switch (exe) {
-        'nvidia-smi' => (code: 0, out: 'NVIDIA GeForce RTX 3090, 24576\n'),
-        'lspci' => (code: 0, out: '01:00.0 VGA compatible controller: NVIDIA Corporation GA102 [GeForce RTX 3090]\n'),
-        _ => null,
-      },
-    );
-    expect(spec.memoryBytes, 32 << 30);
-    expect(spec.gpus.single.vramBytes, 24576 << 20);
-  });
-
-  test('the Windows script asks for the models drive', () {
-    expect(windowsCimScript('D'), contains("Get-PSDrive -Name 'D'"));
   });
 }

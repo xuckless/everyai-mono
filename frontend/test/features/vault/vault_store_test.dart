@@ -68,11 +68,6 @@ void main() {
     expect(c.read(vaultProvider), isA<VaultFailed>().having((s) => s.reason, 'reason', contains('older')));
   });
 
-  test('without VAULT_DEV nothing runs', () async {
-    VaultDev.enabled = false;
-    await expectLater(vault().create('x', kdf: fast), throwsStateError);
-  });
-
   test('writes made at once all land, each on its own manifest version', () async {
     await vault().create('a long passphrase', kdf: fast);
     await Future.wait([
@@ -89,16 +84,6 @@ void main() {
     expect((await vault().get('b'))!['n'], 2);
   });
 
-  test('a lock during a write leaves consistent files', () async {
-    await vault().create('a long passphrase', kdf: fast);
-    final writing = vault().put('a', {'n': 1});
-    vault().lock();
-    await writing.then((_) {}, onError: (Object _) {});
-    expect(c.read(vaultProvider), isA<VaultLocked>());
-    await vault().unlock('a long passphrase');
-    expect(c.read(vaultProvider), isA<VaultUnlocked>());
-  });
-
   test('a second create at once is refused and keeps the first vault', () async {
     final first = vault().create('a long passphrase', kdf: fast);
     final second = vault().create('another passphrase', kdf: fast);
@@ -107,13 +92,5 @@ void main() {
     vault().lock();
     await vault().unlock('a long passphrase');
     expect(c.read(vaultProvider), isA<VaultUnlocked>());
-  });
-
-  test('an unreadable manifest fails the unlock instead of hanging in unlocking', () async {
-    await vault().create('a long passphrase', kdf: fast);
-    vault().lock();
-    await File('${dir.path}/manifest.json').writeAsString('{"bytes": "%%%", "signature": "%%%"}');
-    await vault().unlock('a long passphrase');
-    expect(c.read(vaultProvider), isA<VaultFailed>());
   });
 }

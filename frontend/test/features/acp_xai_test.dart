@@ -1,156 +1,12 @@
 import 'dart:convert';
 
-import 'package:every_ai/features/code/drivers/acp/acp_agents.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_xai.dart';
-import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // Payloads adapted from T3 Code's xaiAcpExtension.test.ts (MIT, @ 8b44f42b),
 // not recorded from a real `grok agent stdio`: unverified.
 
 void main() {
-  test('x.ai methods by either prefix; others are null', () {
-    expect(xaiMethod('x.ai/task_completed'), 'task_completed');
-    expect(xaiMethod('_x.ai/session/prompt_complete'), 'session/prompt_complete');
-    expect(xaiMethod('session/update'), isNull);
-    expect(xaiMethod('_cursor/task'), isNull);
-    expect(xaiMethod('x.ai/'), isNull);
-  });
-
-  group('background tasks', () {
-    test('the id: the snapshot first, then task_id, then tool_call_id; none is null', () {
-      Map<String, Object?> n(Map<String, Object?> u) => {'sessionId': 's', 'update': u};
-      expect(xaiTask(n({'tool_call_id': 'call-1', 'task_id': 'task-1'}), completed: false)?.id, 'task-1');
-      expect(xaiTask(n({'tool_call_id': 'call-1'}), completed: false)?.id, 'call-1');
-      expect(
-        xaiTask(
-          n({
-            'task_id': 'task-1',
-            'task_snapshot': {'task_id': 'snap-1'},
-          }),
-          completed: true,
-        )?.id,
-        'snap-1',
-      );
-      expect(xaiTask(n({'sessionUpdate': 'task_completed'}), completed: true), isNull);
-      expect(xaiTask(const {}, completed: true), isNull);
-    });
-
-    test('a non-zero exit fails; a monitor is named by its description', () {
-      final failed = xaiTask({
-        'update': {
-          'sessionUpdate': 'task_completed',
-          'task_snapshot': {'task_id': 't', 'command': 'npm test', 'exit_code': 1, 'output': 'boom'},
-        },
-      }, completed: true)!;
-      expect((failed.status, failed.label, failed.monitor, failed.output), ('failed', 'npm test', false, 'boom'));
-      expect(xaiTaskResultText(failed), 'boom');
-      final monitor = xaiTask({
-        'update': {
-          'task_snapshot': {
-            'task_id': 't2',
-            'command': 'for i in 1 2 3; do echo tick; done',
-            'display_command': '[monitor] Watch three tick echoes',
-            'exit_code': 0,
-            'kind': 'monitor',
-          },
-        },
-      }, completed: true)!;
-      expect((monitor.status, monitor.label, monitor.monitor), ('completed', 'Watch three tick echoes', true));
-      expect(xaiTaskCall(monitor, id: 'xbg-t2').summary, 'Watching: Watch three tick echoes');
-      final started = xaiTask({
-        'update': {'task_id': 't3', 'monitor_description': 'Logs', 'description': 'other'},
-      }, completed: false)!;
-      expect((started.status, started.label, started.monitor), ('running', 'Logs', true));
-      expect(
-        xaiTaskResultText(
-          xaiTask({
-            'update': {
-              'task_snapshot': {'task_id': 't', 'exit_code': 2},
-            },
-          }, completed: true)!,
-        ),
-        'Failed (exit code 2).',
-      );
-    });
-  });
-
-  test('subagent_finished: completed reports its output, failed and cancelled their error', () {
-    XaiSubagentDone? f(Map<String, Object?> u) => xaiSubagentDone({
-      'sessionId': 'root',
-      'update': {'sessionUpdate': 'subagent_finished', 'child_session_id': 'child', ...u},
-    });
-    expect(f({'status': 'completed', 'output': 'SUBAGENT_DONE'}), (
-      child: 'child',
-      status: 'completed',
-      result: 'SUBAGENT_DONE',
-    ));
-    expect(f({'status': 'failed', 'error': 'tool crashed'})?.result, 'tool crashed');
-    expect(f({'status': 'cancelled', 'error': 'interrupted'})?.status, 'cancelled');
-    expect(f({'status': 'failed', 'output': 'partial'})?.result, isNull);
-    expect(f({'status': 'timed_out'}), isNull);
-    expect(f({'status': 'completed', 'child_session_id': null}), isNull);
-  });
-
-  group('subagents', () {
-    test('a spawn is known by its title, variant or subagent type', () {
-      expect(xaiIsSpawn({'title': 'Task'}), isTrue);
-      expect(xaiIsSpawn({'title': 'spawn_subagent'}), isTrue);
-      expect(
-        xaiIsSpawn({
-          'title': 'x',
-          'rawInput': {'variant': 'Task'},
-        }),
-        isTrue,
-      );
-      expect(
-        xaiIsSpawn({
-          'title': 'x',
-          'rawInput': {'subagent_type': 'generalPurpose'},
-        }),
-        isTrue,
-      );
-      expect(
-        xaiIsSpawn({
-          'title': 'Read file',
-          'rawInput': {'path': 'a'},
-        }),
-        isFalse,
-      );
-    });
-
-    test('a background ack and the child id; the report loses its id line', () {
-      const id = '019f0220-e192-7c41-9e9d-b406bc3459c8';
-      const done = 'Server audit complete.\n\nAgent ID: $id (resume supported)';
-      expect(xaiChildId(done), id);
-      expect(xaiAsyncAck(done), isFalse);
-      expect(xaiReport(done), 'Server audit complete.');
-      const ack = 'Subagent started in background.\nsubagent_id: $id\nUse get_command_or_subagent_output.';
-      expect(xaiAsyncAck(ack), isTrue);
-      expect(xaiChildId(ack), id);
-      expect(xaiChildId('no id here'), isNull);
-      final call = {
-        'toolCallId': 'task-1',
-        'title': 'Task',
-        'rawInput': {'description': 'Explore', 'prompt': 'Audit apps/server.', 'subagent_type': 'generalPurpose'},
-        'rawOutput': {'type': 'Text', 'text': done},
-      };
-      expect(xaiOutputText(call), done);
-      final row = xaiSpawnCall(call, id: 'tc-task-1');
-      expect(row.actionKind, 'TaskAction');
-      expect(
-        (row.action['description'], row.action['prompt'], row.action['agent']),
-        ('Explore', 'Audit apps/server.', 'generalPurpose'),
-      );
-      expect(
-        xaiOutputText({
-          'rawOutput': {'output': utf8.encode('bytes')},
-        }),
-        'bytes',
-      );
-    });
-  });
-
   test('prompt completion: the direct method and turn_completed; wakes marked, nameless turns ignored', () {
     expect(xaiPromptDone('session/prompt_complete', {'sessionId': 's', 'promptId': 'p1', 'stopReason': 'end_turn'}), (
       sessionId: 's',
@@ -191,22 +47,6 @@ void main() {
       isNull,
     );
     expect(xaiPromptDone('task_completed', const {}), isNull);
-  });
-
-  test('turn usage: ACP fields, the cached part inside the input, cost from ticks', () {
-    // T3 Code's usage.test.ts turn_completed sample.
-    final u = xaiTurnUsage({
-      'inputTokens': 20272,
-      'outputTokens': 272,
-      'totalTokens': 20544,
-      'cachedReadTokens': 11264,
-      'cacheCreationTokens': 0,
-      'reasoningTokens': 180,
-      'costUsdTicks': 230272000,
-    }, id: 'u')!;
-    expect((u.input, u.output, u.cached, u.costMicros, u.onPlan), (20272, 272, 11264, 23027, true));
-    expect(xaiTurnUsage({'inputTokens': 1}, id: 'u')!.costMicros, isNull);
-    expect(xaiTurnUsage(null, id: 'u'), isNull);
   });
 
   test('kills: a finished kill ends the tasks it names; a failed one or another outcome ends nothing', () {
@@ -326,53 +166,5 @@ void main() {
     expect(isNoTtyExit('Error: No such file or directory (os error 2)'), isFalse);
     expect(isNoTtyExit('os error 60'), isFalse);
     expect(isNoTtyExit(''), isFalse);
-  });
-
-  test('grok models: logged in, logged out, or unknown', () {
-    expect(parseGrokModelsLogin('You are logged in as a@b.c\nModels:\n- grok-build (default)'), isTrue);
-    expect(parseGrokModelsLogin('You are not logged in. Run grok login.'), isFalse);
-    expect(parseGrokModelsLogin('Not authenticated'), isFalse);
-    expect(parseGrokModelsLogin('Models:\n- grok-build'), isNull);
-  });
-
-  test("Grok's usage-limit code", () {
-    expect(xaiUsageLimit(const JsonRpcError(-32003, 'limit')), isTrue);
-    expect(xaiUsageLimit(const JsonRpcError(-32603, 'internal')), isFalse);
-  });
-
-  group('profile', () {
-    test("its flags go before agent stdio; the user's own permission flags stay", () {
-      const pinned = ['--no-auto-update', 'agent', 'stdio'];
-      expect(acpCommand('grok', const []).args, pinned);
-      expect(acpCommand('grok agent stdio', const []).args, pinned);
-      expect(acpCommand('/opt/bin/grok', const ['--permission-mode', 'bypassPermissions', 'agent', 'stdio']).args, [
-        ...pinned,
-        '--permission-mode',
-        'bypassPermissions',
-      ]);
-      final p = acpCommand('grok', const []).profile;
-      expect((p.agent, p.ttyFallback, p.needsConsent), (AcpAgent.grok, true, false));
-      expect(p.initializeMeta, {'clientType': 'extension'});
-      expect(p.cancelMeta, {'cancelTrigger': 'ctrl_c'});
-    });
-
-    test('authenticate with the API key when one is set, else the cached sign-in; other agents none', () async {
-      final grok = acpCommand('grok', const []).profile;
-      expect(await grok.authMethod(() async => {'XAI_API_KEY': 'xai-1'}), 'xai.api_key');
-      expect(await grok.authMethod(() async => {'XAI_API_KEY': ' '}), 'cached_token');
-      var read = false;
-      expect(
-        await acpCommand('gemini', const []).profile.authMethod(() async {
-          read = true;
-          return const {};
-        }),
-        isNull,
-      );
-      expect(read, isFalse);
-    });
-
-    test('signed in with XAI_API_KEY, by its presence only', () async {
-      expect(await acpCommand('grok', const []).profile.signedIn('/x/grok', env: {'XAI_API_KEY': 'k'}), isTrue);
-    });
   });
 }

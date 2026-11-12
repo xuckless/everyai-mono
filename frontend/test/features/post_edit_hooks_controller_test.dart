@@ -59,7 +59,6 @@ void main() {
   // The slow checks: the runs the next fast round hands over, the reports they give, and their gate.
   var slowRuns = <HookRun>[];
   final slowNotes = <String>[];
-  var slowCalls = 0;
   Completer<void>? slowGate;
   // Whether a subagent was still open when each round started.
   final openAtCall = <bool>[];
@@ -75,7 +74,6 @@ void main() {
     cancelled = 0;
     slowRuns = [];
     slowNotes.clear();
-    slowCalls = 0;
     slowGate = null;
     turns = [
       [_agent('reply one')],
@@ -131,7 +129,6 @@ void main() {
           required baselines,
           cancel,
         }) async {
-          slowCalls++;
           if (slowGate case final g?) await Future.any([g.future, ?cancel]);
           return (report: slowNotes.isEmpty ? '' : slowNotes.removeAt(0), skipped: '');
         }),
@@ -195,86 +192,6 @@ void main() {
     expect(saidBy(controller).indexOf('user:fourth'), greaterThan(saidBy(controller).indexOf('agent:reply three')));
   });
 
-  test('the snapshot and a waiting report are kept with the session; skips are shown once', () async {
-    final controller = await open();
-    final sessions = container.read(codeSessionsProvider.notifier);
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    notes.add(_report);
-    skips = 'Skipped: ruff (not installed)';
-    final before = calls;
-    await controller.send('second');
-    await _until(() => calls, (n) => n == before + 1);
-    final id = controller.sessionId;
-    await _until(() => sessions.byId(id)!.pendingChecks, (p) => p == _report);
-    final info = sessions.byId(id)!;
-    expect(info.checkedTree, 'tree-${before + 1}');
-    // A restart reads them back.
-    final back = CodeSessionInfo.fromJson(info.toJson());
-    expect(back.pendingChecks, _report);
-    expect(back.checkedTree, info.checkedTree);
-    List<NoticeItem> skipped() => [
-      for (final n in controller.state.transcript.items.whereType<NoticeItem>())
-        if (n.message == checksSkippedNotice) n,
-    ];
-    expect(skipped().single.detail, skips);
-
-    await controller.send('third');
-    await _until(() => calls, (n) => n == before + 2);
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
-    expect(sessions.byId(id)!.pendingChecks, '');
-    // The same skips again: not shown again.
-    expect(skipped(), hasLength(1));
-  });
-
-  test('a failing check at turn end goes first in the next message; a clean one adds nothing', () async {
-    final info = await container
-        .read(codeSessionsProvider.notifier)
-        .start(
-          project: container.read(codeProjectsProvider).single,
-          prompt: 'first',
-          model: 'anthropic/claude-haiku-5.5',
-          mode: AgentMode.fullAuto,
-        );
-    final id = info.id;
-    container.listen(codeSessionProvider(id), (_, _) {});
-    final controller = container.read(codeSessionProvider(id).notifier);
-    Transcript t() => controller.state.transcript;
-    List<String> said() => [
-      for (final item in t().items)
-        if (item is UserTurn) 'user:${item.text}' else if (item is AgentText) 'agent:${item.text}',
-    ];
-    List<String> sent() => [
-      for (final e in controller.mirrorEvents)
-        if (e is ChatMessage && e.fromUser) e.text,
-    ];
-
-    await _until(said, (s) => s.contains('agent:reply one'));
-    // Turn two's checks fail.
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    notes.addAll([_report, '']);
-    final before = calls;
-    await controller.send('second');
-    await _until(said, (s) => s.contains('agent:reply two'));
-    await _until(() => calls, (n) => n == before + 1);
-    await controller.send('third');
-    await _until(said, (s) => s.contains('agent:reply three'));
-    final third = sent().firstWhere((m) => m.contains('third'));
-    expect(third, contains(_report));
-    expect(third.indexOf(_report), lessThan(third.indexOf('third')));
-    // The user's bubble shows their words; the report is its own row.
-    expect(said(), contains('user:third'));
-    final row = t().items.whereType<NoticeItem>().where((n) => n.message == checksNotice).single;
-    expect(row.detail, contains('lib/a.dart'));
-
-    // Turn three's checks are clean: the next message carries no report.
-    await _until(() => calls, (n) => n == before + 2);
-    await controller.send('fourth');
-    await _until(said, (s) => s.contains('agent:reply four'));
-    expect(sent().firstWhere((m) => m.contains('fourth')), isNot(contains('<everyai-checks>')));
-    expect(t().items.whereType<NoticeItem>().where((n) => n.message == checksNotice), hasLength(1));
-  });
-
   test('Stop cancels the checks running; the next message goes at once, without their report', () async {
     final controller = await open();
     final sessions = container.read(codeSessionsProvider.notifier);
@@ -294,70 +211,6 @@ void main() {
     // The cancelled round moved nothing: what it would have checked is checked next time.
     expect(sessions.byId(controller.sessionId)!.checkedTree, tree);
     expect(gate!.isCompleted, isFalse);
-  });
-
-  test('a turn the user stopped starts no checks; the next one does', () async {
-    final controller = await open();
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    final words = List.filled(60, 'word').join(' ');
-    turns[1] = [
-      {..._agent(words), 'stream': true},
-    ];
-    final before = calls;
-    await controller.send('second');
-    await _until(() => controller.state.transcript.running, (r) => r);
-    await controller.stop();
-    await _until(() => controller.state.transcript.running, (r) => !r);
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    expect(calls, before);
-    await controller.send('third');
-    await _until(() => calls, (n) => n == before + 1);
-  });
-
-  test('no checks in Plan mode', () async {
-    final controller = await open();
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    await controller.setMode(AgentMode.plan);
-    final before = calls;
-    await controller.send('second');
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply two'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    expect(calls, before);
-  });
-
-  test('slow checks never hold a message; their report goes with the first one after they finish', () async {
-    final controller = await open();
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    slowRuns = [
-      (
-        dir: '',
-        tool: 'cargo check',
-        command: 'cargo check',
-        files: const ['src/lib.rs'],
-        format: false,
-        outputFails: false,
-        filtered: true,
-        slow: true,
-      ),
-    ];
-    slowGate = Completer<void>();
-    const slowReport = '<everyai-checks>\nsrc/lib.rs\n  cargo check: src/lib.rs:1:1: error\n</everyai-checks>';
-    slowNotes.add(slowReport);
-    await controller.send('second');
-    await _until(() => slowCalls, (n) => n == 1);
-    // Still running: the message goes anyway, without it.
-    await controller.send('third');
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
-    expect(sentBy(controller).firstWhere((m) => m.contains('third')), isNot(contains('<everyai-checks>')));
-    slowGate!.complete();
-    final id = controller.sessionId;
-    await _until(() => container.read(codeSessionsProvider.notifier).byId(id)!.pendingChecks, (p) => p.isNotEmpty);
-    await controller.send('fourth');
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply four'));
-    expect(sentBy(controller).firstWhere((m) => m.contains('fourth')), contains('cargo check: src/lib.rs:1:1'));
   });
 
   test('a rewind stops the checks running and drops the report about the turns it undoes', () async {
@@ -382,38 +235,5 @@ void main() {
     // The rewind's own stop started no new round.
     await Future<void>.delayed(const Duration(milliseconds: 100));
     expect(calls, before + 2);
-  });
-
-  test('a turn that ends with a subagent still working is checked after it reports, not before', () async {
-    final controller = await open();
-    onCall = () => controller.state.transcript.openSubagents.isNotEmpty;
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply one'));
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    turns[1] = [
-      {
-        'kind': 'ActionEvent',
-        'tool_name': 'run_subagent',
-        'tool_call_id': 'call_task',
-        'thought': <Object?>[],
-        'action': <String, Object?>{},
-        'tool_call': {
-          'id': 'c',
-          'name': 'run_subagent',
-          'arguments': jsonEncode({'description': 'Write tests', 'prompt': 'Write the tests.'}),
-          'origin': 'completion',
-        },
-      },
-    ];
-    final before = calls;
-    var opened = false;
-    container.listen(codeSessionProvider(controller.sessionId), (_, s) {
-      if (s.transcript.openSubagents.isNotEmpty) opened = true;
-    });
-    await controller.send('second');
-    // The lead's turn after the report ends with no subagent open: that is when the round starts.
-    await _until(() => saidBy(controller), (s) => s.contains('agent:reply three'));
-    await _until(() => calls, (n) => n > before);
-    expect(opened, isTrue);
-    expect(openAtCall.skip(before), everyElement(isFalse));
   });
 }

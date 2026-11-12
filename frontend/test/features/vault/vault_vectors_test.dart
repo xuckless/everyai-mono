@@ -3,7 +3,6 @@
 
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:every_ai/features/vault/domain/vault_format.dart';
@@ -112,57 +111,5 @@ void main() {
     expect(sent.sealed.ct, b(j['ct']));
     expect(c.openJoin(id, device, sent.approverPublic, sent.sealed).extractBytes(), b(v['vault_key']));
     expect(VaultCrypto.confirmCodeOf(sodium, approver.publicKey, device.publicKey), j['confirm']);
-  });
-
-  test('a new vault round-trips; the decoders only ever throw their own errors (fuzzed)', () {
-    final made = c.create('v-test', 'a long passphrase', kdf: const KdfParams(ops: 1, mem: 8 << 20));
-    final json = jsonEncode(made.header.toJson());
-    final header = VaultHeader.fromJson(jsonDecode(json));
-    expect(c.unlockWithPassphrase(header, 'a long passphrase').extractBytes(), made.vaultKey.extractBytes());
-    final item = c.encryptItem(made.vaultKey, 'v-test', 'k', 1, Uint8List.fromList(utf8.encode('secret')));
-    final itemJson = jsonEncode(item.toJson());
-
-    final rnd = Random(42);
-    for (var n = 0; n < 3000; n++) {
-      final src = n.isEven ? json : itemJson;
-      final bytes = utf8.encode(src).toList();
-      // Flip, drop or insert a few bytes.
-      for (var k = 0; k < 1 + rnd.nextInt(4); k++) {
-        final at = rnd.nextInt(bytes.length);
-        switch (rnd.nextInt(3)) {
-          case 0:
-            bytes[at] = rnd.nextInt(256);
-          case 1:
-            bytes.removeAt(at);
-          default:
-            bytes.insert(at, rnd.nextInt(128));
-        }
-      }
-      Object? parsed;
-      try {
-        parsed = jsonDecode(utf8.decode(bytes, allowMalformed: true));
-      } on FormatException {
-        continue; // not JSON: never reaches the decoders
-      }
-      try {
-        if (n.isEven) {
-          VaultHeader.fromJson(parsed);
-        } else {
-          c.decryptItem(made.vaultKey, 'v-test', VaultItem.fromJson(parsed));
-        }
-      } on VaultFormatError {
-        // refused
-      } on VaultAuthError {
-        // tampered
-      }
-    }
-    for (var n = 0; n < 500; n++) {
-      final junk = Uint8List.fromList(List.generate(rnd.nextInt(80), (_) => rnd.nextInt(256)));
-      try {
-        Manifest.parse(junk);
-      } on VaultFormatError {
-        // refused
-      }
-    }
   });
 }

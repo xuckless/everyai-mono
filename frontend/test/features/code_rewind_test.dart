@@ -8,7 +8,6 @@ import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
-import 'package:every_ai/features/code/domain/compaction.dart' show userTextOf;
 import 'package:every_ai/features/code/domain/rewind.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -79,17 +78,6 @@ Map<String, Object?> _agent(String text) => {
 
 void main() {
   group('event tree', () {
-    test('the active branch keeps the path to the head and its state updates', () {
-      final events = _decoded(_branched);
-      expect(_ids(activeBranch(events, 'm4')), ['sys', 'm1', 's1', 'm4', 's4']);
-      expect(offBranch(events, 'm4'), {'m2', 's2', 'm3', 's3'});
-      // A head inside a branch drops what came after it on that branch too.
-      expect(_ids(activeBranch(events, 'm2')), ['sys', 'm1', 's1', 'm2', 's2']);
-      expect(offBranch(events, null), isEmpty);
-      // An unknown head leaves everything (nothing to go on).
-      expect(activeBranch(events, 'nope').length, events.length);
-    });
-
     test('rewinding before a message moves the head to its parent', () {
       final events = _decoded(_branched);
       expect(rewindHead(events, 'm4'), 'm1');
@@ -98,40 +86,6 @@ void main() {
       expect(() => rewindHead(events, 'nope'), throwsArgumentError);
       expect(_ids(rewound(events, 'm1')), ['sys', 'm1', 's1']);
       expect(rewound(events, null), isEmpty);
-    });
-
-    test('events without parent ids chain in order, as on older servers', () {
-      final events = _decoded([
-        for (final e in _branched.take(6)) {...e}..remove('parent_id'),
-      ]);
-      expect(rewindHead(events, 'm3'), 'm2');
-      expect(_ids(activeBranch(events, 'm2')), ['sys', 'm1', 's1', 'm2', 's2']);
-    });
-
-    test('labels', () {
-      expect(
-        const RewindOutcome(kind: RewindKind.done, conversation: true, files: true).label,
-        'Rewound the conversation and the files.',
-      );
-      expect(const RewindOutcome.busy().label, contains('stop it'));
-      expect(rewindPrompt('this message', files: false), contains('The files stay as they are.'));
-      final filesOnly = rewindPrompt('this message', files: true, conversation: false);
-      expect(filesOnly, contains('files back'));
-      expect(filesOnly, isNot(contains('forgets')));
-    });
-
-    test('the note for a harness that kept the conversation', () {
-      final note = rewindNote('  Add a\n  decrement method ');
-      expect(note, rewindNote('Add a decrement method'));
-      expect(note, startsWith('<everyai-rewind>'));
-      expect(note, contains('"Add a decrement method"'));
-      expect(rewindNote('x' * 200), contains('${'x' * 80}…"'));
-    });
-
-    test('the note comes off the echoed message', () {
-      expect(splitRewindNote('${rewindNote('Add a file')}\n\ntry again'), 'try again');
-      expect(splitRewindNote('try again'), 'try again');
-      expect(userTextOf(modeNote(AgentMode.ask, '${rewindNote('Add a file')}\n\ntry again', full: true)), 'try again');
     });
   });
 

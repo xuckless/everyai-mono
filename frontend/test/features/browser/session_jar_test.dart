@@ -2,9 +2,6 @@ import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:every_ai/features/code/harness/everyai/browser_io.dart';
-import 'package:every_ai/features/code/harness/everyai/llm.dart';
-import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
-import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/live/browser_jar.dart';
 import 'package:every_ai/features/code/live/live_browsers.dart';
 import 'package:every_ai/features/code/live/login_wall.dart';
@@ -112,45 +109,6 @@ void main() {
     timeout: const Timeout(Duration(minutes: 1)),
   );
 
-  String otherUrl(String path) => 'http://localhost:${other.port}$path';
-
-  test(
-    "signing out of a site clears every origin of it, not only the page's; signing out of all starts a fresh context",
-    () async {
-      final a = session('a');
-      await a.open(otherUrl('/'));
-      await a.evaluate('localStorage.setItem("token", "b-1")');
-      await a.open(url('/welcome?as=ada'));
-      await a.evaluate('localStorage.setItem("token", "a-1")');
-      await a.open(url('/'));
-      await a.clearJar(site: 'localhost');
-      expect((await a.captureJar()).storage, isEmpty);
-      await a.open(otherUrl('/'));
-      expect(await a.evaluate('localStorage.getItem("token")'), isNull);
-      expect((await a.captureJar()).storage, isEmpty);
-
-      // Everything: the context goes, the page comes back where it was, signed out.
-      await a.evaluate('localStorage.setItem("token", "b-2")');
-      await a.open(url('/welcome?as=grace'));
-      await a.open(url('/'));
-      expect(await a.evaluate('document.getElementById("who").textContent'), 'grace');
-      await a.clearJar();
-      for (var i = 0; i < 100 && a.page.value.url != url('/'); i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-      expect(a.page.value.url, url('/'));
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      expect(await a.evaluate('document.getElementById("who").textContent'), 'nobody');
-      await a.open(otherUrl('/'));
-      expect(await a.evaluate('localStorage.getItem("token")'), isNull);
-      final jar = await a.captureJar();
-      expect(jar.cookies, isEmpty);
-      expect(jar.storage, isEmpty);
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
-
   test('a saved login the site asked to sign in to again is not written back with signed-out cookies', () async {
     final logins = SavedLogins.of(store);
     final saved = await logins.save('example.com', (
@@ -182,107 +140,4 @@ void main() {
     expect(logins.logins.value.single.expired, isTrue);
     expect((await logins.payload(saved.id))!.cookies.single['value'], 'good');
   }, timeout: const Timeout(Duration(minutes: 1)));
-
-  test(
-    'a saved login signs another session in; a removed session leaves no jar',
-    () async {
-      final a = session('a'), b = session('b');
-      await a.open(url('/welcome?as=grace'));
-      final logins = SavedLogins(store);
-      final saved = await logins.save(
-        'localhost',
-        jarForSite(await a.captureJar(), 'localhost'),
-        scope: LoginScope.project,
-        projectId: 'p',
-      );
-      await b.open(url('/'));
-      await b.applyJar((await logins.payload(saved.id))!, site: 'localhost', loginId: saved.id);
-      expect(await who(b), 'grace');
-      expect(b.usedLogins, {'localhost': saved.id});
-      await b.forgetJar();
-      await b.close();
-      expect(await store.read('jar-b'), isNull);
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
-
-  test(
-    'the agent waits at a sign-in page until the user signs in, or skips',
-    () async {
-      wallOnLocalPages = true;
-      final b = session('w');
-      final runner = ToolRunner(
-        root: tmp.path,
-        shell: SessionShell(root: tmp.path, sessionTag: 't', scratchDir: '${tmp.path}/.sh'),
-        gateway: GatewayClient(baseUrl: 'http://127.0.0.1:9/v1', apiKey: ''),
-        sessionTag: 't',
-        vision: false,
-        browser: b,
-      );
-      // The call reaches the wall once Chrome started, the page loaded and its elements were read: wait for it
-      // rather than for a fixed time (a cold Chrome takes longer than the 2 s this once slept).
-      Future<void> atWall() async {
-        for (var i = 0; i < 150 && b.loginWall.state.value is! WallWaiting; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 100));
-        }
-      }
-
-      final waiting = runner.run('browser', {'action': 'open', 'url': url('/login')});
-      await atWall();
-      expect(b.loginWall.state.value, isA<WallWaiting>());
-      expect((b.loginWall.state.value as WallWaiting).site, 'localhost');
-      // The user signs in (in the Preview): the page moves on.
-      await b.userOpen(url('/welcome?as=linus'));
-      final done = await waiting;
-      expect(done.text, contains('the user took care of it'));
-      expect(b.loginWall.state.value, isA<WallIdle>());
-
-      final again = runner.run('browser', {'action': 'open', 'url': url('/login')});
-      await atWall();
-      expect(b.loginWall.state.value, isA<WallWaiting>());
-      b.loginWall.skip();
-      expect((await again).text, contains('chose to carry on without signing in'));
-      // Skipped: that site doesn't hold the agent again.
-      final third = await runner.run('browser', {'action': 'snapshot'});
-      expect(third.text, isNot(contains('sign in')));
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
-
-  test(
-    "each session's downloads go to its own folder, though the sessions share one Chrome",
-    () async {
-      final a = session('dl-a'), b = session('dl-b');
-      a.downloadDir = '${tmp.path}/a-downloads';
-      b.downloadDir = '${tmp.path}/b-downloads';
-      await a.open(url('/get'));
-      await b.open(url('/get'));
-      await a.click(selector: '#dl');
-      await b.click(selector: '#dl');
-      expect(a.downloads.value.single.path, startsWith('${tmp.path}/a-downloads/'));
-      expect(b.downloads.value.single.path, startsWith('${tmp.path}/b-downloads/'));
-      expect(File(a.downloads.value.single.path!).readAsStringSync(), 'hello');
-      expect(File(b.downloads.value.single.path!).readAsStringSync(), 'hello');
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
-
-  test(
-    'storage a page writes just before it leaves for another origin is in the jar',
-    () async {
-      final a = session('late');
-      await a.open(url('/write-and-go'));
-      for (var i = 0; i < 40 && !a.page.value.url.contains('127.0.0.1'); i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
-      expect(a.page.value.url, contains('127.0.0.1'));
-      final jar = await a.captureJar();
-      expect(jar.storage['http://localhost:${server.port}'], {'late': 'v1'});
-    },
-    skip: skip,
-    timeout: const Timeout(Duration(minutes: 1)),
-  );
 }

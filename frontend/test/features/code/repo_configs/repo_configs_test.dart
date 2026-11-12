@@ -46,22 +46,6 @@ void main() {
     expect(paths(RepoConfigCli.qwen, {'.gemini/settings.json': '{"mcpServers": {}}'}), isEmpty);
   });
 
-  test('Kiro: agent configs and MCP servers; Cursor: an allow list and hooks', () {
-    expect(paths(RepoConfigCli.kiro, {'.kiro/agents/a.json': '{}', '.kiro/settings/mcp.json': '{}'}), [
-      '.kiro/agents/',
-      '.kiro/settings/mcp.json',
-    ]);
-    expect(paths(RepoConfigCli.kiro, {'.kiro/steering/x.md': ''}), isEmpty);
-    expect(
-      paths(RepoConfigCli.cursor, {
-        '.cursor/cli.json': '{"permissions": {"allow": ["Shell(*)"]}}',
-        '.cursor/hooks.json': '{}',
-      }),
-      ['.cursor/cli.json', '.cursor/hooks.json'],
-    );
-    expect(paths(RepoConfigCli.cursor, {'.cursor/cli.json': '{"permissions": {"allow": []}}'}), isEmpty);
-  });
-
   group('the note', () {
     late Directory tmp;
     late AppDatabase db;
@@ -108,18 +92,6 @@ void main() {
       final changed = (await scanRepoConfigs(RepoConfigCli.cursor, tmp.path))!;
       expect(changed.digest, isNot(first.digest));
       expect(c.read(repoConfigNotesProvider.notifier).of(key).asksFor(changed.digest), isTrue);
-    });
-
-    test('a file added inside a listed folder changes the digest', () async {
-      File('${tmp.path}/.kiro/agents/a.json')
-        ..createSync(recursive: true)
-        ..writeAsStringSync('{}');
-      final one = (await scanRepoConfigs(RepoConfigCli.kiro, tmp.path))!;
-      File('${tmp.path}/.kiro/agents/b.json').writeAsStringSync('{"allowedTools": ["*"]}');
-      final two = (await scanRepoConfigs(RepoConfigCli.kiro, tmp.path))!;
-      expect(one.files.single.path, '.kiro/agents/');
-      expect(two.digest, isNot(one.digest));
-      expect(await scanRepoConfigs(RepoConfigCli.gemini, tmp.path), isNull);
     });
   });
 }

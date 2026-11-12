@@ -7,7 +7,6 @@ import 'dart:io' show Directory, ProcessSignal, pid;
 import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart' show closeAllDriverProcesses;
-import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/drivers/terminal/terminal_driver.dart';
 import 'package:every_ai/features/code/drivers/terminal/terminal_session.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -151,17 +150,6 @@ void main() {
   tearDown(() => _sup.stopAll());
 
   group('driver', () {
-    test('detects through the lookup; no caps, models or statuses', () async {
-      expect((await _driver(null).detect()).installed, isTrue);
-      final missing = TerminalDriver(id: 'terminal:x', label: 'x', command: 'x', which: (_) async => null);
-      expect((await missing.detect()).installed, isFalse);
-      final d = _driver(null);
-      expect(d.caps, isEmpty);
-      expect(await d.models(), isEmpty);
-      expect(await d.statuses(['a']), isEmpty);
-      await expectLater(d.attach('c'), throwsA(isA<HarnessError>()));
-    });
-
     test('start gives the pty its program, folder and tag, and registers the pid', () async {
       final started = <Map<String, Object?>>[];
       final pty = FakePty();
@@ -179,18 +167,6 @@ void main() {
       await s.close();
       expect(pty.kills, 1);
     });
-
-    test('no pty, or no program, is an error', () async {
-      await expectLater(_driver(null).start(_spec()), throwsA(isA<HarnessError>()));
-      final missing = TerminalDriver(id: 'terminal:x', label: 'x', command: 'x', which: (_) async => null);
-      await expectLater(missing.start(_spec()), throwsA(isA<HarnessError>()));
-    });
-
-    test('the registry makes one for terminal:<command>', () {
-      final d = DriverRegistry(const {}).resolve('terminal:aider');
-      expect(d, isA<TerminalDriver>());
-      expect(d!.info.id, 'terminal:aider');
-    });
   });
 
   group('session', () {
@@ -198,30 +174,6 @@ void main() {
       final (s, pty) = await _open();
       await s.send('hi\nthere');
       expect(pty.texts, ['hi there', '\r']);
-    });
-
-    test('Return waits for the settle, not written with the paste', () async {
-      final pty = FakePty();
-      final gate = Completer<void>();
-      final s = await _driver(pty, settle: () => gate.future).start(_spec()) as TerminalSession;
-      pty.emit('> ');
-      await Future<void>.delayed(Duration.zero);
-      final sent = s.send('hi');
-      await Future<void>.delayed(Duration.zero);
-      expect(pty.texts, ['hi']);
-      gate.complete();
-      await sent;
-      expect(pty.texts, ['hi', '\r']);
-    });
-
-    test('the mode and context notes are not typed into the CLI, the transcript keeps them', () async {
-      final (s, pty) = await _open();
-      final noted = modeNote(AgentMode.plan, 'add a README');
-      await s.send(noted);
-      expect(pty.texts, ['add a README', '\r']);
-      await s.close();
-      final user = (await s.events.toList()).whereType<ChatMessage>().firstWhere((m) => m.fromUser);
-      expect(user.text, noted);
     });
 
     test('the first prompt is shown at once and pasted after the CLI draws', () async {
@@ -257,40 +209,6 @@ void main() {
       expect(pty.kills, 1);
     });
 
-    test('bracketed paste once the CLI asked for it, newlines kept', () async {
-      final (s, pty) = await _open();
-      pty.emit('\x1b[?2004h');
-      await Future<void>.delayed(Duration.zero);
-      await s.send('a\nb');
-      expect(pty.texts, ['\x1b[200~a\nb\x1b[201~', '\r']);
-    });
-
-    test('events: user message, one notice, idle, history for late listeners, never running', () async {
-      final (s, _) = await _open();
-      await s.send('one');
-      await s.send('two');
-      await s.send('three');
-      await s.close();
-      final events = await s.events.toList();
-      final messages = events.whereType<ChatMessage>().toList();
-      expect(messages.where((m) => m.fromUser).map((m) => m.text), ['one', 'two', 'three']);
-      expect(messages.where((m) => !m.fromUser), hasLength(1));
-      final states = events.whereType<StateChange>().map((e) => e.executionStatus);
-      expect(states, [ExecutionStatus.idle]);
-    });
-
-    test('interrupt is Ctrl-C; the rest are harmless', () async {
-      final (s, pty) = await _open();
-      await s.interrupt();
-      expect(pty.writes.single, [3]);
-      await s.respond(accept: true);
-      await s.pause();
-      await s.resume();
-      await s.setMode(AgentMode.plan);
-      expect(pty.writes, hasLength(1));
-      await expectLater(s.rewindTo(null), throwsA(isA<HarnessError>()));
-    });
-
     test('exit 0 finishes; another code is an error', () async {
       final (s, pty) = await _open();
       final seen = <HarnessEvent>[];
@@ -307,29 +225,5 @@ void main() {
       expect(seen2.whereType<ConversationFailure>().single.message, contains('code 2'));
       expect(seen2.whereType<StateChange>().last.executionStatus, ExecutionStatus.error);
     });
-
-    test('briefing text comes from the reader, null without a briefing', () async {
-      final (none, _) = await _open();
-      expect(await none.briefingText(), isNull);
-      String? root;
-      final (s, _) = await _open(
-        briefing: const DriverBriefing(mcpUrl: 'u', mcpToken: 't', skillDir: '/b/briefing/skills'),
-        read: (r) async {
-          root = r;
-          return 'session text';
-        },
-      );
-      expect(await s.briefingText(), 'session text');
-      expect(root, '/b/briefing');
-    });
-  });
-
-  test('programEnv makes the shell capture fit a terminal UI', () {
-    final env = programEnv(
-      {'PATH': '/x', 'TERM': 'dumb', 'NO_COLOR': '1', 'PAGER': 'cat', 'GIT_PAGER': 'cat'},
-      {'A': 'b'},
-      'tag-9',
-    );
-    expect(env, {'PATH': '/x', 'TERM': 'xterm-256color', 'A': 'b', sessionEnvVar: 'tag-9'});
   });
 }

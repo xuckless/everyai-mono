@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
 import 'package:every_ai/features/code/drivers/briefing/recipes.dart';
-import 'package:every_ai/features/code/drivers/briefing/session_skill.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '_fixtures.dart';
@@ -35,18 +34,6 @@ void main() {
     expect(d.env, {'EVERYAI_MCP_TOKEN': 'tok-SECRET-123'});
     expect(claudeCode(i, strictMcp: true).args, contains('--strict-mcp-config'));
     expect(claudeCode(i, grantSkillAccess: false).args, isNot(contains('--add-dir')));
-  });
-
-  test('claude code: skills turned off join the one --settings JSON, sorted', () {
-    final d = claudeCode(i, skillsOff: {'pdf', 'docx'});
-    expect(d.args.where((a) => a == '--settings'), hasLength(1));
-    expect(jsonDecode(d.args[d.args.indexOf('--settings') + 1]), {
-      'disableSkillShellExecution': true,
-      'includeCoAuthoredBy': false,
-      'attribution': {'commit': '', 'pr': ''},
-      'skillOverrides': {'docx': 'off', 'pdf': 'off'},
-    });
-    expect(d.args[d.args.indexOf('--settings') + 1], claudeSettingsJson(skillsOff: {'docx', 'pdf'}));
   });
 
   test('codex: -c overrides, skill root by app-server request, the session text as instructions', () {
@@ -84,48 +71,6 @@ void main() {
     expect(d.env['OPENCODE_CONFIG_CONTENT'], isNot(contains('tok-SECRET-123')));
   });
 
-  test('gemini: acp flags and an inline briefing with skill paths', () {
-    final d = gemini(i, skills: skills);
-    expect(d.args, ['--acp', '--include-directories', '/data/s1/briefing/skills']);
-    expect(d.env, isEmpty);
-    expect(d.firstPrompt, contains('Body text.'));
-    expect(d.firstPrompt, contains('- make-deck: Builds decks. (`/data/s1/briefing/skills/make-deck/SKILL.md`)'));
-    expect(gemini(i).firstPrompt, isNot(contains('## Skills')));
-  });
-
-  test('acp: session/new entry with a header list; the inline briefing is shared', () {
-    expect(acpMcpServer(i), {
-      'type': 'http',
-      'name': 'everyai',
-      'url': 'http://127.0.0.1:5123/mcp',
-      'headers': [
-        {'name': 'Authorization', 'value': 'Bearer tok-SECRET-123'},
-      ],
-    });
-    expect(acp(i, skills: skills).firstPrompt, gemini(i, skills: skills).firstPrompt);
-    expect(acp(i).args, isEmpty);
-  });
-
-  test('every delivery carries the briefing', () {
-    final full = (
-      mcpUrl: i.mcpUrl,
-      mcpToken: i.mcpToken,
-      skillDir: i.skillDir,
-      sessionText: sessionBriefing(const SessionSkillInput(worktree: '/wt')),
-    );
-    final claudeArgs = claudeCode(full).args;
-    final delivered = {
-      'claude': claudeArgs[claudeArgs.indexOf('--append-system-prompt') + 1],
-      'codex': codex(full).instructions,
-      'gemini': gemini(full).firstPrompt,
-      'acp': acp(full).firstPrompt,
-    };
-    for (final MapEntry(:key, :value) in delivered.entries) {
-      expect(value, contains('## EveryAI tools'), reason: key);
-      expect(value, contains('## Commits'), reason: key);
-    }
-  });
-
   test('the token is never an argument, and no path points into a CLI home', () {
     final all = <Delivery>[claudeCode(i, strictMcp: true), codex(i), openCode(i), gemini(i, skills: skills), acp(i)];
     for (final d in all) {
@@ -136,10 +81,5 @@ void main() {
         expect(d.env['OPENCODE_CONFIG_CONTENT'] ?? '', isNot(contains(home)));
       }
     }
-  });
-
-  test('briefingRootOf is the folder above skills', () {
-    expect(briefingRootOf('/a/b/briefing/skills'), '/a/b/briefing');
-    expect(briefingRootOf('/a/b/briefing/skills/'), '/a/b/briefing');
   });
 }

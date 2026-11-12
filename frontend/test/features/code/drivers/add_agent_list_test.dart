@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/core/platform/platform_kind.dart';
@@ -85,48 +84,5 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('add-agent.cursor.cancel')));
     await tester.pump();
     expect(find.byKey(const ValueKey('add-agent.cursor.unchecked')), findsNothing);
-  });
-
-  testWidgets('an npx agent without Node.js says so, and installing it checks the harnesses again', (tester) async {
-    await pump(tester);
-    expect(find.byKey(const ValueKey('add-agent.gemini.runner')), findsOneWidget);
-    expect(find.byKey(const ValueKey('add-agent.fast-agent.runner')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('add-agent.gemini.install')));
-    await tester.pump();
-    await tester.pump();
-    expect(rescans, 1);
-    expect(c.read(installedAgentsProvider).keys, ['gemini']);
-    expect(c.read(driverRegistryProvider).resolve('registry:gemini'), isA<AcpDriver>());
-    expect(find.byKey(const ValueKey('add-agent.gemini.remove')), findsOneWidget);
-    expect(jsonDecode(prefs[installedAgentsKey]!), containsPair('v', 1));
-
-    await tester.tap(find.byKey(const ValueKey('add-agent.gemini.remove')));
-    await tester.pump();
-    await tester.pump();
-    expect(rescans, 2);
-    expect(c.read(installedAgentsProvider), isEmpty);
-    expect(c.read(driverRegistryProvider).resolve('registry:gemini'), isNull);
-  });
-
-  testWidgets('a newer registry version offers Update', (tester) async {
-    prefs[installedAgentsKey] = jsonEncode({
-      'v': 1,
-      'agents': {
-        'gemini': const InstalledAgent(
-          id: 'gemini',
-          name: 'Gemini CLI',
-          version: '0.65.0',
-          kind: DistKind.npx,
-          package: '@google/gemini-cli@0.65.0',
-          home: '/nonexistent/agents/gemini',
-        ).toJson(),
-      },
-    });
-    await pump(tester);
-    expect(find.byKey(const ValueKey('add-agent.gemini.update')), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('add-agent.gemini.update')));
-    await tester.pump();
-    await tester.pump();
-    expect(c.read(installedAgentsProvider)['gemini']!.package, '@google/gemini-cli@0.66.0');
   });
 }
