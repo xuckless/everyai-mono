@@ -1,5 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/process/pool.dart' show ResourceKind;
+import '../../live/live_pool.dart';
+
 import 'dart:io';
 import 'dart:isolate';
 
@@ -334,8 +337,23 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
     final sims = Platform.isMacOS ? await IosSimulators.list() : const <SimDevice>[];
     final base = device.replaceFirst(RegExp(r'\s*\(i(?:Pad)?OS [\d.]+\)$'), '').toLowerCase();
     final isSim = sims.any((d) => d.udid == device || d.name.toLowerCase() == base);
+    // A booted simulator or emulator is a pooled resource: the session takes its turn before it boots one.
+    Future<ToolOutput?> turn(ResourceKind kind) async => switch (await LivePool.forAgent(session, kind)) {
+      TurnQueued(:final text) => ToolOutput(text),
+      TurnGranted() => null,
+    };
+    Future<T> booting<T>(ResourceKind kind, Future<T> Function() boot) async {
+      try {
+        return await boot();
+      } catch (e) {
+        if (LivePool.sessionLease(session, kind) case final l?) LivePool.pool.fail(l, '$e');
+        rethrow;
+      }
+    }
+
     if (isSim) {
-      final d = await IosSimulators.boot(device);
+      if (await turn(ResourceKind.simulator) case final queued?) return queued;
+      final d = await booting(ResourceKind.simulator, () => IosSimulators.boot(device));
       if (IosSimulators.claim(d.udid, session) case final other?) {
         return ToolOutput('Error: ${d.name} is booted, but another session ($other) is using it.', isError: true);
       }
@@ -348,7 +366,8 @@ Future<ToolOutput> _devices(String action, Map<String, Object?> args, String ses
     if (AndroidSdk.adb == null) {
       return ToolOutput('Error: no simulator or device called "$device" (devices lists them).', isError: true);
     }
-    final d = await AndroidDevices.boot(device);
+    if (await turn(ResourceKind.emulator) case final queued?) return queued;
+    final d = await booting(ResourceKind.emulator, () => AndroidDevices.boot(device));
     if (AndroidDevices.holds.claim(d.serial, session) case final other?) {
       return ToolOutput('Error: ${d.name} is running, but another session ($other) is using it.', isError: true);
     }

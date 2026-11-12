@@ -16,10 +16,12 @@ import 'live/ios_simulator_io.dart' show IosSimulators;
 import 'panes/panes_providers.dart' show sessionTerminalProvider;
 import 'live/app_sources.dart' show AppSources;
 import 'live/agent_logins.dart';
+import 'live/live_pool.dart';
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
+import '../../core/process/budget.dart';
 import '../../core/process/process_model.dart';
 import '../../core/process/supervisor.dart' show ProcessSupervisor, SupervisedChild;
 import '../../core/providers.dart';
@@ -454,6 +456,30 @@ final driverShutdownProvider = Provider<void>((ref) {
   AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
   // WebView2 folders (session cookies) a crashed or killed run left behind; none is live yet at app start.
   LiveBrowsers.sweepLeftovers();
+  // Capped pools (browser, devices, displays, streams) and the per-session process budget.
+  unawaited(LivePool.configure((k) => ref.read(preferencesProvider)[k]));
+  LivePool.nameOf = (holder) {
+    final id = holder.substring(holder.indexOf(':') + 1);
+    final title = ref.read(codeSessionsProvider.notifier).byId(id)?.title;
+    final name = title == null || title.isEmpty ? id : '"$title"';
+    return holder.startsWith('user:') ? 'the user\'s Preview of $name' : name;
+  };
+  final budget = ProcessBudgetWatch(
+    supervisor: ProcessSupervisor.instance,
+    running: () => {
+      for (final s in ref.read(codeSessionsProvider))
+        if (ref.exists(codeSessionProvider(s.id)) &&
+            const {SessionStatus.running, SessionStatus.starting}.contains(ref.read(codeSessionProvider(s.id)).status))
+          s.id,
+    },
+    limit: () => int.tryParse(ref.read(preferencesProvider)[processBudgetKey] ?? '') ?? defaultProcessBudget,
+    onBreach: (id, over, _) {
+      if (ref.exists(codeSessionProvider(id))) {
+        unawaited(ref.read(codeSessionProvider(id).notifier).processBudgetBreached(over.text));
+      }
+    },
+  )..start();
+  ref.onDispose(budget.stop);
   // Quitting (what this provider did before) is app/app_quit.dart's one sequence.
 });
 
@@ -1996,6 +2022,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     for (final g in gone) {
       ref.read(_liveProvider).remove(g);
       ref.invalidate(sessionTerminalProvider(g));
+      LivePool.releaseSession(g);
       LoginGate.forget(g);
       ShellRegistry.instance.forget(g);
     }
@@ -2170,6 +2197,12 @@ final class ProcessesNotClosed extends SessionNotice {
   final String reason;
 }
 
+/// The runaway guard stopped the session: it ran more processes than its budget (`core/process/budget.dart`).
+/// Cleared by the next message the user sends.
+final class ProcessBudgetExceeded extends SessionNotice {
+  const ProcessBudgetExceeded(super.message);
+}
+
 @immutable
 final class CodeSessionState {
   /// [connected] and [error] build the link from a mirrored snapshot (a device following the host's session):
@@ -2292,7 +2325,11 @@ final class CodeSessionState {
   String? get brokenBy => link == SessionLink.broken ? (_brokenBy ?? 'The session could not be opened.') : null;
 
   /// What stops the session: it couldn't attach, or its budget is spent.
-  String? get failure => brokenBy ?? (notice is BudgetReached || notice is ProcessesNotClosed ? notice!.message : null);
+  String? get failure =>
+      brokenBy ??
+      (notice is BudgetReached || notice is ProcessesNotClosed || notice is ProcessBudgetExceeded
+          ? notice!.message
+          : null);
 
   /// The line to show over the session, if any: [failure], else a send that failed.
   String? get error => failure ?? notice?.message;
@@ -4229,7 +4266,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (info == null) return Outgoing(t);
     try {
       final out = await prepareMessage(ref, text: t, workingDir: info.workingDir, model: info.model, files: files);
-      if (state.notice is SendFailed) state = state.copyWith(clearNotice: true);
+      if (state.notice is SendFailed || state.notice is ProcessBudgetExceeded) {
+        state = state.copyWith(clearNotice: true);
+      }
       return out;
     } on Object catch (e) {
       // A spent budget outranks a failed send: it is what stops the session, and only the budget clears it.
@@ -5568,6 +5607,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// Sends a model call being retried now instead of after its wait.
   Future<void> retryNow() async {
     if (_session case final RetriesModelCalls s) s.retryNow();
+  }
+
+  /// The runaway guard ended everything the session started ([ProcessBudgetWatch]): stop the turn and fail loudly.
+  Future<void> processBudgetBreached(String why) async {
+    state = state.copyWith(notice: ProcessBudgetExceeded(why));
+    await stop();
   }
 
   /// Ends the turn and every process the session started (see [stopOwned]): the merged outcome, also kept as

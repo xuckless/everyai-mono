@@ -9,7 +9,10 @@ import '../../../../core/security/untrusted.dart';
 import '../../live/agent_logins.dart';
 import '../../live/app_view.dart';
 import '../../live/frames.dart';
+import '../../live/live_browsers.dart';
+import '../../live/live_pool.dart';
 import '../../live/live_session.dart';
+import '../../../../core/process/pool.dart' show ResourceKind;
 import '../../live/login_wall.dart';
 import 'browser_io.dart';
 import 'exfil.dart';
@@ -35,8 +38,25 @@ Future<ToolOutput> runBrowser(
   String Function(String text)? scrub,
   Duration loginHold = const Duration(minutes: 10),
   LoginAccess? logins,
+  Duration? queueWait,
 }) async {
-  final out = await _runBrowser(b, args, root, vision, fit, scrub, loginHold, logins);
+  // A Code session's shared page is a pooled browser: the call takes the session's turn first (waiting up to
+  // [queueWait]; zero for an outside lead), and returns its place in the queue when it doesn't get one.
+  final session = LiveBrowsers.idOf(b);
+  final action = args['action'] as String? ?? '';
+  String? nudge;
+  if (session != null && action != 'close') {
+    switch (await LivePool.forAgent(session, ResourceKind.browser, wait: queueWait)) {
+      case TurnQueued(:final text):
+        return ToolOutput(text);
+      case TurnGranted(nudge: final n):
+        nudge = n;
+    }
+  }
+  var out = await _runBrowser(b, args, root, vision, fit, scrub, loginHold, logins);
+  if (nudge != null) {
+    out = ToolOutput('${out.text}\n\n$nudge', isError: out.isError, observation: out.observation, images: out.images);
+  }
   // Values filled this session never come back, whatever the page did with them.
   if (logins == null) return out;
   final text = logins.redact(out.text);
@@ -226,7 +246,12 @@ Future<ToolOutput> _runBrowser(
       case 'resize':
         did = await b.resize((args['width'] as num?)?.toInt() ?? 1280, (args['height'] as num?)?.toInt() ?? 800);
       case 'close':
-        await b.close();
+        // The session's browser lease goes with the page: the next agent in the queue gets its turn.
+        if (LiveBrowsers.idOf(b) case final session?) {
+          await LivePool.releaseAround(session, ResourceKind.browser, b.close);
+        } else {
+          await b.close();
+        }
         _judged[b] = null;
         return const ToolOutput('Closed the browser.');
       case 'tabs':

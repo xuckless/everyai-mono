@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../../core/process/budget.dart' show ProcessBudgetWatch;
+import '../../live/live_pool.dart' show LivePool;
 import '../../domain/notebook.dart';
 import 'lsp_io.dart';
 
@@ -926,6 +928,22 @@ final class ToolRunner {
   }
 
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
+    final out = await _runTool(tool, raw, cancel: cancel);
+    // The runaway guard stopped this session's processes: the agent hears why, once.
+    final why = sessionTag.isEmpty ? null : ProcessBudgetWatch.takeNote(sessionTag);
+    // Holding the session's browser idle while others queue: any tool's result says so (the browser tool's own
+    // result already carries it).
+    final nudge = sessionTag.isEmpty || tool == ToolNames.browser ? null : LivePool.nudgeForSession(sessionTag);
+    if (why == null && nudge == null) return out;
+    return ToolOutput(
+      [?why, out.text, ?nudge].join('\n\n'),
+      isError: out.isError,
+      observation: out.observation,
+      images: out.images,
+    );
+  }
+
+  Future<ToolOutput> _runTool(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
     await ready();
     final args = mapped(raw);
     if (_researchRefusal(tool, args) ?? _guard(tool, args) case final refusal?) {
@@ -1114,7 +1132,12 @@ final class ToolRunner {
     final check = await packages?.check(command, cwd: cwd, root: root);
     if (check?.refusal case final why?) return ToolOutput(why, isError: true);
     if (args['run_in_background'] == true) {
-      final bg = await shell.start(command, description: args['description'] as String? ?? '');
+      final BackgroundShell bg;
+      try {
+        bg = await shell.start(command, description: args['description'] as String? ?? '');
+      } on TooManyBackgroundShells catch (e) {
+        return ToolOutput(e.message, isError: true);
+      }
       return ToolOutput(
         'Started in the background as ${bg.id} (pid ${bg.pid}). Use bash_output to read its output, monitor '
         'to wait for a line or its exit, and kill_shell to stop it.${PackageGuard.block(check?.notes ?? const [])}',

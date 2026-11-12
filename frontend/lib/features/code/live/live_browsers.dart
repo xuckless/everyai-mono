@@ -10,9 +10,11 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../../../core/process/pool.dart' show ResourceKind;
 import '../../../core/process/process_model.dart';
 import '../harness/everyai/browser_io.dart';
 import 'browser_jar.dart';
+import 'live_pool.dart';
 import 'login_wall.dart';
 import 'webview_browser.dart';
 
@@ -141,7 +143,8 @@ abstract final class LiveBrowsers {
     b.loginWall.stop();
     await _writeBack(b);
     await b.forgetJar();
-    await b.close();
+    // Its browser lease ends with the page (a close that fails says so and fails the lease).
+    await LivePool.releaseAround(liveId, ResourceKind.browser, b.close);
   }
 
   /// Stops every browser (the app quits); what didn't close is logged ([stopAllBrowsers] returns it).
