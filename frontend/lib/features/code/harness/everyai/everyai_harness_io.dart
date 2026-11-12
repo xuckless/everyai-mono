@@ -55,7 +55,8 @@ bool gitBashMissing() => Platform.isWindows && findGitBash(Platform.environment,
 /// permissions and approvals are shared), but the loop, the tools and the
 /// history are ours: questions block inside the call, tool results can be cut
 /// to size, and a session can be forked from another's history.
-final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents {
+final class EveryAIHarness
+    implements Harness, ForksSessions, AttachesBriefed, AttachesWithMcp, ReadsRecentEvents, ForgetsSessions {
   EveryAIHarness({required this.dataDir, required this.gatewayKey, this.client}) {
     // A Chrome for Testing the Preview downloaded earlier, for the browser tool.
     unawaited(loadDownloadedChrome());
@@ -70,6 +71,10 @@ final class EveryAIHarness implements Harness, ForksSessions, AttachesBriefed, A
   final http.Client? client;
 
   final _sessions = <String, EveryAISession>{};
+
+  /// Drops a deleted session (its processes were ended first); an attach later loads it from disk, if still there.
+  @override
+  void forget(String conversationId) => _sessions.remove(conversationId);
 
   Future<Directory> _dirFor(String id) async =>
       Directory('${await dataDir()}/everyai-sessions/$id')..createSync(recursive: true);
@@ -183,6 +188,7 @@ final class EveryAISession
         HasContextParts,
         ReportsMcpTools,
         StopsHelpers,
+        KillsOwnProcesses,
         TakesMessagesMidRun {
   EveryAISession._(this.id, this._spec, this._dir, http.Client? client)
     : _gateway = GatewayClient(baseUrl: _spec.llmBaseUrl, apiKey: _spec.llmApiKey, client: client),
@@ -1166,6 +1172,7 @@ final class EveryAISession
   Future<KillOutcome> stopBackground(String id) async => await _shell.backgroundShell(id)?.kill() ?? const Ended([]); // no such shell: nothing of it runs
 
   /// Ends what the session's shell is still running (verified): the merged outcome.
+  @override
   Future<KillOutcome> killProcesses() => _shell.killAll();
 
   // ------------------------------------------------------------------ loop

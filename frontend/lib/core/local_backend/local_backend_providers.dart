@@ -11,7 +11,7 @@ import 'local_backend.dart';
 /// The bundled server; stopped when the app quits (provider disposal doesn't run then).
 final localBackendProvider = Provider<LocalBackend>((ref) {
   final backend = createLocalBackend();
-  // Quitting stops it through localShutdownProvider (local_model_bridge.dart). Here (a test's container, a hot
+  // Quitting stops it through appQuitProvider (app/app_quit.dart). Here (a test's container, a hot
   // restart) the stop's outcome is logged when it isn't a checked end.
   ref.onDispose(() {
     backend.stop().then(

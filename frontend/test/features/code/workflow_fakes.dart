@@ -3,6 +3,7 @@
 
 import 'dart:async';
 
+import 'package:every_ai/core/process/process_model.dart';
 import 'package:every_ai/features/code/domain/plan_batches.dart';
 import 'package:every_ai/features/code/workflows/workflow_bridge.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
@@ -61,6 +62,12 @@ final class FakeBridge implements WorkflowBridge {
   void kill() {
     killed = true;
     _end(137);
+  }
+
+  @override
+  Future<KillOutcome> stop() async {
+    kill();
+    return const Ended([]);
   }
 }
 

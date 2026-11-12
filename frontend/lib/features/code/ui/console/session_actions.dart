@@ -84,12 +84,16 @@ Future<bool> deleteSession(BuildContext context, WidgetRef ref, CodeSessionInfo 
   if (!ok || !context.mounted) return false;
   try {
     if (w == null) {
-      await ref.read(codeSessionsProvider.notifier).remove(info.id);
+      if (await ref.read(codeSessionsProvider.notifier).remove(info.id) case final TeardownNotClosed n) {
+        throw SessionNotClosedError(n);
+      }
     } else {
       await ref.read(codeGitProvider(info.id).notifier).discard();
     }
   } on Object catch (e) {
-    if (context.mounted) showAdaptiveToast(context, "Couldn't delete the session: $e");
+    if (context.mounted) {
+      showAdaptiveToast(context, e is SessionNotClosedError ? '$e' : "Couldn't delete the session: $e");
+    }
     return false;
   }
   return true;

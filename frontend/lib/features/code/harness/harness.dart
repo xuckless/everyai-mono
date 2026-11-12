@@ -336,6 +336,16 @@ abstract interface class AllowsRemembered {
 
 /// A session that runs helper processes itself (the EveryAI harness: MCP servers, language servers) and can stop
 /// them: when the session is deleted, and after it has sat idle. Its next run starts them again.
+/// A session whose harness runs the agent's commands itself (the EveryAI harness): Stop ends them, verified.
+abstract interface class KillsOwnProcesses {
+  Future<KillOutcome> killProcesses();
+}
+
+/// A harness that keeps its sessions in memory: a deleted session is dropped from it.
+abstract interface class ForgetsSessions {
+  void forget(String conversationId);
+}
+
 abstract interface class StopsHelpers {
   Future<void> stopHelpers();
 }

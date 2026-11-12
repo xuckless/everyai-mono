@@ -1,10 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
-import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/local_backend/local_backend_providers.dart';
@@ -113,33 +111,6 @@ final chatNeedsModelProvider = Provider<bool>((ref) {
   final keys = ref.watch(byokKeysProvider);
   if (!keys.hasValue) return false;
   return keys.value!.isEmpty && ref.watch(localModelSpecsProvider).isEmpty;
-});
-
-/// Ends what the app started for local models when it quits, in order: the
-/// bundled server unloads every model EveryAI loaded (on any server, the
-/// user's too) and exits; then the model servers EveryAI started stop (ones
-/// the user runs are left running). One shutdown, joined by every caller; 8 s
-/// at most: the bundled server gets [localBackendCloseBudget], and the model
-/// servers are stopped after it either way. The shell listens to it from app
-/// start.
-final localShutdownProvider = Provider<void>((ref) {
-  Future<KillOutcome>? shutdown;
-  Future<KillOutcome> stopAll() => shutdown ??= localShutdown(
-    closeBackend: () => ref.read(localBackendProvider).close(unloadWithin: const Duration(milliseconds: 2500)),
-    stopServers: () => ref.read(serverLifecyclesProvider.notifier).stopOwned(),
-  );
-  final lifecycle = AppLifecycleListener(
-    onExitRequested: () async {
-      await stopAll();
-      return AppExitResponse.exit;
-    },
-    onDetach: () {
-      // The engine is going away; the outcome is logged by localShutdown (and the supervisor's quit list holds what
-      // is left).
-      stopAll().ignore();
-    },
-  );
-  ref.onDispose(lifecycle.dispose);
 });
 
 /// How long quit waits for the bundled server to unload and exit.

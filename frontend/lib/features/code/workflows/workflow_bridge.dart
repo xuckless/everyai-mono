@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../core/process/process_model.dart' show KillOutcome;
 import 'workflow_bridge_stub.dart' if (dart.library.io) 'workflow_bridge_io.dart' as impl;
 
 /// A running workflow script: what it asks for, and how to answer it.
@@ -17,6 +18,9 @@ abstract interface class WorkflowBridge {
   Future<int> get exit;
 
   void kill();
+
+  /// [kill], with what the supervisor's stop proved (a second call joins the first).
+  Future<KillOutcome> stop();
 }
 
 /// Starts [source] (a workflow `.js`) with [args] in Deno, its files in

@@ -124,7 +124,7 @@ final class _DenoBridge implements WorkflowBridge {
   @override
   void kill() => unawaited(stop());
 
-  /// [kill], with what the stop proved (a second call joins the first).
+  @override
   Future<KillOutcome> stop() => _stopping ??= stopChecked(_process.spec.label, _process.stop);
 }
 

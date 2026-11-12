@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,13 +12,16 @@ import 'package:uuid/uuid.dart';
 import '../../core/api/decide_client.dart';
 import 'live/browser_jar.dart' show SealedStore;
 import 'live/android_device_io.dart' show AndroidDevices;
+import 'live/ios_simulator_io.dart' show IosSimulators;
+import 'panes/panes_providers.dart' show sessionTerminalProvider;
 import 'live/app_sources.dart' show AppSources;
 import 'live/agent_logins.dart';
 import 'live/live_browsers.dart';
 import 'live/nested_display_io.dart';
 import 'shells/shell_registry.dart';
 import '../../core/preferences.dart';
-import '../../core/process/supervisor.dart' show ProcessSupervisor;
+import '../../core/process/process_model.dart';
+import '../../core/process/supervisor.dart' show ProcessSupervisor, SupervisedChild;
 import '../../core/providers.dart';
 import '../agents/agents_providers.dart' show AgentDefinition, agentLibrarySettingsProvider, childSetup, codeAgentsFor;
 import '../attachments/attachment.dart';
@@ -87,7 +89,7 @@ import 'drivers/briefing/skill_export.dart';
 import 'drivers/driver.dart';
 import 'drivers/driver_env.dart';
 import 'drivers/driver_policy.dart';
-import 'drivers/driver_process.dart' show DriverProcess, closeAllDriverProcesses, insidePathOf;
+import 'drivers/driver_process.dart' show DriverProcess, insidePathOf;
 import 'drivers/driver_registry.dart';
 import 'drivers/lead_skills.dart';
 import 'drivers/terminal/terminal_driver.dart';
@@ -414,9 +416,34 @@ Future<List<WorkflowEntry>> _workflowsOfIn(Ref ref, String projectDir) async {
   }
 }
 
-/// Ends the outside CLIs and the MCP host when the app quits (provider
-/// disposal doesn't run then). The shell listens to it from app start, so
-/// every CLI is covered, however it was spawned.
+/// What a session's Stop leaves running of the processes the supervisor started for it: the lead CLI (its link to
+/// the agent, which keeps the conversation) and the session's tools (MCP and language servers, its browser, display
+/// and devices). Deleting the session ends those ([CodeSessions.remove]).
+const stopKeepsKinds = {
+  ProcessKind.leadCli,
+  ProcessKind.mcp,
+  ProcessKind.lsp,
+  ProcessKind.browser,
+  ProcessKind.display,
+  ProcessKind.device,
+};
+
+/// Stops, verified, every supervised child of `SessionOwner(procTag)` whose kind Stop ends (all but
+/// [stopKeepsKinds]).
+Future<KillOutcome> stopSessionChildren(String procTag) async {
+  if (procTag.isEmpty) return const Ended([]);
+  final sup = ProcessSupervisor.instance;
+  final key = SessionOwner(procTag).key;
+  return KillOutcome.merge(
+    await Future.wait([
+      for (final SupervisedChild c in sup.children)
+        if (c.spec.owner.key == key && !stopKeepsKinds.contains(c.spec.kind)) sup.stop(c),
+    ]),
+  );
+}
+
+/// Wires Code's app-wide hooks at app start (browser jars, agent logins, the WebView2 sweep). The shell listens to
+/// it from app start; the quit itself is `appQuitProvider` (app/app_quit.dart).
 final driverShutdownProvider = Provider<void>((ref) {
   // Sessions' browser jars and saved logins are sealed under the app's data folder (with a keychain key).
   LiveBrowsers.jars ??= () async => SealedStore.app(await GitService.dataDir());
@@ -427,30 +454,7 @@ final driverShutdownProvider = Provider<void>((ref) {
   AgentLogins.projectOf = (id) => ref.read(codeSessionsProvider.notifier).byId(id)?.projectId;
   // WebView2 folders (session cookies) a crashed or killed run left behind; none is live yet at app start.
   LiveBrowsers.sweepLeftovers();
-  // The registry's stop runs beside the owners' own (not after them, where one slow stop used up the budget); it only
-  // ends children still running, so a child an owner already ended isn't touched again. It waits for the browsers
-  // (at most 2.5 s): their jars are read from the running Chrome before it stops.
-  Future<void> closeAll() => Future.wait<void>([
-    closeAllDriverProcesses(),
-    LiveBrowsers.stopAll()
-        .timeout(const Duration(milliseconds: 2500), onTimeout: () {})
-        .whenComplete(ProcessSupervisor.instance.stopAll),
-    Future(NestedDisplays.stopAll),
-    AndroidDevices.stopAll(),
-    AppSources.stopAll(),
-    // The EveryAI harness's language servers (they outlived the app before).
-    closeAllLanguageServers(),
-  ]).timeout(const Duration(seconds: 4), onTimeout: () => const []);
-  final lifecycle = AppLifecycleListener(
-    onExitRequested: () async {
-      await closeAll();
-      // Never holds the quit up: the next listeners (the bundled server, local model servers) still have to run.
-      await ref.read(hostServerProvider).stop().timeout(const Duration(seconds: 1), onTimeout: () {});
-      return AppExitResponse.exit;
-    },
-    onDetach: () => unawaited(closeAll()),
-  );
-  ref.onDispose(lifecycle.dispose);
+  // Quitting (what this provider did before) is app/app_quit.dart's one sequence.
 });
 
 /// The lead harness new sessions start on, and the model and effort picked
@@ -1840,7 +1844,10 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   /// harness session, live in this run, is interrupted and the processes it left are ended. A session with neither
   /// has nothing running here (after a relaunch nothing runs until it is opened).
   Future<void> stopWithoutOpening(String id) async {
-    if (ref.exists(codeSessionProvider(id))) return ref.read(codeSessionProvider(id).notifier).stopAll();
+    if (ref.exists(codeSessionProvider(id))) {
+      await ref.read(codeSessionProvider(id).notifier).stopAll();
+      return;
+    }
     final live = ref.read(_liveProvider)[id];
     final info = byId(id);
     if (live == null || info == null) return;
@@ -1855,17 +1862,141 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     ]);
   }
 
-  Future<void> remove(String id) async {
-    final gone = {
-      id,
-      for (final s in state)
-        if (s.parentId == id) s.id,
-    };
-    // Their browser pages and shell rows go with them.
+  /// Each session's delete as it goes (see [SessionTeardown]); a session that is not closed keeps its entry.
+  final teardowns = <String, SessionTeardown>{};
+
+  /// Teardown moves refused by [teardownEdge] (asserted in debug).
+  final refusedTeardowns = <String>[];
+
+  void _teardownTo(String id, SessionTeardown next) {
+    final from = teardowns[id];
+    if (!teardownEdge(from, next)) {
+      refusedTeardowns.add('$id: ${from.runtimeType} -> ${next.runtimeType}');
+      assert(false, 'Session teardown $id: ${from.runtimeType} -> ${next.runtimeType} is not allowed');
+      return;
+    }
+    teardowns[id] = next;
+  }
+
+  /// Whether session [id] is being deleted (an attach that lands meanwhile closes what it attached).
+  bool tearingDown(String id) => switch (teardowns[id]) {
+    null || TeardownGone() || TeardownNotClosed() => false,
+    _ => true,
+  };
+
+  /// Deletes session [id] and every session under it (at any depth): stops their runs and workflows, ends every
+  /// process they started (verified), releases their browser pages, apps, displays and devices, closes their
+  /// harness sessions, and only then forgets them and deletes their harnesses' copies. Processes that survive keep
+  /// the session listed with [ProcessesNotClosed] and the result is a [TeardownNotClosed] (its worktree must stay:
+  /// [CodeGit.discard] throws [SessionNotClosedError]).
+  Future<SessionTeardown> remove(String id) {
+    final running = _removing[id];
+    if (running != null) return running;
+    final f = _remove(id);
+    _removing[id] = f;
+    f.whenComplete(() => _removing.remove(id)).ignore();
+    return f;
+  }
+
+  final _removing = <String, Future<SessionTeardown>>{};
+
+  Future<SessionTeardown> _remove(String id) async {
+    final gone = <String>{id};
+    for (var grew = true; grew;) {
+      grew = false;
+      for (final s in state) {
+        if (s.parentId != null && gone.contains(s.parentId) && gone.add(s.id)) grew = true;
+      }
+    }
+    _teardownTo(id, const TeardownRequested());
+    final infos = [for (final g in gone) ?byId(g)];
+
+    // 1. The runs: the top session's Stop all (its forks and workflow runs with it), every session under it too.
+    _teardownTo(id, const TeardownStoppingRun());
+    final runs = <KillOutcome>[];
+    if (ref.exists(codeSessionProvider(id))) runs.add(await ref.read(codeSessionProvider(id).notifier).stopAll());
     for (final g in gone) {
-      unawaited(LiveBrowsers.release(g));
+      if (g == id) continue;
+      if (ref.exists(codeSessionProvider(g))) runs.add(await ref.read(codeSessionProvider(g).notifier).stop());
+    }
+    for (final g in gone) {
+      if (!ref.exists(codeSessionProvider(g))) await ref.read(_liveProvider)[g]?.interrupt();
+    }
+
+    // 2. The processes: each harness session closed first (a CLI that sees its pipes end on its own isn't respawned),
+    // then everything its owners and tags still run.
+    _teardownTo(id, const TeardownStoppingProcesses());
+    final procs = <KillOutcome>[];
+    final sup = ProcessSupervisor.instance;
+    for (final g in gone) {
+      final live = ref.read(_liveProvider)[g];
+      if (live is StopsHelpers) await (live as StopsHelpers).stopHelpers();
+      if (live is KillsOwnProcesses) procs.add(await (live as KillsOwnProcesses).killProcesses());
+      if (live is ClosesVerified) {
+        procs.add(await (live as ClosesVerified).closeVerified());
+      } else {
+        await live?.close();
+      }
+    }
+    for (final tag in {for (final i in infos) i.processTag}) {
+      procs.add(await sup.stopOwner(SessionOwner(tag)));
+    }
+    for (final i in infos) {
+      procs.add(await sup.stopOwner(TerminalOwner(i.id)));
+      if (killsOwnProcesses(i)) {
+        procs.add(
+          await CodeSessionController.killProcesses(
+            tag: i.id,
+            workingDir: i.workingDir,
+            ownsDir: ownsWorkingDir(i, parent: byId(i.parentId ?? '')),
+          ),
+        );
+      }
+    }
+
+    // 3. What the sessions held: app runs, browser pages, displays, devices EveryAI booted for them.
+    _teardownTo(id, const TeardownReleasing());
+    final held = <KillOutcome>[];
+    for (final g in gone) {
+      if (ref.exists(codeSessionProvider(g))) await ref.read(codeSessionProvider(g).notifier)._closeScreen();
+      await AppSources.release(g);
+      await LiveBrowsers.release(g);
+      held.add(await NestedDisplays.stopOf(g));
+      final sims = IosSimulators.heldBy(g).toList();
+      if (sims.isNotEmpty) held.add(await IosSimulators.shutdownBooted(only: sims));
+      IosSimulators.release(g);
+      // Android has no per-session stop: the emulators EveryAI booted stop when this session held one and no
+      // other session holds any.
+      final booted = AndroidDevices.booted.values.whereType<String>().toSet();
+      final mine = AndroidDevices.holds.heldBy(g).where(booted.contains);
+      final others = booted.where((s) {
+        final h = AndroidDevices.holds.holder(s);
+        return h != null && !gone.contains(h);
+      });
+      if (mine.isNotEmpty && others.isEmpty) held.add(await AndroidDevices.stopEmulators());
+      AndroidDevices.holds.release(g);
+    }
+
+    final outcome = KillOutcome.merge([...runs, ...procs, ...held]);
+    if (outcome is! Ended) {
+      final end = TeardownNotClosed.of(outcome);
+      debugPrint('NOT CLOSED: delete of session $id: $outcome');
+      _teardownTo(id, end);
+      if (ref.exists(codeSessionProvider(id))) {
+        ref.read(codeSessionProvider(id).notifier)._noteProcesses(outcome);
+      }
+      return end;
+    }
+
+    // 4. Gone: forget them, then their files.
+    final everyai = ref.read(everyaiHarnessProvider);
+    for (final i in infos) {
+      if (everyai case final ForgetsSessions h) h.forget(i.conversationId);
+    }
+    for (final g in gone) {
+      ref.read(_liveProvider).remove(g);
+      ref.invalidate(sessionTerminalProvider(g));
       LoginGate.forget(g);
-      NestedDisplays.stop(g);
       ShellRegistry.instance.forget(g);
     }
     // Any outside lead the session had left a briefing (and maybe a token).
@@ -1880,12 +2011,6 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
         if (gone.contains(s.id) && s.leads.isNotEmpty) s.id,
     ];
     for (final g in gone) {
-      final live = ref.read(_liveProvider).remove(g);
-      // Its MCP and language servers go with it (the session itself may live on in a controller nobody shows).
-      if (live is StopsHelpers) unawaited((live as StopsHelpers).stopHelpers());
-      unawaited(live?.close());
-      // Its app (app_run) and headless browser end with it; the controller itself lives on unused.
-      if (ref.exists(codeSessionProvider(g))) unawaited(ref.read(codeSessionProvider(g).notifier)._closeScreen());
       ref.read(preferencesProvider)['$codeUsageReportsPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLayoutPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLimitBannerPrefix$g'] = null;
@@ -1915,6 +2040,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
           if (source.harness == n.harness && !isDemoPath(n.cwd))
             source.delete(n.id, cwd: n.cwd).catchError((Object _) {}),
     ]);
+    _teardownTo(id, const TeardownGone());
+    return const TeardownGone();
   }
 
   Future<void> _dropTimeline(String id) async {
@@ -1931,6 +2058,69 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
   }
 }
 
+/// A session's delete ([CodeSessions.remove]), awaited step by step:
+///
+/// ```text
+///  (none) ──► requested ──► stoppingRun ──► stoppingProcesses ──► releasing ──► gone
+///                ▲                                                    └──survivors──► notClosed(pids, reason)
+///                └──────────────────── delete again ─────────────────────────────────────┘
+/// ```
+/// Only [CodeSessions.remove] moves it ([teardownEdge] is the table); a session that is not closed stays listed.
+sealed class SessionTeardown {
+  const SessionTeardown();
+}
+
+final class TeardownRequested extends SessionTeardown {
+  const TeardownRequested();
+}
+
+final class TeardownStoppingRun extends SessionTeardown {
+  const TeardownStoppingRun();
+}
+
+final class TeardownStoppingProcesses extends SessionTeardown {
+  const TeardownStoppingProcesses();
+}
+
+final class TeardownReleasing extends SessionTeardown {
+  const TeardownReleasing();
+}
+
+final class TeardownGone extends SessionTeardown {
+  const TeardownGone();
+}
+
+final class TeardownNotClosed extends SessionTeardown {
+  const TeardownNotClosed(this.pids, this.reason);
+
+  factory TeardownNotClosed.of(KillOutcome outcome) {
+    final n = ProcessesNotClosed.of(outcome);
+    return TeardownNotClosed(n.pids, n.reason);
+  }
+  final List<int> pids;
+  final String reason;
+
+  String get message => ProcessesNotClosed(pids, reason).message;
+}
+
+/// Whether a delete may go from [from] (null: none yet) to [to].
+bool teardownEdge(SessionTeardown? from, SessionTeardown to) => switch ((from, to)) {
+  (null || TeardownNotClosed() || TeardownGone(), TeardownRequested()) => true,
+  (TeardownRequested(), TeardownStoppingRun()) => true,
+  (TeardownStoppingRun(), TeardownStoppingProcesses()) => true,
+  (TeardownStoppingProcesses(), TeardownReleasing()) => true,
+  (TeardownReleasing(), TeardownGone() || TeardownNotClosed()) => true,
+  _ => false,
+};
+
+/// A delete that left processes running: the session stays listed and its worktree is kept.
+final class SessionNotClosedError implements Exception {
+  const SessionNotClosedError(this.teardown);
+  final TeardownNotClosed teardown;
+  @override
+  String toString() => "The session wasn't deleted. ${teardown.message}";
+}
+
 /// The session's connection to its harness:
 ///
 /// ```text
@@ -1945,9 +2135,11 @@ enum SessionLink { connecting, live, reconnecting, broken }
 /// ```text
 ///  none ──budget spent──► BudgetReached ──budget raised──► none
 ///  none ──a send failed─► SendFailed ──the next send goes out──► none
+///  any ──a Stop left processes running──► ProcessesNotClosed ──a later Stop ends them──► none
 /// ```
 /// A budget note makes the session [SessionStatus.failed] (nothing more runs until it is raised); a failed send
-/// doesn't: the agent and the run are fine, only that message didn't go.
+/// doesn't: the agent and the run are fine, only that message didn't go. Processes a Stop couldn't end fail the
+/// session too, loudly, until a Stop ends them: it is not stopped while they run.
 sealed class SessionNotice {
   const SessionNotice(this.message);
   final String message;
@@ -1959,6 +2151,23 @@ final class BudgetReached extends SessionNotice {
 
 final class SendFailed extends SessionNotice {
   const SendFailed(super.message);
+}
+
+/// A Stop (or a delete) ended the run, but [pids] still run: the session is not shown as stopped.
+final class ProcessesNotClosed extends SessionNotice {
+  ProcessesNotClosed(this.pids, this.reason)
+    : super(
+        'Not closed: ${pids.length} process${pids.length == 1 ? '' : 'es'} still running (${pids.join(', ')}): $reason',
+      );
+
+  /// From a stop's outcome (anything but [Ended]).
+  factory ProcessesNotClosed.of(KillOutcome outcome) => switch (outcome) {
+    Survived(:final pids, :final reason) => ProcessesNotClosed(pids, reason),
+    ScanFailed(:final why) => ProcessesNotClosed(const [], "the process list couldn't be read ($why)"),
+    Ended() => ProcessesNotClosed(const [], 'ended'),
+  };
+  final List<int> pids;
+  final String reason;
 }
 
 @immutable
@@ -2083,7 +2292,7 @@ final class CodeSessionState {
   String? get brokenBy => link == SessionLink.broken ? (_brokenBy ?? 'The session could not be opened.') : null;
 
   /// What stops the session: it couldn't attach, or its budget is spent.
-  String? get failure => brokenBy ?? (notice is BudgetReached ? notice!.message : null);
+  String? get failure => brokenBy ?? (notice is BudgetReached || notice is ProcessesNotClosed ? notice!.message : null);
 
   /// The line to show over the session, if any: [failure], else a send that failed.
   String? get error => failure ?? notice?.message;
@@ -2365,6 +2574,10 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   @visibleForTesting
   static Future<KillOutcome> Function({required String tag, required String workingDir, required bool ownsDir})
   killProcesses = killSessionProcesses;
+
+  /// What Stop ends a session's supervised children with (a test swaps it).
+  @visibleForTesting
+  static Future<KillOutcome> Function(String procTag) stopOwned = stopSessionChildren;
 
   /// The longest one step of a workflow run's shutdown may take (see [WorkflowEngine.stepTimeout]).
   @visibleForTesting
@@ -2739,7 +2952,21 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       _builder.lead = _leadLabel(info.harness);
       final live = ref.read(_liveProvider);
       _attachedFresh = live[sessionId] == null;
-      final session = _session = live[sessionId] ?? await ref.read(codeSessionsProvider.notifier).attachSession(info);
+      final sessions = ref.read(codeSessionsProvider.notifier);
+      final attached = live[sessionId] ?? await sessions.attachSession(info);
+      // Deleted while it attached: what was attached is closed (verified) instead of kept.
+      if (sessions.tearingDown(sessionId) || sessions.byId(sessionId) == null) {
+        if (!identical(live[sessionId], attached)) {
+          if (attached case final ClosesVerified c) {
+            final o = await c.closeVerified();
+            if (o is! Ended) debugPrint('NOT CLOSED: session $sessionId attached during its delete: $o');
+          } else {
+            await attached.close();
+          }
+        }
+        return;
+      }
+      final session = _session = attached;
       live[sessionId] = session;
       // What vetting found about the session's MCP tools goes to Settings (pins, tools to review). A Future,
       // not an event: a replayed history can't store a stale report again.
@@ -4356,13 +4583,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// Stops everything in the session: the lead's turn, its background forks and its workflow runs (their agents
   /// with them). Their reports and results are dropped, so nothing wakes the lead afterwards.
-  Future<void> stopAll() async {
+  Future<KillOutcome> stopAll() async {
     for (final MapEntry(key: runId, value: engine) in _workflows.entries) {
       _quietRuns.add(runId);
       engine.stop('Stopped.', true);
     }
-    await _stopEveryaiChildren();
-    await stop();
+    final children = await _stopEveryaiChildren();
+    final own = await stop();
+    final outcome = KillOutcome.merge([children, own]);
+    _noteProcesses(outcome);
+    return outcome;
   }
 
   /// Pause all: the lead, its background forks and its workflow runs each end the step they are on, then hold. The
@@ -4399,22 +4629,38 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     }
   }
 
-  /// Stops the background forks; their reports don't go to the next lead.
-  Future<void> _stopEveryaiChildren() async {
+  /// Stops the background forks; their reports don't go to the next lead. A fork is dropped only once its stop
+  /// ended everything it ran; one whose processes survived stays listed (the merged outcome says which).
+  final _droppingForks = <String>{};
+
+  Future<KillOutcome> _stopEveryaiChildren() async {
     final background = [..._forks.background];
-    final children = <String>{};
     for (final r in background) {
-      if (r.childId case final c?) children.add(c);
       _calls.remove(r.callId);
       _childSubs.remove(r.callId)?.close();
-      _forks.to(r.callId, const ForkDropped('Stopped with everything else.'));
+      // Stopping: its stop's report isn't delivered; dropped once the stop ended everything it ran.
+      _droppingForks.add(r.callId);
+      if (r.state is! ForkStopping) _forks.to(r.callId, const ForkStopping());
+    }
+    final outcomes = await Future.wait([
+      for (final r in background)
+        if (r.childId case final c? when ref.exists(codeSessionProvider(c)))
+          ref.read(codeSessionProvider(c).notifier).stop().then((o) => (r, o))
+        else
+          Future.value((r, const Ended([]) as KillOutcome)),
+    ]);
+    for (final (r, o) in outcomes) {
+      if (o is Ended) {
+        _droppingForks.remove(r.callId);
+        _forks.to(r.callId, const ForkDropped('Stopped with everything else.'));
+      } else {
+        // Stays stopping (not dropped) while its processes run; the next Stop all tries again.
+        debugPrint('NOT CLOSED: fork ${r.childId}: $o');
+      }
     }
     _syncNeedsInput();
     _syncSideWork();
-    await Future.wait([
-      for (final c in children)
-        if (ref.exists(codeSessionProvider(c))) ref.read(codeSessionProvider(c).notifier).stop(),
-    ]);
+    return KillOutcome.merge([for (final (_, o) in outcomes) o]);
   }
 
   /// Stops the run and waits (up to 5 s) until the agent says it stopped.
@@ -5324,7 +5570,9 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     if (_session case final RetriesModelCalls s) s.retryNow();
   }
 
-  Future<void> stop() async {
+  /// Ends the turn and every process the session started (see [stopOwned]): the merged outcome, also kept as
+  /// [ProcessesNotClosed] on the session when anything survived.
+  Future<KillOutcome> stop() async {
     _doomOpen = false;
     // A Pause ends with the stop.
     _pausedNatively = false;
@@ -5365,29 +5613,59 @@ final class CodeSessionController extends Notifier<CodeSessionState>
     // servers and commands left running after a timeout are ended here. A
     // subagent shares its parent's tag, so only the parent's Stop does this;
     // an Ultra child has its own tag (and maybe its own worktree), so it does.
-    await Future.wait([
-      ?_session?.interrupt(),
-      if (info != null && killsOwnProcesses(info))
+    final sessions = ref.read(codeSessionsProvider.notifier);
+    final kills = <Future<KillOutcome>>[];
+    if (info != null && killsOwnProcesses(info)) {
+      // What the EveryAI harness's own shell runs (background shells, a foreground command), verified.
+      if (_session case final KillsOwnProcesses s) kills.add(s.killProcesses());
+      // Every process the supervisor started for the session (but the lead CLI and the session's tools, which a
+      // delete ends), then the tag sweep for what left those trees.
+      kills.add(stopOwned(info.processTag));
+      kills.add(
         killProcesses(
           tag: info.id,
           workingDir: info.workingDir,
-          ownsDir: ownsWorkingDir(info, parent: ref.read(codeSessionsProvider.notifier).byId(info.parentId ?? '')),
+          ownsDir: ownsWorkingDir(info, parent: sessions.byId(info.parentId ?? '')),
         ),
-      // The host's process walk can't see inside an environment.
-      if (info != null && killsOwnProcesses(info) && info.environment != HostEnv.instance.id) _endInside(info),
+      );
       // Forks carry their own process tag: what those that no longer run left behind (a server, a watcher) ends
       // with this Stop, as when they shared this session's tag. Forks still at work keep theirs (Stop all ends them).
-      if (info != null && killsOwnProcesses(info))
-        for (final r in _forks.all)
-          if (!r.state.live)
-            if (r.childId case final c?)
-              if (ref.read(codeSessionsProvider.notifier).byId(c) case final child? when child.ownProcesses)
-                killProcesses(
-                  tag: child.id,
-                  workingDir: child.workingDir,
-                  ownsDir: ownsWorkingDir(child, parent: info),
-                ),
+      for (final r in _forks.all) {
+        if (r.state.live) continue;
+        if (r.childId case final c?) {
+          if (sessions.byId(c) case final child? when child.ownProcesses) {
+            kills.add(stopOwned(child.processTag));
+            kills.add(
+              killProcesses(
+                tag: child.id,
+                workingDir: child.workingDir,
+                ownsDir: ownsWorkingDir(child, parent: info),
+              ),
+            );
+          }
+        }
+      }
+    }
+    final ends = Future.wait(kills);
+    await Future.wait<void>([
+      ?_session?.interrupt(),
+      // The host's process walk can't see inside an environment.
+      if (info != null && killsOwnProcesses(info) && info.environment != HostEnv.instance.id) _endInside(info),
     ]);
+    final outcome = KillOutcome.merge(await ends);
+    _noteProcesses(outcome);
+    return outcome;
+  }
+
+  /// [ProcessesNotClosed] while a stop's [outcome] left processes; a later stop that ends them clears it.
+  void _noteProcesses(KillOutcome outcome) {
+    if (!ref.mounted) return;
+    if (outcome is Ended) {
+      if (state.notice is ProcessesNotClosed) state = state.copyWith(clearNotice: true);
+      return;
+    }
+    debugPrint('Stop of session $sessionId: $outcome');
+    state = state.copyWith(notice: ProcessesNotClosed.of(outcome));
   }
 
   /// Stop inside [info]'s environment: what the CLI's shells run there ends; the CLI stays.
@@ -6941,7 +7219,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   void subagentStopped(String childId, SubagentReport report) {
     if (_reviewOf.containsKey(childId)) return _reviewDone(childId, report);
     final callId = _forks.byChild(childId)?.callId;
-    if (callId != null) _finishChild(callId, report);
+    if (callId != null && !_droppingForks.contains(callId)) _finishChild(callId, report);
   }
 
   /// Gives the agent its subagents' reports once every subagent it waits on
@@ -7917,7 +8195,10 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
   Future<void> discard({bool keepBranch = false}) async {
     final w = _w;
     final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
-    await ref.read(codeSessionsProvider.notifier).remove(sessionId);
+    // Processes still running in the worktree keep it (and the session) where it is.
+    if (await ref.read(codeSessionsProvider.notifier).remove(sessionId) case final TeardownNotClosed n) {
+      throw SessionNotClosedError(n);
+    }
     await GitService.removeWorktree(w, hooksDir: '$data/git-hooks', deleteBranch: !keepBranch);
   }
 }
@@ -8305,10 +8586,21 @@ final class _WorkflowLauncher implements AgentLauncher {
     stop(childId);
     const wait = Duration(seconds: 5);
     if (_ref.exists(codeSessionProvider(childId))) {
-      await _ref.read(codeSessionProvider(childId).notifier).stop().timeout(wait, onTimeout: () {});
+      // Bounded (a lead that never answers its interrupt), but never dropped: what didn't end is logged and stays on
+      // the child as not closed.
+      final outcome = await _ref
+          .read(codeSessionProvider(childId).notifier)
+          .stop()
+          .timeout(wait, onTimeout: () => Survived(const [], 'its stop did not finish within ${wait.inSeconds} s'));
+      if (outcome is! Ended) debugPrint('Workflow agent $childId: not closed: $outcome');
     }
     final live = _ref.read(_liveProvider)[childId];
-    if (live is StopsHelpers) await (live as StopsHelpers).stopHelpers().timeout(wait, onTimeout: () {});
+    if (live is StopsHelpers) {
+      await (live as StopsHelpers).stopHelpers().timeout(
+        wait,
+        onTimeout: () => debugPrint('Workflow agent $childId: its helpers did not stop within ${wait.inSeconds} s'),
+      );
+    }
     await LiveBrowsers.release(childId);
     NestedDisplays.stop(childId);
     await AppSources.release(childId);
