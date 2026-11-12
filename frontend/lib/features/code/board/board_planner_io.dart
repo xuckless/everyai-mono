@@ -3,7 +3,9 @@ import 'dart:io';
 
 import '../drivers/detection/cli_scan.dart' show findCli;
 import '../drivers/driver_process.dart' show spawnDriver;
+import '../../../core/process/supervisor.dart' show Ended;
 import '../drivers/json_rpc.dart' show EndsInput;
+import '../drivers/short_run.dart' show logStop;
 import '../harness/harness.dart' show HarnessError;
 import 'board_planner.dart';
 
@@ -46,9 +48,10 @@ Future<String> runPlannerCli(
     final why = await ended.future;
     timer.cancel();
     if (why != null) {
-      await p.close();
+      // Stopped (verified) with what it started; a stop that isn't proven is said with the reason.
+      final outcome = logStop('${cli.label} planner', await p.close());
       await read.cancel();
-      throw HarnessError(why);
+      throw HarnessError(outcome is Ended ? why : '$why It may still be running ($outcome).');
     }
     final code = await p.exitCode;
     await read.asFuture<void>().catchError((Object _) {});

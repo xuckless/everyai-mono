@@ -1,7 +1,9 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
 import 'dart:io';
+
+import '../../../core/process/supervisor.dart';
+import '../drivers/short_run.dart';
 
 import '../drivers/driver_process_io.dart' show findOnPath;
 import '../harness/everyai/shell_io.dart' show ShellEnv;
@@ -43,32 +45,36 @@ String get _pathKey => Platform.isWindows
 
 Future<String?> _which(String command) async => findOnPath(command, (await ShellEnv.load()).env[_pathKey] ?? '');
 
-// Process.start rather than Process.run(...).timeout, which would leave a
-// stuck CLI (a stopped VM's) running.
+/// Through the supervisor: a stuck CLI (a stopped VM's) is stopped with what it started when [timeout] runs out
+/// (null then, as for a program that isn't there). What it started that still holds its output (an ssh master)
+/// is stopped too once it has exited.
 Future<CommandResult?> _run(
   String executable,
   List<String> args, {
   Duration timeout = const Duration(seconds: 3),
   Map<String, String> environment = const {},
 }) async {
+  final ShellEnv shell;
   try {
-    final shell = await ShellEnv.load();
-    final process = await Process.start(executable, args, environment: {...shell.env, ...environment});
-    unawaited(process.stdin.close());
-    unawaited(process.stderr.drain<void>());
-    final out = <int>[];
-    final done = process.stdout.forEach(out.addAll);
-    final int code;
-    try {
-      code = await process.exitCode.timeout(timeout);
-    } on TimeoutException {
-      process.kill(ProcessSignal.sigkill);
-      return null;
-    }
-    // A child that keeps stdout open (an ssh master) mustn't hold the answer.
-    await done.timeout(const Duration(seconds: 1), onTimeout: () {});
-    return (code: code, stdout: out);
+    shell = await ShellEnv.load();
   } on Object {
     return null;
   }
+  final r = await runShort(
+    executable,
+    args,
+    timeout: timeout,
+    env: {...shell.env, ...environment},
+    owner: const ProbeOwner('environments'),
+    stdin: '',
+  );
+  return switch (r) {
+    Finished(:final code, :final stdoutBytes) => (code: code, stdout: stdoutBytes),
+    TimedOut() || Cancelled() || StartFailed() => _failed(executable, r),
+  };
+}
+
+CommandResult? _failed(String executable, RunResult r) {
+  if (r case TimedOut(:final kill) || Cancelled(:final kill)) logStop(executable, kill);
+  return null;
 }

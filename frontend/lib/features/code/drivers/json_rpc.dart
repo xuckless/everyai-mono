@@ -3,6 +3,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import '../../../core/process/supervisor.dart' show KillOutcome;
+
 /// One line in, one line out: a process's stdio, or a recorded transcript
 /// in tests (`test/support/replay_transport.dart`).
 abstract interface class LineChannel {
@@ -12,7 +14,10 @@ abstract interface class LineChannel {
 
   /// What the other side said last on stderr, for errors ('' when unknown).
   String get lastError;
-  Future<void> close();
+
+  /// Ends the other side: for a process, its verified stop (see `ProcessSupervisor.stop`); a second close joins the
+  /// first. The end of [lines] is not the process's end: only this outcome (or its exit) says it is gone.
+  Future<KillOutcome> close();
 }
 
 /// A [LineChannel] whose input can be ended while its output keeps coming: a one-shot CLI that reads stdin until
@@ -60,7 +65,8 @@ final class JsonRpcPeer {
   final _done = Completer<void>();
   var _ids = 0;
 
-  /// Completes when the other side has gone away.
+  /// Completes when the other side's output has ended (it can't answer any more). That is not proof its process
+  /// ended: its owner closes the channel to stop it.
   Future<void> get done => _done.future;
   bool get isClosed => _done.isCompleted;
 
@@ -85,9 +91,11 @@ final class JsonRpcPeer {
     if (!isClosed) _write({'method': method, 'params': ?params});
   }
 
-  Future<void> close() async {
-    await channel.close();
+  /// Closes the channel (its verified stop) and settles what still waits for an answer.
+  Future<KillOutcome> close() async {
+    final outcome = await channel.close();
     _closed();
+    return outcome;
   }
 
   void _write(Map<String, Object?> msg) => channel.send(jsonEncode({if (writeVersion) 'jsonrpc': '2.0', ...msg}));

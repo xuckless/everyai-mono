@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import '../../../../core/process/supervisor.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../../harness/session_processes.dart' show registerDriverRoot;
@@ -9,6 +10,7 @@ import '../../panes/pty.dart';
 import '../briefing/briefing_types.dart' show briefingRootOf;
 import '../driver.dart';
 import '../driver_process.dart';
+import '../short_run.dart' show logStop;
 import 'session_text_stub.dart' if (dart.library.io) 'session_text_io.dart' as text;
 import 'terminal_session.dart';
 
@@ -24,6 +26,7 @@ final class TerminalDriver implements HarnessDriver {
     this.startPty = startProgram,
     this.readText = text.readSessionText,
     this.settle,
+    this._supervisor,
   });
 
   final String id;
@@ -34,14 +37,19 @@ final class TerminalDriver implements HarnessDriver {
   /// Replaces the PATH lookup (tests).
   final Future<String?> Function(String command)? which;
 
-  /// Replaces the pty start (tests).
+  /// Replaces the pty start (tests). [env] is added to its environment (the supervisor's tags).
   final Future<ShellPty?> Function({
     required String executable,
     required List<String> args,
     required String workingDir,
     required String sessionTag,
+    Map<String, String> env,
   })
   startPty;
+
+  /// The supervisor the CLI's process is adopted by (tests give their own); the app's when null.
+  final ProcessSupervisor? _supervisor;
+  ProcessSupervisor get supervisor => _supervisor ?? ProcessSupervisor.instance;
 
   /// Replaces the wait before Return (tests).
   final Future<void> Function()? settle;
@@ -66,14 +74,35 @@ final class TerminalDriver implements HarnessDriver {
     final status = await detect();
     final path = status.path;
     if (!status.installed || path == null) throw HarnessError("$label isn't installed.");
-    final pty = await startPty(executable: path, args: args, workingDir: spec.workingDir, sessionTag: spec.procTag);
+    final owner = SessionOwner(spec.procTag);
+    final pty = await startPty(
+      executable: path,
+      args: args,
+      workingDir: spec.workingDir,
+      sessionTag: spec.procTag,
+      // flutter_pty starts it, so the supervisor adopts it: it carries the tags a spawn would give it.
+      env: supervisor.tagsFor(owner),
+    );
     if (pty == null) throw HarnessError('A terminal session needs a desktop computer.');
+    final SupervisedChild child;
+    try {
+      child = supervisor.adopt(
+        pty.pid,
+        SpawnSpec(owner: owner, kind: ProcessKind.pty, exe: path, args: args, label: '$label (terminal)'),
+        exitCode: pty.exitCode,
+      );
+    } on SupervisorClosed {
+      // Started while the app quits: it must not outlive it.
+      logStop('$label (terminal)', await supervisor.killTree(pty.pid));
+      rethrow;
+    }
     registerDriverRoot(spec.procTag, pty.pid);
     final skillDir = spec.briefing?.skillDir;
     final session = TerminalSession(
       id: spec.sessionTag,
       label: label,
       pty: pty,
+      child: child,
       sessionTag: spec.procTag,
       briefing: skillDir == null ? null : () => readText(briefingRootOf(skillDir)),
       settle: settle ?? TerminalSession.defaultSettle,

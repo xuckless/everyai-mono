@@ -16,6 +16,7 @@ import '../driver_env.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart';
+import '../short_run.dart' show logStop;
 import 'acp_agents.dart';
 import 'acp_files.dart';
 import 'acp_mapping.dart' show acpModels;
@@ -409,7 +410,7 @@ final class AcpDriver
         // Not signed in, not installed, too slow.
         next = ModelProbeFailed('$e');
       } finally {
-        await channel?.close();
+        if (channel != null) logStop('$label model list', await channel.close());
         try {
           await dir?.delete(recursive: true);
         } on FileSystemException {

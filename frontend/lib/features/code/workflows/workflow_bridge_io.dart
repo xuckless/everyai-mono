@@ -4,10 +4,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../../core/process/supervisor.dart';
+import '../drivers/short_run.dart' show stopChecked;
 import '../harness/everyai/script_io.dart' show findDeno;
 import 'workflow_bridge.dart';
 import 'workflow_prelude.dart';
-import '../../../core/process/child_processes.dart';
 
 // The Deno process and its line protocol, as ScriptRunner.run runs them
 // (same flags, no permissions, an empty environment, one shared cache). TODO: make ScriptRunner use this bridge once run_script's own
@@ -25,15 +26,33 @@ Future<WorkflowBridge> startWorkflowBridge({
   final runDir = Directory(dir)..createSync(recursive: true);
   File('${runDir.path}/main.js').writeAsStringSync(workflowModule(source));
   File('${runDir.path}/prelude.js').writeAsStringSync(workflowPrelude(args));
-  final process = await Process.start(
-    deno,
-    ['run', '--no-prompt', '--no-config', '--no-lock', '--no-remote', '--no-npm', '--quiet', 'prelude.js'],
-    workingDirectory: runDir.path,
-    includeParentEnvironment: false,
-    // `workflows/cache`, next to the session folders.
-    environment: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
+  // In the root zone: the supervisor's timers for it are real time even in a fake-time test zone.
+  final process = await Zone.root.run(
+    () => ProcessSupervisor.instance.spawn(
+      SpawnSpec(
+        // The run's folder names no session here; the workflow engine ends it (and the quit ends what is left).
+        owner: const AppOwner(),
+        kind: ProcessKind.script,
+        exe: deno,
+        args: const [
+          'run',
+          '--no-prompt',
+          '--no-config',
+          '--no-lock',
+          '--no-remote',
+          '--no-npm',
+          '--quiet',
+          'prelude.js',
+        ],
+        cwd: runDir.path,
+        includeParentEnvironment: false,
+        // `workflows/cache`, next to the session folders.
+        env: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
+        label: 'Workflow script',
+        detail: runDir.path,
+      ),
+    ),
   );
-  ChildProcesses.track(process.pid, label: 'Workflow (${runDir.path})', executable: deno, exited: process.exitCode);
   return _DenoBridge(process, runDir);
 }
 
@@ -56,7 +75,6 @@ final class _DenoBridge implements WorkflowBridge {
       _output.add(clip(l));
     });
     exit = _process.exitCode.then((code) async {
-      _closed = true;
       await Future.wait([out, err]);
       unawaited(_process.stdin.close().catchError((_) {}));
       await _requests.close();
@@ -67,10 +85,15 @@ final class _DenoBridge implements WorkflowBridge {
     });
   }
 
-  final Process _process;
+  final SupervisedProcess _process;
   final _requests = StreamController<Map<String, Object?>>();
   final _output = StreamController<String>();
-  var _closed = false;
+
+  /// The stop, once asked ([kill]).
+  Future<KillOutcome>? _stopping;
+
+  /// Replies may still go to it: not stopped, and its process hasn't been seen to end.
+  bool get _open => _stopping == null && _process.state.live;
 
   @override
   Stream<Map<String, Object?>> get requests => _requests.stream;
@@ -81,7 +104,7 @@ final class _DenoBridge implements WorkflowBridge {
 
   @override
   void reply(Object? id, {Object? result, String? error}) {
-    if (_closed) return;
+    if (!_open) return;
     try {
       _process.stdin.writeln(jsonEncode({'id': id, if (error != null) 'error': error else 'result': result}));
     } on Object {
@@ -89,8 +112,13 @@ final class _DenoBridge implements WorkflowBridge {
     }
   }
 
+  /// Stops the script and what it started (the supervisor's verified stop; the outcome is in the log when it isn't
+  /// proven, and in [stop]).
   @override
-  void kill() => _process.kill(ProcessSignal.sigkill);
+  void kill() => unawaited(stop());
+
+  /// [kill], with what the stop proved (a second call joins the first).
+  Future<KillOutcome> stop() => _stopping ??= stopChecked(_process.spec.label, _process.stop);
 }
 
 Future<String> readJournalFile(String path) async {

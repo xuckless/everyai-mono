@@ -1,12 +1,13 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import '../../environments/exec_env.dart';
 import '../../harness/everyai/shell_io.dart' show ShellEnv;
 import '../driver_process_io.dart' show findOnPath;
+import '../short_run.dart';
 import 'desktop_apps_io.dart' show bundledHere;
 
 /// Where [findCli] looks for [command]: the login shell's PATH (which already
@@ -137,21 +138,25 @@ Future<String?> _findIn(ExecEnv env, String command, Future<String> Function(Str
   }
 }
 
-/// Runs [executable] and returns its stdout, killing it when [limit] passes
-/// (`Process.run(...).timeout` would leave it running). Throws on a failure.
+/// Runs [executable] and returns its stdout; when [limit] passes it is stopped (verified, with what it started)
+/// and this throws. Throws on a failure too. On Windows it runs through `cmd /c` (npm is `npm.cmd` there).
 Future<String> _runKilling(String executable, List<String> args, Duration limit, [Map<String, String>? env]) async {
-  final proc = await Process.start(executable, args, environment: env, runInShell: Platform.isWindows);
-  final out = proc.stdout.transform(utf8.decoder).join();
-  unawaited(proc.stderr.drain<void>());
-  final code = await proc.exitCode.timeout(
-    limit,
-    onTimeout: () {
-      proc.kill();
+  final (exe, argv) = Platform.isWindows ? ('cmd.exe', ['/c', executable, ...args]) : (executable, args);
+  final r = await runShort(exe, argv, timeout: limit, env: env ?? const {}, owner: const ProbeOwner('cli-lookup'));
+  switch (r) {
+    case Finished(code: 0, :final stdout):
+      return stdout;
+    case Finished(:final code):
+      throw ProcessException(executable, args, 'exit $code', code);
+    case TimedOut(:final kill):
+      logStop('$executable ${args.join(' ')}', kill);
       throw TimeoutException('$executable did not answer', limit);
-    },
-  );
-  if (code != 0) throw ProcessException(executable, args, 'exit $code', code);
-  return out;
+    case Cancelled(:final kill):
+      logStop('$executable ${args.join(' ')}', kill);
+      throw ProcessException(executable, args, 'cancelled');
+    case StartFailed(:final error):
+      throw ProcessException(executable, args, error);
+  }
 }
 
 /// A cold WSL distro can take a while to start.

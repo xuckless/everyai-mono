@@ -5,6 +5,7 @@ library;
 
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart';
 import 'package:every_ai/features/code/environments/env_processes.dart' show procEnvVar;
 import 'package:every_ai/features/code/environments/exec_env.dart';
@@ -17,15 +18,28 @@ void main() {
   late Directory tmp;
   late List<String> ended;
   final original = endInsideOf;
+  final originalSup = ProcessSupervisor.instance;
+  late ProcessSupervisor sup;
 
   setUp(() {
     tmp = Directory.systemTemp.createTempSync('env-spawn');
     ended = [];
-    endInsideOf = (env, proc) async => ended.add('${env.id} $proc');
+    endInsideOf = (env, proc) async {
+      ended.add('${env.id} $proc');
+      return const Ended([]);
+    };
+    sup = ProcessSupervisor.instance = ProcessSupervisor.create(ledgerDir: '${tmp.path}/ledger');
   });
-  tearDown(() {
+  tearDown(() async {
     endInsideOf = original;
     insidePathOf = null;
+    // Every bridge these tests started was closed (or ended): none left running.
+    expect([
+      for (final c in sup.children)
+        if (c.state.live) c.spec.label,
+    ], isEmpty);
+    await sup.stopAll();
+    ProcessSupervisor.instance = originalSup;
     tmp.deleteSync(recursive: true);
   });
 

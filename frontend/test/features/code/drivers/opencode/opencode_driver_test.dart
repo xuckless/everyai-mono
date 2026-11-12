@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart';
@@ -37,7 +38,10 @@ final class _FakeProcess implements DriverProcess {
   @override
   void send(String line) {}
   @override
-  Future<void> close() async => closed = true;
+  Future<KillOutcome> close() async {
+    closed = true;
+    return const Ended([]);
+  }
 }
 
 void main() {

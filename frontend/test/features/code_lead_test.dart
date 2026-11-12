@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' show max;
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_client.dart';
@@ -1307,8 +1308,9 @@ final class _FakeProcess implements DriverProcess {
   @override
   void send(String line) {}
   @override
-  Future<void> close() async {
+  Future<KillOutcome> close() async {
     closed = true;
     if (!_exit.isCompleted) _exit.complete(-15);
+    return const Ended([]);
   }
 }

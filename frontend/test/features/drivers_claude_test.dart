@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
@@ -1845,7 +1846,8 @@ final class _LiveChannel implements LineChannel {
   }
 
   @override
-  Future<void> close() async {
+  Future<KillOutcome> close() async {
     if (!_lines.isClosed) await _lines.close();
+    return const Ended([]);
   }
 }

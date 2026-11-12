@@ -4,13 +4,17 @@ import 'dart:async';
 
 import 'package:uuid/uuid.dart';
 
+import '../../../../core/process/supervisor.dart' show KillOutcome;
 import '../../domain/agent_mode.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../briefing/briefing_types.dart' show RpcCall;
+import '../driver.dart' show ClosesVerified;
 import '../driver_events.dart';
+import '../driver_link.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart';
+import '../short_run.dart';
 import '../usage_limit.dart';
 import 'codex_mapping.dart';
 
@@ -65,7 +69,8 @@ final class CodexSession
         SteersRuns,
         HasNativeCommands,
         NativeModes,
-        RefreshesPlanLimits {
+        RefreshesPlanLimits,
+        ClosesVerified {
   CodexSession(
     LineChannel channel, {
     required this.cwd,
@@ -75,14 +80,20 @@ final class CodexSession
     String? effort,
   }) : _currentMode = mode,
        _model = model == null || model.isEmpty ? null : model,
-       _effort = effort == null || effort.isEmpty ? null : effort {
+       _effort = effort == null || effort.isEmpty ? null : effort,
+       _link = DriverLink.live('Codex session', (c) => c.close(), channel) {
     _bind(channel);
   }
+
+  /// The app server's process ([LinkState]); the session is closed when it is.
+  final DriverLink<LineChannel> _link;
 
   final String cwd;
   late JsonRpcPeer _peer;
   var _initRequests = const <RpcCall>[];
-  Future<void>? _reviving;
+
+  /// The revive under way (one, however many callers wait for it).
+  final _reviving = SingleFlight<int, void>();
   AgentMode _currentMode;
   String? _model;
   String? _effort;
@@ -127,7 +138,7 @@ final class CodexSession
   String? _limitsSaid;
   CodexTokens? _total;
   var _status = ExecutionStatus.idle;
-  var _closing = false;
+  bool get _closing => _link.isClosed;
 
   /// Runs once the session is closed, or its process went away with no
   /// [respawn] to bring it back.
@@ -251,7 +262,7 @@ final class CodexSession
     if (_closing) throw const HarnessError('This Codex session is closed.');
     final again = respawn;
     if (again == null) throw const HarnessError('Codex stopped. Open the session again to carry on.');
-    await (_reviving ??= _revive(again).whenComplete(() => _reviving = null));
+    await _reviving.run(0, () => _revive(again));
   }
 
   Future<void> _revive(Future<LineChannel> Function() again) async {
@@ -259,11 +270,12 @@ final class CodexSession
     // only a baseline, so it must find no turn seen.
     _turnsSeen = false;
     try {
-      _bind(await again());
+      // The old process is stopped (verified) before this one starts; a close meanwhile stops what starts.
+      await _link.ensure(again, onLive: _bind);
       await open(initRequests: _initRequests);
       await resumeThread(_threadId);
     } on Object catch (e) {
-      if (!_peer.isClosed) await _peer.close();
+      await _link.drop();
       throw HarnessError("Codex didn't start again: $e");
     }
     _state(ExecutionStatus.idle);
@@ -614,9 +626,17 @@ final class CodexSession
   Future<void> rewindTo(String? head) async => throw const HarnessError("Codex can't go back to an earlier turn.");
 
   @override
-  Future<void> close() async {
-    _closing = true;
+  Future<void> close() => closeVerified();
+
+  /// [close], with what the stop of the app server proved (one being revived is stopped when it lands).
+  @override
+  Future<KillOutcome> closeVerified() => _closed ??= _closeNow();
+  Future<KillOutcome>? _closed;
+
+  Future<KillOutcome> _closeNow() async {
+    final stopped = _link.close();
     // Pending approvals are settled once the peer is gone (no reply is sent).
+    final outcome = await stopped;
     await _peer.close();
     await _journal?.close();
     _modes.close();
@@ -624,6 +644,7 @@ final class CodexSession
       unawaited(c.close());
     }
     _listeners.clear();
+    return outcome;
   }
 
   /// The process ended: by [close], or on its own (a crash), which the
@@ -631,6 +652,9 @@ final class CodexSession
   /// someone else's.
   void _gone(JsonRpcPeer peer) {
     if (!identical(peer, _peer)) return;
+    // Its output ended: the process is stopped (verified) before a revive starts another (the link logs a stop
+    // that isn't proven).
+    unawaited(_link.gone(peer.channel));
     final open = [..._pending.values];
     _pending.clear();
     for (final p in open) {

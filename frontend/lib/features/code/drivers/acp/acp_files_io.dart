@@ -4,9 +4,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import '../../../skills/domain/skill_format.dart' show parseFrontMatter;
 import '../../harness/everyai/shell_io.dart' show ShellEnv;
 import '../detection/cli_scan.dart' show findCli;
+import '../short_run.dart';
 import 'acp_agents.dart' show cursorSignedInFrom, kiroSignedInFrom;
 import 'acp_xai.dart' show parseGrokModelsLogin;
 
@@ -153,20 +155,28 @@ Future<bool?> grokSignedIn(String executable) async {
 }
 
 /// [executable] [args]'s exit code and output, or null when it can't run or
-/// takes over 10 s (then it is killed, not left behind).
+/// takes over 10 s (then it is stopped, verified, with what it started).
 Future<({int code, String stdout})?> _status(String executable, List<String> args) async {
-  Process? proc;
+  final ShellEnv shell;
   try {
-    final shell = await ShellEnv.load();
-    final p = proc = await Process.start(executable, args, environment: shell.env);
-    unawaited(p.stderr.drain<void>());
-    final out = p.stdout.transform(utf8.decoder).join();
-    final code = await p.exitCode.timeout(const Duration(seconds: 10));
-    return (code: code, stdout: await out);
-  } on TimeoutException {
-    proc?.kill(ProcessSignal.sigkill);
-    return null;
+    shell = await ShellEnv.load();
   } on Object {
     return null;
+  }
+  final r = await runShort(
+    executable,
+    args,
+    timeout: const Duration(seconds: 10),
+    env: shell.env,
+    owner: const ProbeOwner('acp-sign-in'),
+  );
+  switch (r) {
+    case Finished(:final code, :final stdout):
+      return (code: code, stdout: stdout);
+    case TimedOut(:final kill) || Cancelled(:final kill):
+      logStop('$executable ${args.join(' ')}', kill);
+      return null;
+    case StartFailed():
+      return null;
   }
 }

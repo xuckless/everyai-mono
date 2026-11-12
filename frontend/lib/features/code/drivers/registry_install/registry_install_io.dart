@@ -9,6 +9,8 @@ import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 
+import '../../../../core/process/supervisor.dart' show ProbeOwner;
+import '../short_run.dart';
 import 'acp_registry.dart';
 
 String? currentPlatformKey() {
@@ -18,8 +20,15 @@ String? currentPlatformKey() {
 
 Future<void> chmodExecutable(String path) async {
   if (Platform.isWindows) return;
-  final r = await Process.run('chmod', ['+x', path]);
-  if (r.exitCode != 0) throw InstallError("Couldn't make ${path.split('/').last} runnable: ${r.stderr}".trim());
+  final r = await runShort(
+    'chmod',
+    ['+x', path],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('install'),
+  );
+  if (runProblem('chmod', r) case final why?) {
+    throw InstallError("Couldn't make ${path.split('/').last} runnable: $why".trim());
+  }
 }
 
 // The download, its checks and the unpacking ported from T3 Code (MIT),
