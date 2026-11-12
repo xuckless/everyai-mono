@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/process/process_model.dart' show KillOutcome;
 import '../domain/agent_mode.dart';
 import '../domain/mcp_tool_check.dart' show McpToolsReport;
 import '../host/host.dart' show HostTools;
@@ -366,7 +367,9 @@ typedef BackgroundTask = ({
 /// harness).
 abstract interface class HasBackgroundShells {
   List<BackgroundTask> get backgroundTasks;
-  Future<void> stopBackground(String id);
+
+  /// Stops background shell [id] (verified): what came of it.
+  Future<KillOutcome> stopBackground(String id);
 }
 
 /// A session that takes a message into the turn that is running, without

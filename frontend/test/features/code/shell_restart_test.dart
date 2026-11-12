@@ -29,7 +29,7 @@ void main() {
     final (first, second) = (await a, await b);
     expect(identical(first, second), isTrue);
     expect(registry.of('t').where((e) => e.id == bg.id && e.running), hasLength(1));
-    expect(first!.entry.cwd, sub.path);
+    expect((first as Restarted).shell.entry.cwd, sub.path);
     expect(shell.cwd, tmp.path);
   });
 }

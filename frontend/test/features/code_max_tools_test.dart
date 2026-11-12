@@ -24,6 +24,7 @@ import 'package:every_ai/features/code/drivers/lead_skills.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/harness/session_processes.dart' show killSessionProcesses;
+import 'package:every_ai/core/process/process_model.dart' show Ended;
 import 'package:every_ai/features/code/host/host.dart';
 import 'package:every_ai/features/code/host/host_max_tools.dart';
 import 'package:every_ai/features/code/host/host_providers.dart';
@@ -547,7 +548,7 @@ void main() {
     final killed = <String>[];
     CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async {
       killed.add(tag);
-      return const [];
+      return const Ended([]);
     };
     addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
     final l = await lead();

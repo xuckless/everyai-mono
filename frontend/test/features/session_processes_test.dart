@@ -1,11 +1,10 @@
-import 'dart:io';
-
-import 'package:every_ai/features/code/harness/everyai/shell_io.dart' show killTree;
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/harness/session_processes.dart';
+import 'package:every_ai/features/code/panes/processes.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-ProcessRow _row(int pid, int ppid, String cmd, {String? tag, bool env = true}) =>
-    ProcessRow(pid: pid, ppid: ppid, command: cmd, tag: tag, envVisible: env);
+ProcessRow _row(int pid, int ppid, String cmd, {String? tag, bool env = true, String? owner, String? app}) =>
+    ProcessRow(pid: pid, ppid: ppid, command: cmd, tag: tag, envVisible: env, owner: owner, app: app);
 
 void main() {
   const dir = '/w/session-a';
@@ -48,10 +47,12 @@ void main() {
       _row(61, 60, 'cargo build', env: false),
     ]);
     expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, roots: {50}), [51, 52]);
-    // Without a root its tools can't be told apart.
-    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true), isEmpty);
+    // Without a root (or a supervisor record of a helper kind, `spared`), a tagged process is a leftover of the
+    // session, wherever its parent is: it goes with its tree.
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true), [50, 51, 52]);
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, spared: {50}), isEmpty);
     // A root that has exited is skipped.
-    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, roots: {99}), isEmpty);
+    expect(t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: true, roots: {99}), [50, 51, 52]);
   });
 
   test("a driver CLI's own children are spared; only the shells it runs for tools are signalled", () {
@@ -80,6 +81,58 @@ void main() {
     unregisterDriverRoot('t2', 60);
     expect(driverRootsOf('t1'), isEmpty);
     expect(driverRootsOf('t2'), isEmpty);
+  });
+
+  group('tagged at any parent', () {
+    // 500 the app → 501 a shell of session a (tagged) → 502 its child; 503 a language server of session a (a
+    // helper, spared); 504 a server another EveryAI (pid 600) started for a session also named a.
+    final t = ProcessTable([
+      _row(1, 0, 'launchd'),
+      _row(500, 1, 'EveryAI'),
+      _row(501, 500, '/bin/zsh .cmd-bg_1.sh', tag: 'a'),
+      _row(502, 501, 'node vite', tag: 'a'),
+      _row(503, 500, 'typescript-language-server', tag: 'a'),
+      _row(504, 1, 'node server', owner: 'session:a', app: '600:Thu'),
+      _row(505, 1, 'node left', owner: 'session:a', app: '500:Thu'),
+      _row(600, 1, 'EveryAI (another)'),
+    ]);
+
+    test('the top of each tagged tree, wherever its parent is; helpers, the app and another app spared', () {
+      expect(
+        t.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: false, spared: {503}, self: 500, appTag: '500:Thu'),
+        [501, 502, 505],
+      );
+    });
+
+    test('a driver root and its own children are spared; its tool shells are not', () {
+      final d = ProcessTable([
+        _row(500, 1, 'EveryAI'),
+        _row(510, 500, 'claude', tag: 'a'),
+        _row(511, 510, 'node mcp-server', tag: 'a'),
+        _row(512, 510, '/bin/bash -c npm test', tag: 'a'),
+        _row(513, 512, 'node jest', tag: 'a'),
+      ]);
+      expect(d.sessionProcesses(tag: 'a', workingDir: dir, ownsDir: false, roots: {510}, self: 500), [512, 513]);
+    });
+  });
+
+  group('a table that cannot be read', () {
+    late ProcessSupervisor saved;
+    setUp(() {
+      saved = ProcessSupervisor.instance;
+      ProcessSupervisor.instance = ProcessSupervisor.create(
+        hooks: SupervisorHooks(scan: ({required env}) async => const ScanFailed('ps is broken')),
+      );
+    });
+    tearDown(() => ProcessSupervisor.instance = saved);
+
+    test('is a failure, never "nothing running"', () async {
+      final found = await findSessionProcesses(tag: 'x', workingDir: '/tmp', ownsDir: true);
+      expect(found, isA<SessionScanFailed>().having((f) => f.why, 'why', 'ps is broken'));
+      expect(await killSessionProcesses(tag: 'x', workingDir: '/tmp', ownsDir: true), isA<ScanFailed>());
+      final listed = await listSessionProcesses(tag: 'x', workingDir: '/tmp', ownsDir: true, agentRoots: {1});
+      expect(listed, isA<ProcessesUnreadable>());
+    }, testOn: 'mac-os || linux');
   });
 
   test('untagged orphans count by working directory', () {
@@ -193,21 +246,6 @@ void main() {
       expect(t.rows[80]!.ppid, 4); // a parent without a start time keeps its children
       expect(t.descendants(50), [52]);
       expect(t.sessionProcesses(tag: 'a', workingDir: r'C:\w\a', ownsDir: true, roots: {50}), [52]);
-    });
-
-    test('killTree runs taskkill from System32 on the whole tree', () async {
-      final calls = <List<String>>[];
-      await killTree(
-        42,
-        windows: true,
-        run: (exe, args) async {
-          calls.add([exe, ...args]);
-          return ProcessResult(0, 0, '', '');
-        },
-      );
-      expect(calls, hasLength(1));
-      expect(calls.single.first, endsWith(r'\System32\taskkill.exe'));
-      expect(calls.single.skip(1), ['/PID', '42', '/T', '/F']);
     });
   });
 }

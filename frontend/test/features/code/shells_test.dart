@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
@@ -29,11 +30,13 @@ final class _PipePty implements ShellPty {
     _p.stderr.listen((b) => c.add(Uint8List.fromList(b)), onDone: done);
     output = c.stream;
   }
-  final Process _p;
+  final SupervisedProcess _p;
+  @override
+  SupervisedChild get child => _p;
   @override
   late final Stream<Uint8List> output;
   @override
-  int get pid => _p.pid;
+  int get pid => _p.pid!;
   @override
   Future<int> get exitCode => _p.exitCode;
   @override
@@ -42,11 +45,19 @@ final class _PipePty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => _p.kill();
+  Future<KillOutcome> kill() => _p.stop();
 }
 
-Future<ShellPty?> _start(String exe, List<String> args, String cwd, Map<String, String> env) async =>
-    _PipePty(await Process.start(exe, args, workingDirectory: cwd, environment: env));
+Future<ShellPty?> _start(
+  String exe,
+  List<String> args,
+  String cwd,
+  Map<String, String> env,
+  ProcessSupervisor supervisor,
+  ProcessOwner owner,
+) async => _PipePty(
+  await supervisor.spawn(SpawnSpec(owner: owner, kind: ProcessKind.shell, exe: exe, args: args, cwd: cwd, env: env)),
+);
 
 void main() {
   group('terminal text', () {
@@ -197,8 +208,17 @@ void main() {
   });
 }
 
-Future<ShellPty?> _syncStart(String exe, List<String> args, String cwd, Map<String, String> env, int rows, int cols) =>
-    _start(exe, args, cwd, env);
+Future<ShellPty?> _syncStart(
+  String exe,
+  List<String> args,
+  String cwd,
+  Map<String, String> env,
+  int rows,
+  int cols, {
+  required ProcessSupervisor supervisor,
+  required ProcessOwner owner,
+  String? label,
+}) => _start(exe, args, cwd, env, supervisor, owner);
 
 Future<void> _until(bool Function() ok, {Duration limit = const Duration(seconds: 10)}) async {
   final end = DateTime.now().add(limit);

@@ -25,9 +25,12 @@ ScreenAccess screenAccess() => ScreenAccess(
   listWindows: capture.listWindows,
   executableOf: capture.executableOf,
   capture: (w, root, others) async => _result(await captureFor(w, root: root, vision: true, others: others)),
-  sessionPids: ({required tag, required workingDir, required ownsDir}) async => {
-    ...?(await findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir))?.$2,
-  },
+  sessionPids: ({required tag, required workingDir, required ownsDir}) async =>
+      switch (await findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir)) {
+        SessionListed(:final pids) => pids.toSet(),
+        // TODO(supervisor): a failed scan reads as no session processes here (host lane to decide).
+        SessionScanFailed() => <int>{},
+      },
   processTree: (pid) async {
     // The supervisor's shared scan of the process table.
     switch (await ProcessSupervisor.instance.scan()) {

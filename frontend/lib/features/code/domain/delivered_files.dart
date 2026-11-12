@@ -1,5 +1,9 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
+import '../../../core/process/supervisor.dart' show LaunchFailed, ProcessSupervisor;
+
 /// Where a path the agent presented lives: absolute paths stay, relative
 /// ones are under [workingDir].
 String resolveDelivered(String workingDir, String path) {
@@ -25,5 +29,8 @@ String resolveDelivered(String workingDir, String path) {
 
 Future<void> revealDelivered(String path) async {
   final c = revealCommand(path);
-  await Process.run(c.exe, c.args);
+  // The file manager it opens isn't the app's to end.
+  if (await ProcessSupervisor.instance.launchDetached(c.exe, c.args, label: 'reveal') case LaunchFailed(:final error)) {
+    debugPrint("Couldn't reveal $path: $error");
+  }
 }

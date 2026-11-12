@@ -10,6 +10,7 @@ import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart' show noAnswerProblem;
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
 import 'package:every_ai/features/code/environments/exec_env.dart';
+import 'package:every_ai/core/process/supervisor.dart' show Ended, SupervisedChild;
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:every_ai/features/code/panes/setup_terminal.dart';
 import 'package:every_ai/features/code/ui/setup_button.dart';
@@ -37,7 +38,13 @@ final class _Pty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => kills++;
+  Future<KillOutcome> kill() async {
+    kills++;
+    return const Ended([]);
+  }
+
+  @override
+  SupervisedChild get child => throw UnimplementedError('not supervised (a fake)');
 }
 
 Future<AppScan> _noApps() async => const AppScan();

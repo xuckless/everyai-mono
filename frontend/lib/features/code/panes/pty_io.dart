@@ -1,12 +1,12 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:flutter_pty/flutter_pty.dart';
 
+import '../../../core/process/supervisor.dart';
 import '../harness/everyai/git_bash.dart' show findGitBash;
-import '../harness/everyai/shell_io.dart' show ShellEnv, killTree;
+import '../harness/everyai/shell_io.dart' show ShellEnv;
 import '../harness/harness.dart' show HarnessError;
 import '../harness/session_processes.dart' show sessionEnvVar;
 import 'pty.dart';
@@ -18,6 +18,7 @@ ShellPty? startShell({
   int rows = 24,
   int columns = 80,
   Map<String, String> env = const {},
+  ProcessOwner? owner,
 }) {
   if (!shellSupported) return null;
   final windows = Platform.isWindows;
@@ -26,19 +27,41 @@ ShellPty? startShell({
     gitBash: windows ? findGitBash(Platform.environment, (f) => File(f).existsSync()) : null,
     shellVar: Platform.environment['SHELL'],
   );
-  final environment = {...Platform.environment, ...env, ...shell.env}
-    // Not one of the agent's terminals: Stop must leave these processes alone.
+  final who = owner ?? const AppOwner();
+  final environment = {...Platform.environment, ...env, ...shell.env, ...supervisor.tagsFor(who)}
+    // Not one of the agent's terminals: Stop (which matches the session tag) must leave these processes alone.
     ..remove(sessionEnvVar);
-  return _Pty(
-    Pty.start(
-      shell.exe,
-      arguments: shell.args,
-      workingDirectory: Directory(workingDir).existsSync() ? workingDir : null,
-      environment: environment,
-      rows: rows,
-      columns: columns,
-    ),
+  final pty = Pty.start(
+    shell.exe,
+    arguments: shell.args,
+    workingDirectory: Directory(workingDir).existsSync() ? workingDir : null,
+    environment: environment,
+    rows: rows,
+    columns: columns,
   );
+  return _adopt(pty, SpawnSpec(owner: who, kind: ProcessKind.pty, exe: shell.exe, args: shell.args, label: 'Terminal'));
+}
+
+/// How recently a pty's process must have started for its pid to be taken as the one just started: it is the app's
+/// own unreaped child, so this only guards against a mix-up, and is generous for a loaded machine.
+const adoptWithin = Duration(seconds: 60);
+
+/// The supervisor terminals belong to (tests swap in their own).
+@visibleForTesting
+ProcessSupervisor? debugPtySupervisor;
+
+ProcessSupervisor get supervisor => debugPtySupervisor ?? ProcessSupervisor.instance;
+
+/// [pty], adopted by the supervisor; ended at once (and null) when the app is quitting.
+ShellPty? _adopt(Pty pty, SpawnSpec spec) {
+  try {
+    return _Pty(pty, supervisor.adopt(pty.pid, spec, exitCode: pty.exitCode, startedWithin: adoptWithin));
+  } on SupervisorClosed catch (e) {
+    // Started while the app quits: it must not outlive it, and nothing will own it.
+    debugPrint('${spec.label} (${pty.pid}) started while quitting ($e); ending it.');
+    pty.kill(ProcessSignal.sigkill);
+    return null;
+  }
 }
 
 Future<ShellPty?> startProgram({
@@ -54,15 +77,18 @@ Future<ShellPty?> startProgram({
   // No fallback folder: a coding CLI must not run (and edit files) wherever the app happens to be.
   if (!Directory(workingDir).existsSync()) throw HarnessError("The session's folder is missing.");
   final shell = await ShellEnv.load();
-  return _Pty(
-    Pty.start(
-      executable,
-      arguments: args,
-      workingDirectory: workingDir,
-      environment: programEnv(shell.env, env, sessionTag),
-      rows: rows,
-      columns: columns,
-    ),
+  final owner = SessionOwner(sessionTag);
+  final pty = Pty.start(
+    executable,
+    arguments: args,
+    workingDirectory: workingDir,
+    environment: {...programEnv(shell.env, env, sessionTag), ...supervisor.tagsFor(owner)},
+    rows: rows,
+    columns: columns,
+  );
+  return _adopt(
+    pty,
+    SpawnSpec(owner: owner, kind: ProcessKind.pty, exe: executable, args: args, label: executable.split('/').last),
   );
 }
 
@@ -90,11 +116,10 @@ Future<ShellPty?> startProgram({
 }
 
 final class _Pty implements ShellPty {
-  _Pty(this._pty) {
-    unawaited(_pty.exitCode.then((_) => _exited = true));
-  }
+  _Pty(this._pty, this.child);
   final Pty _pty;
-  var _exited = false;
+  @override
+  final SupervisedChild child;
 
   @override
   int get pid => _pty.pid;
@@ -106,13 +131,11 @@ final class _Pty implements ShellPty {
   void write(Uint8List data) => _pty.write(data);
   @override
   void resize(int rows, int columns) => _pty.resize(rows, columns);
+
+  /// The supervisor's verified stop of the program, its group and its tree (it knows when the program has exited,
+  /// so a reused pid is never signalled). No SIGHUP from the pty afterwards: by then the pid may be another's.
   @override
-  void kill() {
-    // The whole tree, not only the CLI: what it started may have left its
-    // process group. Not once it has exited: its pid may be reused.
-    if (!_exited) unawaited(killTree(pid));
-    _pty.kill(ProcessSignal.sighup);
-  }
+  Future<KillOutcome> kill() => child.stop();
 }
 
 /// Where a terminal outside any session starts: the drive root on Windows (`C:\`), else the user's home folder.

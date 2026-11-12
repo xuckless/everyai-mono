@@ -9,10 +9,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
-import '../../../../core/process/supervisor.dart'
-    show Ended, KillOutcome, Listed, ProcessSupervisor, ScanFailed, Survived;
+import '../../../../core/process/supervisor.dart';
 import '../../panes/pty.dart' show ShellPty;
-import '../../live/desktop_helper_io.dart' show windowsParents;
 import '../../live/nested_display_io.dart';
 import '../../shells/containers.dart' show containerHintsOf;
 import '../../shells/pty_spawn_stub.dart' if (dart.library.ffi) '../../shells/pty_spawn_io.dart';
@@ -75,27 +73,32 @@ final class ShellEnv {
     if (Platform.isWindows || shell == null) {
       return ShellEnv._(shell ?? '', _withCommonDirs(_clean(Map.of(Platform.environment))));
     }
-    try {
-      // Interactive + login, so rc files that set PATH run; output before the
-      // marker (banners, prompts) is skipped.
-      final res = await Process.run(
-        shell,
-        ['-ilc', 'printf "\\n$_marker\\n"; env -0'],
-        stdoutEncoding: utf8,
-        environment: {'TERM': 'dumb'},
-      ).timeout(const Duration(seconds: 10));
-      final out = res.stdout as String;
-      final at = out.indexOf('$_marker\n');
-      if (at >= 0) {
-        final env = <String, String>{};
-        for (final entry in out.substring(at + _marker.length + 1).split('\x00')) {
-          final eq = entry.indexOf('=');
-          if (eq > 0) env[entry.substring(0, eq)] = entry.substring(eq + 1);
+    // Interactive + login, so rc files that set PATH run; output before the
+    // marker (banners, prompts) is skipped. Bounded: an rc file that waits for input is stopped (verified).
+    final res = await ProcessSupervisor.instance.runBounded(
+      shell,
+      ['-ilc', 'printf "\\n$_marker\\n"; env -0'],
+      timeout: const Duration(seconds: 10),
+      stdoutEncoding: utf8,
+      env: const {'TERM': 'dumb'},
+      owner: const ProbeOwner('login-env'),
+      label: 'login shell environment',
+    );
+    switch (res) {
+      case Finished(:final stdout):
+        final at = stdout.indexOf('$_marker\n');
+        if (at >= 0) {
+          final env = <String, String>{};
+          for (final entry in stdout.substring(at + _marker.length + 1).split('\x00')) {
+            final eq = entry.indexOf('=');
+            if (eq > 0) env[entry.substring(0, eq)] = entry.substring(eq + 1);
+          }
+          if (env.containsKey('PATH')) return ShellEnv._(shell, _withCommonDirs(_clean(env)));
         }
-        if (env.containsKey('PATH')) return ShellEnv._(shell, _withCommonDirs(_clean(env)));
-      }
-    } on Object {
-      // Fall back to the app's own environment below.
+        debugPrint('The login shell printed no environment; commands use the app\'s own.');
+      case TimedOut() || Cancelled() || StartFailed() || Refused():
+        // Timed out, cancelled, didn't start, or the app is quitting: the app's own environment below.
+        debugPrint('The login shell environment could not be read ($res); commands use the app\'s own.');
     }
     return ShellEnv._(shell, _withCommonDirs(_clean(Map.of(Platform.environment))));
   }
@@ -107,8 +110,10 @@ final class ShellEnv {
     return env..[key] = mergePaths(env[key] ?? '', commonDirs(home, env, windows: windows), windows: windows);
   }
 
-  /// Drops what belongs to the capturing shell, not to commands.
+  /// Drops what belongs to the capturing shell, not to commands: also the supervisor's tags it carried
+  /// (`EVERYAI_APP`, `EVERYAI_OWNER`, `EVERYAI_CHILD`), which every child gets afresh for its own owner.
   static Map<String, String> _clean(Map<String, String> env) => env
+    ..removeWhere((k, _) => k.startsWith('EVERYAI_'))
     ..remove('SHLVL')
     ..remove('_')
     ..remove('OLDPWD')
@@ -223,16 +228,56 @@ String mergePaths(String path, List<String> extra, {bool windows = false}) {
 
 /// What a finished command printed (stdout and stderr interleaved).
 final class CommandResult {
-  const CommandResult({required this.output, required this.exitCode, this.timedOut = false, this.cancelled = false});
+  const CommandResult({
+    required this.output,
+    required this.exitCode,
+    this.timedOut = false,
+    this.cancelled = false,
+    this.stop,
+  });
   final String output;
+
+  /// Its exit code; -1 when it was stopped and its own code is unknown, or it isn't closed.
   final int exitCode;
   final bool timedOut;
   final bool cancelled;
+
+  /// What stopping it (at its timeout, or on cancel) came to; null when it ended by itself.
+  final KillOutcome? stop;
+
+  /// Whether it (and what it started) is gone: it ended, or its stop was verified.
+  bool get closed => stop == null || stop is Ended;
+}
+
+/// In the environment of every process a [SessionShell] starts: `<shell instance>/<command id>`, so what a command
+/// left running is found by its tag even once it left the command's tree ([SessionShell.killAll]).
+const shellEnvVar = 'EVERYAI_SHELL';
+
+/// How a background shell's restart went.
+sealed class RestartResult {
+  const RestartResult();
+}
+
+final class Restarted extends RestartResult {
+  const Restarted(this.shell);
+  final BackgroundShell shell;
+}
+
+/// The old copy didn't close, so no new one was started (two copies would fight over ports and files).
+final class RestartRefused extends RestartResult {
+  const RestartRefused(this.old, this.stop);
+  final BackgroundShell old;
+  final KillOutcome stop;
+}
+
+final class NoSuchShell extends RestartResult {
+  const NoSuchShell();
 }
 
 /// Runs a session's commands: each in a fresh login-environment shell, in
 /// the directory the previous one ended in (so `cd` carries over), tagged
-/// with the session so Stop can find leftovers.
+/// with the session so Stop can find leftovers. Every process goes through the
+/// supervisor ([ProcessSupervisor]): its own group, the ledger, a verified stop.
 final class SessionShell {
   SessionShell({
     required this.root,
@@ -241,9 +286,11 @@ final class SessionShell {
     this.logDir,
     this.ptySpawner = spawnPty,
     ShellRegistry? registry,
+    ProcessSupervisor? supervisor,
     @visibleForTesting this.clock = DateTime.now,
   }) : cwd = root,
-       _registry = registry ?? ShellRegistry.instance;
+       _registry = registry ?? ShellRegistry.instance,
+       _sup = supervisor ?? ProcessSupervisor.instance;
 
   final String root;
   final String sessionTag;
@@ -258,6 +305,10 @@ final class SessionShell {
   /// Starts background shells in a pseudo-terminal (null, or when it returns null: pipes).
   final PtySpawner? ptySpawner;
   final ShellRegistry _registry;
+  final ProcessSupervisor _sup;
+
+  /// Whose processes these are (Stop, delete and quit end them as such).
+  ProcessOwner get owner => sessionTag.isEmpty ? const AppOwner() : SessionOwner(sessionTag);
 
   /// Tells this shell's registry entries apart from a fork's, which shares [sessionTag] and may reuse its ids.
   final String _instance = Random().nextInt(1 << 32).toRadixString(36);
@@ -270,21 +321,31 @@ final class SessionShell {
   // shells may share [scratchDir].
   final DateTime Function() clock;
   int _nextRun = 1;
-  final _running = <Process>{};
+
+  /// Foreground commands not yet proven gone (running, or not closed after their stop).
+  final _running = <_Proc>{};
 
   Iterable<BackgroundShell> get background => _background.values;
 
   /// Processes this session started that are still alive: its commands and
-  /// background shells, and everything under them.
+  /// background shells, and everything under them. When the table can't be
+  /// read, only the commands themselves (logged): fewer, never a guess.
   Future<Set<int>> processes() async {
-    final roots = [for (final p in _running) p.pid, for (final b in _background.values) b.pid];
-    final out = <int>{};
-    for (final r in roots) {
-      out
-        ..add(r)
-        ..addAll(await _descendants(r));
+    final roots = {
+      for (final p in _running) p.pid,
+      for (final b in _background.values)
+        if (b.running) b.pid,
+    };
+    switch (await _sup.scan()) {
+      case Listed(:final table):
+        return {
+          for (final r in roots)
+            if (table.rows.containsKey(r)) ...[r, ...table.descendants(r)],
+        };
+      case ScanFailed(:final why):
+        debugPrint('SessionShell($sessionTag): the process table could not be read ($why); only the commands.');
+        return roots;
     }
-    return out;
   }
 
   BackgroundShell? backgroundShell(String id) => _background[id];
@@ -293,9 +354,9 @@ final class SessionShell {
 
   /// Writes the wrapper for [command] to a file in [scratchDir] (a long
   /// command doesn't fit on a Windows command line, and Git Bash would parse
-  /// its quotes again) and starts the shell on it: in a pseudo-terminal when
-  /// [terminal] and one can be made (stdin left open for `bash_input`), else
-  /// on pipes with stdin from /dev/null.
+  /// its quotes again) and starts the shell on it, through the supervisor: in a
+  /// pseudo-terminal when [terminal] and one can be made (stdin left open for
+  /// `bash_input`; adopted), else on pipes with stdin from /dev/null.
   Future<(_Proc, File)> _spawn(String id, String command, {bool terminal = false, String? at}) async {
     final cwd = at ?? this.cwd;
     final env = await ShellEnv.load();
@@ -303,7 +364,8 @@ final class SessionShell {
     Directory(scratchDir).createSync(recursive: true);
     final windows = Platform.isWindows;
     final dir = Directory(cwd).existsSync() ? cwd : root;
-    ShellPty? pty;
+    final mark = {shellEnvVar: '$_instance/$id'};
+    final nested = await NestedDisplays.envFor(sessionTag);
     File script() => File('$scratchDir/.cmd-$id.sh');
     try {
       if (terminal && ptySpawner != null) {
@@ -311,25 +373,32 @@ final class SessionShell {
           wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows, stdinNull: false),
         );
         final path = windows ? script().path.replaceAll('\\', '/') : script().path;
-        pty = await ptySpawner!(
+        final pty = await ptySpawner!(
           env.shell,
           [path],
           dir,
-          withNestedDisplay(ptyShellEnv(env.env, sessionTag), await NestedDisplays.envFor(sessionTag)),
+          withNestedDisplay({...ptyShellEnv(env.env, sessionTag), ...mark, ..._sup.tagsFor(owner)}, nested),
           ptyRows,
           ptyColumns,
+          supervisor: _sup,
+          owner: owner,
+          label: 'Shell $id',
         );
         if (pty != null) return (_Proc.pty(pty), script());
       }
       script().writeAsStringSync(wrapScript(command, cwd: cwd, cwdFile: _cwdFile(id), windows: windows));
-      final process = await Process.start(
-        env.shell,
-        [if (windows) script().path.replaceAll('\\', '/') else script().path],
-        environment: withNestedDisplay({
-          ...env.env,
-          sessionEnvVar: sessionTag,
-        }, await NestedDisplays.envFor(sessionTag)),
-        workingDirectory: dir,
+      final process = await _sup.spawn(
+        SpawnSpec(
+          owner: owner,
+          kind: ProcessKind.shell,
+          exe: env.shell,
+          args: [if (windows) script().path.replaceAll('\\', '/') else script().path],
+          // The login environment is whole; the nested display may take variables out (WAYLAND_DISPLAY).
+          env: withNestedDisplay({...env.env, sessionEnvVar: sessionTag, ...mark}, nested),
+          includeParentEnvironment: false,
+          cwd: dir,
+          label: 'Shell $id',
+        ),
       );
       return (_Proc.pipes(process), script());
     } on Object {
@@ -347,6 +416,7 @@ final class SessionShell {
     String command,
     String description, {
     required bool background,
+    required int pid,
     bool restarted = false,
     String? at,
   }) {
@@ -363,6 +433,7 @@ final class SessionShell {
       background: background,
       description: description,
       logPath: log?.path,
+      pid: pid,
     );
     // The command line first, dimmed, so a log opened later says what ran.
     final header = utf8.encode('\x1B[2m\$ ${command.trim().replaceAll('\n', '\r\n  ')}\x1B[0m\r\n');
@@ -379,21 +450,20 @@ final class SessionShell {
     _delete(ended);
   }
 
-  /// Runs [command] to completion, or until [timeout] (then the whole
-  /// process tree is killed) or [cancel] completes.
+  /// Runs [command] to completion, or until [timeout] or [cancel], when its whole group and tree are stopped
+  /// (verified). A command that outlives its stop is not recorded as ended: its entry reads not closed, it stays
+  /// in [killAll]'s reach, and the result says so ([CommandResult.stop]).
   Future<CommandResult> run(String command, {required Duration timeout, Future<void>? cancel}) async {
     if ((await ShellEnv.load()).missing) return const CommandResult(output: gitBashMissingMessage, exitCode: 127);
     final n = _nextRun++;
     final id = '${clock().microsecondsSinceEpoch}_$n';
     final (proc, script) = await _spawn(id, command);
-    final process = proc.process!;
-    _running.add(process);
-    final (entry, log) = _register('cmd_$n', command, '', background: false);
-    entry
-      ..pid = process.pid
-      ..live = _WatchedShell(proc);
+    _running.add(proc);
+    final (entry, log) = _register('cmd_$n', command, '', background: false, pid: proc.pid);
+    entry.live = _WatchedShell(proc);
     _registry
       ..add(entry)
+      ..follow(entry, proc.child.state, proc.child.states)
       ..trim(sessionTag);
     final out = _CappedBuffer(4 * 1024 * 1024);
     final done = Completer<void>();
@@ -410,31 +480,41 @@ final class SessionShell {
         if (!done.isCompleted) done.complete();
       },
     );
-    var timedOut = false, cancelled = false;
-    final exit = await Future.any<int?>([
-      process.exitCode,
-      Future<int?>.delayed(timeout, () {
-        timedOut = true;
-        return null;
-      }),
-      if (cancel != null)
-        cancel.then((_) {
-          cancelled = true;
-          return null;
-        }),
+    final first = await Future.any<Object>([
+      proc.exitCode,
+      Future<Object>.delayed(timeout, () => _StopWhy.timedOut),
+      if (cancel != null) cancel.then<Object>((_) => _StopWhy.cancelled),
     ]);
-    if (exit == null) await killTree(process.pid);
-    final code = exit ?? await process.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
-    // Gone (or past saving): killAll mustn't reach its pid, which may be reused.
-    _running.remove(process);
+    KillOutcome? stop;
+    final int code;
+    switch (first) {
+      case final int c:
+        code = c;
+        _running.remove(proc);
+      default:
+        stop = await proc.stop();
+        if (stop is Ended) {
+          // Proven gone: killAll mustn't reach its pid, which may be reused.
+          _running.remove(proc);
+          code = await proc.endCode();
+        } else {
+          // Not closed: it stays listed (the entry says so) and in killAll's reach.
+          debugPrint('NOT CLOSED: $command (${proc.pid}): ${killOutcomeText(stop)}');
+          code = -1;
+        }
+    }
     await done.future.timeout(const Duration(seconds: 2), onTimeout: () {});
     _delete(script);
     _readCwd(id);
     log?.close();
-    _registry
-      ..ended(entry, code)
-      ..addHints(sessionTag, containerHintsOf(command, out.text));
-    return CommandResult(output: out.text, exitCode: code, timedOut: timedOut, cancelled: cancelled);
+    _registry.addHints(sessionTag, containerHintsOf(command, out.text));
+    return CommandResult(
+      output: out.text,
+      exitCode: code,
+      timedOut: first == _StopWhy.timedOut,
+      cancelled: first == _StopWhy.cancelled,
+      stop: stop,
+    );
   }
 
   /// Starts [command] in the background; its output collects in the
@@ -452,45 +532,86 @@ final class SessionShell {
   }) async {
     final (proc, script) = await _spawn(id, command, terminal: true, at: at);
     unawaited(proc.exitCode.then((_) => _delete(script)));
-    final (entry, log) = _register(id, command, description, background: true, restarted: restarted, at: at);
-    entry.restart = () => restart(id);
-    final bg = BackgroundShell._(id, command, description, proc, log, entry, _registry)..restarted = restarted;
+    final (entry, log) = _register(
+      id,
+      command,
+      description,
+      background: true,
+      pid: proc.pid,
+      restarted: restarted,
+      at: at,
+    );
+    entry.restart = () async {
+      // The outcome reaches the agent as a note on the old shell (see [restart]) and the user through its row.
+      await restart(id);
+    };
+    final bg = BackgroundShell._(id, command, description, proc, log, entry, _registry);
+    if (restarted) bg._note = const _Restarted();
     _background[id] = bg;
-    _registry.add(entry);
+    _registry
+      ..add(entry)
+      ..follow(entry, proc.child.state, proc.child.states);
     return bg;
   }
 
-  /// Stops background shell [id] if it runs and starts its command again under the same id, in the folder it first
-  /// ran in (the user's Restart in the Processes tab). The agent's next read says so. Null when there is no such
-  /// shell.
+  /// Stops background shell [id] (verified) and starts its command again under the same id, in the folder it first
+  /// ran in (the user's Restart in the Processes tab). The agent's next read says so. Refused, with the old shell
+  /// kept and noted, when the old copy didn't close: two copies would fight over its ports and files.
   ///
-  /// A restart takes seconds (the kill waits up to 3 s for the exit); asking again meanwhile joins it, so a double
-  /// click starts the command once.
-  Future<BackgroundShell?> restart(String id) => _restarting[id] ??= _restart(id).whenComplete(() {
+  /// Asking again meanwhile joins the restart under way, so a double click starts the command once.
+  Future<RestartResult> restart(String id) => _restarting[id] ??= _restart(id).whenComplete(() {
     _restarting.remove(id);
   });
 
-  final _restarting = <String, Future<BackgroundShell?>>{};
+  final _restarting = <String, Future<RestartResult>>{};
 
-  Future<BackgroundShell?> _restart(String id) async {
+  Future<RestartResult> _restart(String id) async {
     final old = _background[id];
-    if (old == null) return null;
-    await old.kill();
-    await old._proc.exitCode.timeout(const Duration(seconds: 3), onTimeout: () => -9);
+    if (old == null) return const NoSuchShell();
+    final stop = await old.kill();
+    if (stop is! Ended) {
+      old._note = _RestartRefused(killOutcomeText(stop));
+      _registry.changed(old.entry);
+      return RestartRefused(old, stop);
+    }
     // In its own folder, without moving the shell's cwd (another command may start meanwhile).
-    return _startAs(id, old.command, old.description, restarted: true, at: old.entry.cwd);
+    return Restarted(await _startAs(id, old.command, old.description, restarted: true, at: old.entry.cwd));
   }
 
-  /// Kills every command still running (foreground and background).
-  Future<void> killAll() async {
-    for (final p in [..._running]) {
-      await killTree(p.pid);
+  /// Ends every command still running (foreground and background, each verified with its group and tree), then
+  /// whatever carries this shell's tag ([shellEnvVar]) but left their trees (a `nohup … &` whose shell ended).
+  /// The merged outcome: [Ended] only when everything is proven gone.
+  Future<KillOutcome> killAll() async {
+    final outcomes = await Future.wait([
+      for (final p in [..._running]) p.stop(),
+      // Ended ones too: their stop ends what their group or tree left running.
+      for (final b in [..._background.values]) b.kill(),
+    ]);
+    for (final (i, p) in [..._running].indexed) {
+      if (outcomes[i] is Ended) _running.remove(p);
     }
-    for (final b in _background.values) {
-      await b.kill();
+    return KillOutcome.merge([...outcomes, await _strays()]);
+  }
+
+  /// Ends processes tagged with this shell's [shellEnvVar] (and this app) that are not under a stop already.
+  Future<KillOutcome> _strays() async {
+    switch (await _sup.scan(env: true)) {
+      case ScanFailed() && final failed:
+        return failed;
+      case Listed(:final table):
+        final app = _sup.appTag;
+        final tagged = [
+          for (final r in table.rows.values)
+            if (!r.zombie && (r.tag(shellEnvVar)?.startsWith('$_instance/') ?? false) && r.tag(appEnvVar) == app) r.pid,
+        ];
+        // Their tops only: a stop ends each one's tree.
+        final tops = tagged.where((p) => !tagged.contains(table.rows[p]!.ppid)).toList();
+        return KillOutcome.merge(await Future.wait([for (final p in tops) _sup.killTree(p)]));
     }
   }
 }
+
+enum _StopWhy { timedOut, cancelled }
 
 /// Thrown when a command is started with no shell to run it in.
 final class ShellMissing implements Exception {
@@ -533,15 +654,30 @@ String cwdFromFile(String text, {required bool windows}) {
   return windows ? dir.replaceAll('/', '\\') : dir;
 }
 
+/// What the agent hasn't been told about a background shell yet.
+sealed class _ShellNote {
+  const _ShellNote();
+}
+
+/// The user restarted it (a new run under the same id).
+final class _Restarted extends _ShellNote {
+  const _Restarted();
+}
+
+/// The user asked for a restart, but the old copy didn't close.
+final class _RestartRefused extends _ShellNote {
+  const _RestartRefused(this.why);
+  final String why;
+}
+
 /// A command left running in the background: in a pseudo-terminal when one
 /// could be made (so the user can type into it from the Processes tab, and
 /// the agent with `bash_input`), else on pipes. Its raw output goes to its
-/// log; the agent reads it with colours and redraws taken out.
+/// log; the agent reads it with colours and redraws taken out. Its state is its
+/// registry entry's ([ShellEntry.state]), which follows the supervisor's child.
 final class BackgroundShell {
   BackgroundShell._(this.id, this.command, this.description, this._proc, this._log, this.entry, this._registry) {
-    entry
-      ..pid = _proc.pid
-      ..live = _LiveBackground(this);
+    entry.live = _LiveBackground(this);
     final decode = const Utf8Decoder(allowMalformed: true).startChunkedConversion(_SinkOf(_add));
     _proc.raw.listen((bytes) {
       final shown = _proc.isPty ? bytes : _crlf(bytes);
@@ -550,13 +686,13 @@ final class BackgroundShell {
       decode.add(bytes);
     }, onDone: decode.close);
     unawaited(
-      _proc.exitCode.then((c) {
-        exitCode = c;
+      _proc.exitCode.then((_) {
         _log?.close();
-        _registry.ended(entry, c);
         _changes.add(null);
-      }),
+      }, onError: (Object e) => debugPrint('Background shell $id: its exit could not be read ($e).')),
     );
+    // The registry tells of every state change (stopping, not closed, exited).
+    _stateSub = _proc.child.states.listen((_) => _changes.add(null));
   }
 
   final String id;
@@ -565,6 +701,8 @@ final class BackgroundShell {
   final _Proc _proc;
   final ShellLog? _log;
   final ShellRegistry _registry;
+  // ignore: unused_field, cancel_subscriptions
+  late final StreamSubscription<ChildState> _stateSub;
 
   /// Its row in the registry (the Processes tab).
   final ShellEntry entry;
@@ -575,17 +713,21 @@ final class BackgroundShell {
   /// When it last printed something.
   DateTime lastOutputAt = DateTime.now();
 
-  /// The user restarted it (a new run under the same id) and the agent hasn't been told yet.
-  bool restarted = false;
-
-  /// Set once it ended.
-  int? exitCode;
+  _ShellNote? _note;
 
   /// How much output was read so far (by `bash_output`).
   int readTo = 0;
 
   int get pid => _proc.pid;
-  bool get running => exitCode == null;
+
+  /// Where its process is (the supervisor's child, through its entry).
+  ShellState get state => entry.state;
+
+  /// Whether its process may still be there (running, stopping, or not closed).
+  bool get running => entry.running;
+
+  /// Its exit code once it ended (null while it runs or isn't closed, or when the code is unknown).
+  int? get exitCode => entry.exitCode;
 
   /// Whether it runs in a pseudo-terminal, so input reaches it.
   bool get interactive => _proc.isPty;
@@ -593,8 +735,21 @@ final class BackgroundShell {
   /// Everything it printed (capped), as raw text with terminal codes.
   String get output => _out.text;
 
-  /// Fires on new output and on exit.
+  /// Fires on new output, state changes and exit.
   Stream<void> get changes => _changes.stream;
+
+  /// What the agent should hear about it before its output, once: a restart by the user, or one refused.
+  String? takeNote() {
+    final n = _note;
+    _note = null;
+    return switch (n) {
+      null => null,
+      _Restarted() => 'The user restarted this shell from the app: the output is from the new run.',
+      _RestartRefused(:final why) =>
+        'The user asked to restart this shell from the app, but its old copy did not close ($why), so it was not '
+            'started again.',
+    };
+  }
 
   void _add(String s) {
     _out.add(s);
@@ -613,7 +768,7 @@ final class BackgroundShell {
   /// The prompt it seems to wait at: the last line it printed when that reads like a question and nothing came
   /// for [quiet] (null otherwise).
   String? waitingFor({Duration quiet = const Duration(seconds: 8), DateTime? now}) {
-    if (!running || !interactive) return null;
+    if (state is! ShellRunning || !interactive) return null;
     if ((now ?? DateTime.now()).difference(lastOutputAt) < quiet) return null;
     final text = _out.text;
     final tail = cleanTerminalText(text.substring(text.length > 4000 ? text.length - 4000 : 0));
@@ -622,9 +777,9 @@ final class BackgroundShell {
   }
 
   /// Sends [data] to its terminal ([user]: typed by the user, so the agent's next read hears of it).
-  /// False when it has no terminal or has ended.
+  /// False when it has no terminal or isn't running.
   bool write(String data, {bool user = false}) {
-    if (!running || !interactive) return false;
+    if (state is! ShellRunning || !interactive) return false;
     _proc.write(Uint8List.fromList(utf8.encode(data)));
     if (user) {
       entry.noteTyped(data);
@@ -633,10 +788,8 @@ final class BackgroundShell {
     return true;
   }
 
-  Future<void> kill() async {
-    if (!running) return;
-    await killTree(_proc.pid);
-  }
+  /// Ends it, its group and its tree (also once it ended by itself: what it left running), verified.
+  Future<KillOutcome> kill() => _proc.stop();
 }
 
 /// A background shell's live end for the registry.
@@ -651,7 +804,7 @@ final class _LiveBackground implements LiveShell {
   @override
   void resize(int rows, int columns) => _b._proc.resize(rows, columns);
   @override
-  Future<void> stop() => _b.kill();
+  Future<void> stop() => _logged(_b.kill(), 'background shell ${_b.id}');
 }
 
 /// A foreground command's live end: output to follow, no input.
@@ -666,26 +819,45 @@ final class _WatchedShell implements LiveShell {
   @override
   void resize(int rows, int columns) {}
   @override
-  Future<void> stop() => killTree(_p.pid);
+  Future<void> stop() => _logged(_p.stop(), 'command ${_p.pid}');
 }
 
-/// A started command: a [Process] on pipes or a [ShellPty]; [raw] is all of its output (stdout and stderr
-/// interleaved), once, broadcast.
-final class _Proc {
-  _Proc.pipes(Process p) : process = p, _pty = null, raw = _merged(p);
-  _Proc.pty(ShellPty p) : process = null, _pty = p, raw = p.output.asBroadcastStream();
+/// Waits for [stop]; one that didn't close is logged loudly (its registry row says not closed too).
+Future<void> _logged(Future<KillOutcome> stop, String what) async {
+  final out = await stop;
+  if (out is! Ended) debugPrint('Stop of $what: ${killOutcomeText(out)}');
+}
 
-  final Process? process;
+/// A started command: a supervised process on pipes or a [ShellPty] (adopted); [raw] is all of its output (stdout
+/// and stderr interleaved), once, broadcast. [child] is its supervisor record.
+final class _Proc {
+  _Proc.pipes(SupervisedProcess p) : child = p, _process = p, _pty = null, raw = _merged(p);
+  _Proc.pty(ShellPty p) : child = p.child, _process = null, _pty = p, raw = p.output.asBroadcastStream();
+
+  final SupervisedChild child;
+  final SupervisedProcess? _process;
   final ShellPty? _pty;
   final Stream<Uint8List> raw;
 
   bool get isPty => _pty != null;
-  int get pid => process?.pid ?? _pty!.pid;
-  Future<int> get exitCode => process?.exitCode ?? _pty!.exitCode;
+
+  /// Known once started (or adopted), which a [_Proc] always is.
+  int get pid => child.pid!;
+  Future<int> get exitCode => _process?.exitCode ?? _pty!.exitCode;
   void write(Uint8List data) => _pty?.write(data);
   void resize(int rows, int columns) => _pty?.resize(rows, columns);
 
-  static Stream<Uint8List> _merged(Process p) {
+  /// The supervisor's verified stop of it, its group and its tree.
+  Future<KillOutcome> stop() => child.stop();
+
+  /// Its exit code after a stop that ended it: its own (as the supervisor saw it, or its exit future within 2 s),
+  /// else -1 (ended, code unknown).
+  Future<int> endCode() async {
+    if (child.state case ChildExited(:final code?)) return code;
+    return exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -1);
+  }
+
+  static Stream<Uint8List> _merged(SupervisedProcess p) {
     final c = StreamController<Uint8List>.broadcast();
     var open = 2;
     void done() {
@@ -747,98 +919,12 @@ Map<String, String> withNestedDisplay(Map<String, String> env, Map<String, Strin
   return out;
 }
 
-/// Runs a program and waits for it; [killTree] uses it for `taskkill`.
-typedef KillRunner = Future<ProcessResult> Function(String executable, List<String> arguments);
-
-/// Ends [pid] and every process below it, through the supervisor's verified kill ([killTreeVerified]): TERM,
-/// up to [termWait] for them to go, KILL for whatever is left, then a check by pid + start time. On Windows
-/// ([windows], this host by default) `taskkill /T /F` ends the tree: signals don't exist there, and
-/// `Process.killPid` ends one process only. That is what VS Code and tree-kill do; a Job Object would also catch
-/// processes whose parent has already exited, but needs FFI handles in every spawner.
-///
-/// Only for a process that is still running: Windows soon gives a dead process's pid to another one, and `/T`
-/// would end that one's tree.
-Future<void> killTree(
-  int pid, {
-  bool? windows,
-  KillRunner run = Process.run,
-  Duration termWait = const Duration(milliseconds: 600),
-}) async {
-  await killTreeVerified(pid, windows: windows, run: run, termWait: termWait);
-}
-
-/// [killTree], with what it did: ended (checked gone), survived, or not checkable (the table couldn't be read).
-Future<KillOutcome> killTreeVerified(
-  int pid, {
-  bool? windows,
-  KillRunner run = Process.run,
-  Duration termWait = const Duration(milliseconds: 600),
-}) async {
-  if (!(windows ?? Platform.isWindows)) return ProcessSupervisor.instance.killTree(pid, termWait: termWait);
-  // By its full path, so a taskkill.exe in the project can't stand in.
-  final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
-  var ran = false;
-  try {
-    final res = await run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
-    // 128: no such process, so nothing for the fallback either.
-    ran = res.exitCode == 0 || res.exitCode == 128;
-  } on Object catch (e) {
-    debugPrint('taskkill for $pid did not run: $e');
-  }
-  if (!Platform.isWindows) return const ScanFailed('taskkill was asked for on a host that is not Windows');
-  // No taskkill: at least the process itself.
-  if (!ran) Process.killPid(pid);
-  return switch (await ProcessSupervisor.instance.scan()) {
-    final ScanFailed f => f,
-    Listed(:final table) when table.rows.containsKey(pid) => Survived([pid], 'still running after taskkill /F'),
-    Listed() => Ended([pid]),
-  };
-}
-
-/// [root]'s descendants now (children first found, then theirs), for a caller that must end them after [root]
-/// itself exits (then they belong to init and no walk from [root] finds them).
-Future<List<int>> descendantsOf(int root) => _descendants(root);
-
-Future<List<int>> _descendants(int root) async {
-  // On Windows only processes() asks (killTree has taskkill there): the desktop helper lists parents.
-  if (Platform.isWindows) {
-    final parents = await windowsParents();
-    final out = <int>[];
-    final queue = [root];
-    while (queue.isNotEmpty) {
-      final p = queue.removeLast();
-      for (final e in parents.entries) {
-        if (e.value == p && e.key != p && !out.contains(e.key)) {
-          out.add(e.key);
-          queue.add(e.key);
-        }
-      }
-    }
-    return out;
-  }
-  try {
-    final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=']);
-    final children = <int, List<int>>{};
-    for (final line in const LineSplitter().convert(res.stdout as String)) {
-      final parts = line.trim().split(RegExp(r'\s+'));
-      if (parts.length < 2) continue;
-      final pid = int.tryParse(parts[0]), ppid = int.tryParse(parts[1]);
-      if (pid == null || ppid == null) continue;
-      children.putIfAbsent(ppid, () => []).add(pid);
-    }
-    final out = <int>[];
-    final queue = [root];
-    while (queue.isNotEmpty) {
-      for (final c in children[queue.removeLast()] ?? const <int>[]) {
-        out.add(c);
-        queue.add(c);
-      }
-    }
-    return out;
-  } on Object {
-    return const [];
-  }
-}
+/// Ends [pid] and every process below it through the supervisor's verified kill: TERM to its group and tree, up to
+/// [termWait] for them to go, KILL for whatever is left, then a check by pid + start time (Windows: `taskkill /T
+/// /F`, then a check). For a process the app didn't start through the supervisor; a listed child is stopped as
+/// such. Callers act on the outcome: only [Ended] means gone.
+Future<KillOutcome> killTree(int pid, {Duration? termWait, ProcessSupervisor? supervisor}) =>
+    (supervisor ?? ProcessSupervisor.instance).killTree(pid, termWait: termWait);
 
 /// Text that keeps its first half and its newest output once over [cap].
 final class _CappedBuffer {
