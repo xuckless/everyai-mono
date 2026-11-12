@@ -338,7 +338,8 @@ LastQuit parseQuitJson(String text) {
   }
 }
 
-/// The previous run's `quit.json`, read once per run (before this run's quit writes its own).
+/// The previous run's `quit.json`, read once per run (before this run's quit writes its own) and then removed: a
+/// run that crashes writes none, and the launch after it must not read the record of the run before.
 final lastQuitProvider = FutureProvider<LastQuit>((ref) async {
   if (kIsWeb) return const NoQuitRecord();
   try {
@@ -346,7 +347,13 @@ final lastQuitProvider = FutureProvider<LastQuit>((ref) async {
     if (dir.isEmpty) return const NoQuitRecord();
     final f = File('$dir/quit.json');
     if (!await f.exists()) return const NoQuitRecord();
-    return parseQuitJson(await f.readAsString());
+    final text = await f.readAsString();
+    try {
+      await f.delete();
+    } on Object catch (e) {
+      debugPrint('quit.json could not be removed after reading it: $e');
+    }
+    return parseQuitJson(text);
   } on Object catch (e) {
     return QuitUnreadable('$e');
   }
