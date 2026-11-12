@@ -150,6 +150,8 @@ final class SeenGone extends ExitSeen {
 ///                         Exited(how, at) ◀───────────────────────────── exit ────────┘  └─ Terming / Killing
 ///                            │ survivors (its group or tree left processes behind)
 ///                            └──────────────────────────────▶ NotClosed
+///
+///   Launched / Unverified ──notOurs(why)──▶ Disowned(pid, why)   (an adoption whose expected start didn't match)
 /// ```
 ///
 /// Launched, Running, Unverified, Terming and Killing all end in Exited on an exit. Exited is only reached on the
@@ -161,7 +163,7 @@ sealed class ChildState {
 
   /// Whether the child still needs ending (it is listed, and quit stops it).
   bool get live => switch (this) {
-    ChildExited() || ChildStartFailed() => false,
+    ChildExited() || ChildStartFailed() || ChildDisowned() => false,
     _ => true,
   };
 
@@ -305,6 +307,22 @@ final class ChildNotClosed extends ChildState {
   String toString() => 'NotClosed($survivors: $reason)';
 }
 
+/// Adopted, but the process at that pid isn't the one expected (another start time, started too long ago, or it
+/// couldn't be checked): never signalled, not listed.
+final class ChildDisowned extends ChildState {
+  const ChildDisowned(this.pid, this.why);
+  final int pid;
+  final String why;
+  @override
+  String get name => 'disowned';
+  @override
+  bool operator ==(Object other) => other is ChildDisowned && other.pid == pid && other.why == why;
+  @override
+  int get hashCode => Object.hash(10, pid, why);
+  @override
+  String toString() => 'Disowned($pid: $why)';
+}
+
 final class ChildStartFailed extends ChildState {
   const ChildStartFailed(this.error);
   final String error;
@@ -349,6 +367,14 @@ final class ChildUnverifiable extends ChildChange {
   final String why;
   @override
   String toString() => 'unverifiable($why)';
+}
+
+/// An adopted pid isn't the process the caller expected.
+final class ChildNotOurs extends ChildChange {
+  const ChildNotOurs(this.why);
+  final String why;
+  @override
+  String toString() => 'notOurs($why)';
 }
 
 final class ChildFailedToStart extends ChildChange {
@@ -433,6 +459,9 @@ ChildStep nextChildState(ChildState from, ChildChange event) => switch ((from, e
   ),
   (ChildLaunched(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
   (ChildLaunched(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
+  (ChildLaunched(:final pid) || ChildUnverified(:final pid), ChildNotOurs(:final why)) => ChildMoves(
+    ChildDisowned(pid, why),
+  ),
   (ChildRunning(:final id), ChildTermSent(:final at)) => ChildMoves(ChildTerming(id, at)),
   (ChildRunning(:final id), ChildKillSent(:final at)) => ChildMoves(ChildKilling(id, at)),
   (ChildRunning(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),

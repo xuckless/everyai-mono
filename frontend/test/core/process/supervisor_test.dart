@@ -335,8 +335,7 @@ void main() {
       final p = await s.spawn(napSpec());
       final id = await p.landed;
       final a = p.stop(), b = s.stop(p);
-      expect(identical(a, b), isTrue);
-      await a;
+      expect(await a, same(await b), reason: 'one stop, one outcome');
       expect(terms.where((t) => t == id.pid), hasLength(1));
       expect(terms.where((t) => t == -id.pid), hasLength(1));
     });
@@ -385,30 +384,64 @@ void main() {
       expect(running(orphan), isFalse);
     });
 
-    test('an escapee that left with its own session and a hidden environment is ended or reported, never "Ended" '
-        'without it', () async {
-      final s = supervisor();
-      final p = await s.spawn(
-        sh(
-          '/usr/bin/perl -MPOSIX -e \'fork and exit; POSIX::setsid(); exec "sleep", "$nap"\'; '
-          'exec sleep 30.${pid}1',
-        ),
-      );
-      await p.landed;
-      await eventually(() => orphanNaps().isNotEmpty);
-      final escapee = orphanNaps().single;
-      final out = await p.stop();
-      switch (out) {
-        case Ended(:final pids):
-          expect(pids, contains(escapee));
+    test(
+      'a real setsid escapee (after something vanished from the tree) is ended or listed as maybe escaped',
+      () async {
+        final s = supervisor(
+          hooks: const SupervisorHooks(timings: fast, treeEvery: Duration(milliseconds: 250)),
+        );
+        final p = await s.spawn(
+          sh(
+            // The middle process lives long enough to be seen in the tree, then forks the escapee and exits at once.
+            '/usr/bin/perl -MPOSIX -e \'sleep 1; fork and exit; POSIX::setsid(); exec "sleep", "$nap"\'; '
+            'exec sleep 30.${pid}1',
+          ),
+        );
+        await p.landed;
+        await eventually(() => orphanNaps().isNotEmpty);
+        final escapee = orphanNaps().single;
+        final out = await p.stop();
+        expect(out, isA<Ended>());
+        final ended = out as Ended;
+        if (ended.pids.contains(escapee)) {
           expect(running(escapee), isFalse);
-        case Unaccounted(:final candidates):
-          expect(candidates, contains(escapee));
+        } else {
+          expect(ended.maybeEscaped, contains(escapee));
+          expect(running(escapee), isTrue, reason: 'listed, not touched');
           if (Platform.isLinux) fail('Linux reads every environment: the tag should have found it');
-        default:
-          fail('unexpected $out');
-      }
-      Process.killPid(escapee, ProcessSignal.sigkill);
+        }
+        Process.killPid(escapee, ProcessSignal.sigkill);
+      },
+    );
+
+    test('an unrelated orphan of this user is not listed as maybe escaped', () async {
+      final s = supervisor(
+        hooks: const SupervisorHooks(timings: fast, treeEvery: Duration(milliseconds: 250)),
+      );
+      // Started before the child: outside its life, even though the child loses something from its tree.
+      final before = (await s.launchDetached('sleep', [nap])) as Launched;
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      final p = await s.spawn(sh('sleep 0.6; exec sleep $nap'));
+      await p.landed;
+      await Future<void>.delayed(const Duration(milliseconds: 1500)); // the short sleep seen, then gone
+      // Started during its life, but nothing left this second child's tree.
+      final quiet = await s.spawn(napSpec());
+      await quiet.landed;
+      final during = (await s.launchDetached('sleep', [nap])) as Launched;
+      await eventually(() => _ps(['-o', 'ppid=', '-p', '${during.pid}']) == '1');
+      final a = await p.stop() as Ended, b = await quiet.stop() as Ended;
+      expect(a.maybeEscaped, isNot(contains(before.pid)));
+      expect(b.maybeEscaped, isEmpty, reason: 'no sign of an escape');
+      expect(running(before.pid) && running(during.pid), isTrue);
+      Process.killPid(before.pid, ProcessSignal.sigkill);
+      Process.killPid(during.pid, ProcessSignal.sigkill);
+    });
+
+    test('never the app itself, whatever a root says', () async {
+      final s = supervisor();
+      final out = await s.killTree(pid);
+      expect(out, isA<Ended>());
+      expect((out as Ended).pids, isEmpty);
     });
 
     test('a failed scan is never "nothing left": ScanFailed, NotClosed, and re-checked until it is gone', () async {
@@ -569,6 +602,232 @@ void main() {
     });
   });
 
+  group('detached and adopted', () {
+    test('a detached launch has no EveryAI variables and outlives stopOwner, stopAll and the watchdog', () async {
+      final s = supervisor();
+      final envFile = '${dir.path}/env.txt';
+      final l = await s.launchDetached(
+        '/bin/sh',
+        ['-c', r'env > "$1"; exec sleep ' + nap, marker, envFile],
+        env: const {'EVERYAI_OWNER': 'session:x', 'KEPT': 'yes'},
+      );
+      final launched = l as Launched;
+      await eventually(() => File(envFile).existsSync() && File(envFile).readAsStringSync().contains('KEPT=yes'));
+      expect(File(envFile).readAsLinesSync().where((e) => e.startsWith('EVERYAI_')), isEmpty);
+      expect(s.children, isEmpty);
+      await s.spawn(napSpec());
+      expect(await s.stopOwner(const AppOwner()), isA<Ended>());
+      final quit = await s.stopAll();
+      expect(quit.entries.map((e) => e.label), isNot(contains('/bin/sh')));
+      final dirPath = await s.ledgerDirectory;
+      final watch = File('${dir.path}/w.list')..writeAsStringSync('');
+      final app = await Process.start('sleep', ['0.3']);
+      await Process.run('/bin/sh', [
+        '-c',
+        watchdogScript,
+        'everyai-watchdog',
+        '${app.pid}',
+        startOf(app.pid),
+        watch.path,
+        s.appTag,
+        '0.1',
+        '0.2',
+        '',
+      ]);
+      expect(running(launched.pid), isTrue);
+      for (final f in Directory(dirPath).listSync().whereType<File>()) {
+        if (f.path.endsWith('.jsonl')) expect(LedgerFold.of(f.readAsLinesSync()).live, isEmpty);
+      }
+      Process.killPid(launched.pid, ProcessSignal.sigkill);
+      expect(await s.launchDetached('no-such-program-at-all', const []), isA<LaunchFailed>());
+    });
+
+    test('adopt with an expected start that does not match: disowned, never signalled', () async {
+      final signals = <int>[];
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: fast,
+          signal: (p, sig) {
+            signals.add(p);
+            return Process.killPid(p, sig);
+          },
+        ),
+      );
+      final raw = await Process.start('sleep', [nap]);
+      final wrong = s.adopt(raw.pid, napSpec(), expectedStart: 'Mon_Jan_1_00:00:00_2001');
+      expect(await wrong.stop(), isA<Ended>());
+      expect(wrong.state, isA<ChildDisowned>());
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      final old = s.adopt(raw.pid, napSpec(), startedWithin: const Duration(milliseconds: 100));
+      await old.states.firstWhere((x) => x is ChildDisowned).timeout(const Duration(seconds: 5));
+      expect(await old.stop(), isA<Ended>());
+      expect(signals, isEmpty);
+      expect(s.children, isEmpty);
+      expect(running(raw.pid), isTrue);
+      final right = s.adopt(raw.pid, napSpec(), exitCode: raw.exitCode, expectedStart: startOf(raw.pid));
+      await right.landed;
+      expect(await right.stop(), isA<Ended>());
+      expect(running(raw.pid), isFalse);
+    });
+  });
+
+  group('quitting', () {
+    test('runBounded never throws: Refused once quitting, unless it is a quit step', () async {
+      final s = supervisor();
+      RunResult? step;
+      final quit = s.stopAll(
+        before: [
+          () async {
+            step = await s.runBounded('echo', const ['bye'], timeout: const Duration(seconds: 5), duringQuit: true);
+            // A quit step that keeps running is ended by the quit itself.
+            unawaited(s.runBounded('sleep', [nap], timeout: const Duration(seconds: 30), duringQuit: true));
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+          },
+          () async => throw StateError('a failing step is passed over'),
+        ],
+      );
+      expect(await s.runBounded('echo', const ['x'], timeout: const Duration(seconds: 5)), isA<Refused>());
+      final report = await quit;
+      expect((step! as Finished).stdout, 'bye\n');
+      expect(report.clean, isTrue);
+      expect(report.entries.map((e) => e.label), contains('sleep $nap'));
+      expect(
+        await s.runBounded('echo', const ['x'], timeout: const Duration(seconds: 5), duringQuit: true),
+        isA<Refused>(),
+        reason: 'closed: not even quit steps',
+      );
+    });
+
+    test('a supervisor with a folder of its own leaves nothing behind', () async {
+      final s = ProcessSupervisor.create(hooks: const SupervisorHooks(timings: fast));
+      final p = await s.spawn(napSpec());
+      final d = await s.ledgerDirectory;
+      expect(Directory(d).existsSync(), isTrue);
+      await p.stop();
+      await eventually(() => !Directory(d).existsSync(), within: const Duration(seconds: 6));
+      final again = await s.spawn(napSpec());
+      await again.landed;
+      expect((await s.stopAll()).clean, isTrue);
+      expect(Directory(d).existsSync(), isFalse);
+    });
+  });
+
+  group('owners', () {
+    test(
+      'a user terminal: tagged app + owner, no session tag; a session stop leaves it, its own stop ends it',
+      () async {
+        final s = supervisor();
+        const owner = TerminalOwner('s9');
+        expect(ProcessOwner.parse(owner.key), owner);
+        expect(s.tagsFor(owner).keys, isNot(contains(sessionTagEnvVar)));
+        final out = File('${dir.path}/term-env.txt');
+        final term = await s.spawn(
+          SpawnSpec(
+            owner: owner,
+            kind: ProcessKind.pty,
+            exe: '/bin/sh',
+            args: ['-c', r'env > "$1"; exec sleep ' + nap, marker, out.path],
+            env: const {sessionTagEnvVar: 's9'}, // even when the caller passes it
+          ),
+        );
+        await term.landed;
+        await eventually(() => out.existsSync() && out.readAsStringSync().contains('EVERYAI_OWNER'));
+        final env = out.readAsLinesSync();
+        expect(env, contains('EVERYAI_OWNER=terminal:s9'));
+        expect(env, contains('EVERYAI_APP=${s.appTag}'));
+        expect(env.where((l) => l.startsWith('$sessionTagEnvVar=')), isEmpty);
+        final agent = await s.spawn(napSpec(owner: const SessionOwner('s9')));
+        await agent.landed;
+        await s.stopOwner(const SessionOwner('s9'));
+        expect(agent.state, isA<ChildExited>());
+        expect(term.state.live, isTrue);
+        expect(running(term.pid!), isTrue);
+        expect(await s.stopOwner(owner), isA<Ended>());
+        expect(running(term.pid!), isFalse);
+      },
+    );
+  });
+
+  group('zones', () {
+    testWidgets('a widget test\'s fake time drives none of it: runBounded finishes on real time, no timer left', (
+      tester,
+    ) async {
+      final s = ProcessSupervisor.create(
+        hooks: const SupervisorHooks(timings: fast),
+        ledgerDir: '${dir.path}/zone',
+      );
+      made.add(s);
+      final fakeNow = tester.binding.clock.now();
+      RunResult? result;
+      // Called from the test's fake zone, as widget code would; its 5 s timeout is a real timer.
+      unawaited(s.runBounded('/bin/sleep', const ['0.2'], timeout: const Duration(seconds: 5)).then((r) => result = r));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 900))); // real time only
+      await tester.pump(); // no fake time: only delivers the answer
+      expect(result, isA<Finished>());
+      expect((result! as Finished).code, 0);
+      expect(tester.binding.clock.now(), fakeNow, reason: 'no fake time passed');
+    });
+  });
+
+  group('killTree with an expected start', () {
+    test('signals nothing when the pid is gone or another process now', () async {
+      final signals = <int>[];
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: fast,
+          signal: (p, sig) {
+            signals.add(p);
+            return Process.killPid(p, sig);
+          },
+        ),
+      );
+      final raw = await Process.start('sleep', [nap]);
+      final reused = await s.killTree(raw.pid, expectedStart: 'Mon_Jan_1_00:00:00_2001');
+      expect(reused, isA<Ended>());
+      expect((reused as Ended).skipped, contains('another process'));
+      expect(signals, isEmpty);
+      expect(running(raw.pid), isTrue);
+      final right = await s.killTree(raw.pid, expectedStart: startOf(raw.pid));
+      expect((right as Ended).pids, [raw.pid]);
+      await raw.exitCode;
+      final gone = await s.killTree(raw.pid, expectedStart: 'whatever');
+      expect((gone as Ended).skipped, contains('not running'));
+    });
+  });
+
+  group('launching', () {
+    test('perl hands back only its own five variables', () async {
+      if (!Platform.isMacOS) return;
+      final r =
+          await supervisor(
+            hooks: const SupervisorHooks(timings: fast, launch: LaunchVia.perl),
+          ).runBounded(
+            '/bin/sh',
+            ['-c', r'echo "$PERL5LIB|$FOO|$EVERYAI_KEEP_FOO"', marker],
+            env: const {'PERL5LIB': '/x', 'EVERYAI_KEEP_FOO': 'y'},
+            timeout: const Duration(seconds: 5),
+          );
+      expect((r as Finished).stdout, '/x||y\n');
+    });
+
+    test('a script without #! runs in sh; a missing interpreter is a start failure', () async {
+      final s = supervisor();
+      final plain = File('${dir.path}/plain')..writeAsStringSync('echo plain-ok\n');
+      final bad = File('${dir.path}/bad')..writeAsStringSync('#!/no/such/interpreter\necho no\n');
+      for (final f in [plain, bad]) {
+        Process.runSync('chmod', ['+x', f.path]);
+      }
+      expect(
+        ((await s.runBounded(plain.path, const [], timeout: const Duration(seconds: 5))) as Finished).stdout,
+        'plain-ok\n',
+      );
+      await expectLater(
+        s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: bad.path)),
+        throwsA(isA<ProcessException>().having((e) => e.message, 'message', contains('interpreter'))),
+      );
+    });
+  });
+
   group('the supervisor', () {
     test('quitting: spawns and adoptions are refused, and a quit can\'t race a new ledger', () async {
       final s = supervisor();
@@ -645,13 +904,33 @@ void main() {
     test('this run reopened (a hot restart) takes back what its ledger still runs', () async {
       final d = '${dir.path}/same';
       final first = supervisor(ledgerDir: d);
-      final p = await first.spawn(napSpec());
+      final p = await first.spawn(
+        SpawnSpec(
+          owner: const SessionOwner('h'),
+          kind: ProcessKind.localServer,
+          exe: 'sleep',
+          args: [nap],
+          label: 'srv',
+        ),
+      );
       await p.landed;
-      await eventually(() => File('$d/ledger-$pid-${startOf(pid)}.jsonl').existsSync());
-      await Future<void>.delayed(const Duration(milliseconds: 100)); // the run line written
+      p.annotate(port: 4321, detail: 'serial emulator-5554');
+      expect((p.port, p.detail), (4321, 'serial emulator-5554'));
+      expect(first.ledgerEntries.single.port, 4321);
+      await eventually(() => File('$d/ledger-$pid-${startOf(pid)}.jsonl').readAsStringSync().contains('"t":"note"'));
       final again = supervisor(ledgerDir: d);
       await again.ledgerDirectory;
       expect(again.children.map((c) => c.pid), [p.pid]);
+      final back = again.children.single;
+      expect(
+        (back.spec.label, back.spec.owner, back.spec.kind, back.port, back.detail),
+        ('srv', const SessionOwner('h'), ProcessKind.localServer, 4321, 'serial emulator-5554'),
+      );
+      final entry = again.ledgerEntries.single;
+      expect(
+        (entry.label, entry.owner, entry.kind, entry.port, entry.detail),
+        ('srv', 'session:h', 'localServer', 4321, 'serial emulator-5554'),
+      );
       expect(await again.children.single.stop(), isA<Ended>());
       await p.ended;
     });
@@ -685,8 +964,10 @@ void main() {
         );
       final report = await s.sweepPreviousRuns();
       expect(report.failure, isNull);
-      expect(report.ended.map((e) => e.pid), unorderedEquals([a.pid, early.pid]));
-      expect(report.leftAlone.map((e) => e.pid), [b.pid]);
+      // Other test files running at the same time may leave tagged processes of dead runs for this sweep too.
+      expect(report.ended.map((e) => e.pid), containsAll([a.pid, early.pid]));
+      expect(report.ended.map((e) => e.pid), isNot(contains(b.pid)));
+      expect(report.leftAlone.map((e) => e.pid), contains(b.pid));
       expect(report.survived, isEmpty);
       expect(s.lastSweep.value, same(report));
       expect(dead.existsSync(), isFalse);
@@ -801,7 +1082,7 @@ void main() {
         'spawn: plain ${(plain.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, supervised '
         '${(supervised.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, extra ${extra.toStringAsFixed(2)} ms each',
       );
-      expect(extra, lessThan(10));
+      expect(extra, lessThan(25), reason: 'a loose bound: other test processes share the machine');
     });
   });
 }

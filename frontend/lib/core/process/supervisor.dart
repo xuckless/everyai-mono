@@ -63,7 +63,6 @@ final class SpawnSpec {
     this.cwd,
     String? label,
     this.politeStop,
-    this.outlivesApp = false,
     this.port,
     this.detail,
   }) : _label = label; // ignore: prefer_initializing_formals
@@ -83,10 +82,6 @@ final class SpawnSpec {
 
   /// Taken before SIGTERM by every stop of this child.
   final PoliteStop? politeStop;
-
-  /// Started to outlive the app on purpose (open in an editor, reveal a file, the updater's restart): recorded as
-  /// not the app's to end, never stopped at quit, swept or watched.
-  final bool outlivesApp;
 
   /// The port it serves, when it does (the ledger, the Processes view).
   final int? port;
@@ -125,6 +120,7 @@ final class SupervisorHooks {
     this.timings = const StopTimings(),
     this.watchdog = false,
     this.launch = LaunchVia.auto,
+    this.treeEvery = const Duration(seconds: 5),
   });
 
   /// Reads the process table (with environments when [env]); the real one when null.
@@ -138,6 +134,31 @@ final class SupervisorHooks {
   /// Whether this supervisor starts the crash watchdog (the app's own does).
   final bool watchdog;
   final LaunchVia launch;
+
+  /// How often running children's trees are read while nothing else needs the table (the start value of
+  /// [ProcessSupervisor.treeScanInterval]).
+  final Duration treeEvery;
+}
+
+/// How [ProcessSupervisor.launchDetached] went.
+@immutable
+sealed class DetachedLaunch {
+  const DetachedLaunch();
+}
+
+/// Started; the app neither waits on it nor ends it.
+final class Launched extends DetachedLaunch {
+  const Launched(this.pid);
+  final int pid;
+  @override
+  String toString() => 'Launched($pid)';
+}
+
+final class LaunchFailed extends DetachedLaunch {
+  const LaunchFailed(this.error);
+  final String error;
+  @override
+  String toString() => 'LaunchFailed($error)';
 }
 
 /// The supervisor no longer takes children: it is quitting or has quit.
@@ -172,6 +193,14 @@ abstract interface class SupervisedChild {
 
   /// Sends [signal] to its whole process group (or the process alone where it has none). A stop is [stop].
   bool signal(ProcessSignal signal);
+
+  /// Its port and detail: the spec's, or what [annotate] added since.
+  int? get port;
+  String? get detail;
+
+  /// Adds facts learned after the start (a server's port, an emulator's serial): kept, written to the ledger, and
+  /// carried by [ProcessSupervisor.ledgerEntries] and a hot restart's re-adoption. Null leaves a fact as it was.
+  void annotate({String? detail, int? port});
 }
 
 /// A child the supervisor started, with its pipes.
@@ -227,10 +256,32 @@ abstract class ProcessSupervisor {
   /// so a stop or a quit meanwhile ends it once it is started.
   Future<SupervisedProcess> spawn(SpawnSpec spec);
 
-  /// Takes on a process something else started (flutter_pty): listed, in the ledger, stopped like the rest.
-  /// [exitCode] is its exit future when the starter has one; otherwise its end is seen by scans. Throws
-  /// [SupervisorClosed] once quitting.
-  SupervisedChild adopt(int pid, SpawnSpec spec, {Future<int>? exitCode});
+  /// Takes on one of the app's own unreaped children that something else started (flutter_pty, a raw
+  /// `Process.start` not yet migrated): listed, in the ledger, stopped like the rest. [exitCode] is its exit future
+  /// when the starter has one; otherwise its end is seen by scans. Throws [SupervisorClosed] once quitting.
+  ///
+  /// For a pid that could be someone else's by now, give [expectedStart] (its `lstart` token, see [startToken]) or
+  /// [startedWithin] (it must have started that recently): when the process at [pid] doesn't match, or can't be
+  /// checked, the child goes to [ChildDisowned] and is never signalled. A stop meanwhile waits for that check.
+  SupervisedChild adopt(
+    int pid,
+    SpawnSpec spec, {
+    Future<int>? exitCode,
+    String? expectedStart,
+    Duration? startedWithin,
+  });
+
+  /// Starts a program that is meant to outlive the app (open a file in an editor, reveal it, the updater's
+  /// restart): stdio detached (no pipes), none of the `EVERYAI_*` variables (inherited ones are removed too), and
+  /// never listed, stopped, swept or watched; the ledger only notes it. Allowed while quitting.
+  Future<DetachedLaunch> launchDetached(
+    String exe,
+    List<String> args, {
+    Map<String, String> env = const {},
+    bool includeParentEnvironment = true,
+    String? cwd,
+    String? label,
+  });
 
   /// Ends [child]: its polite step if it has one, SIGTERM to its group, its tree and what was seen below it, a
   /// wait (ended early once all are gone), SIGKILL to what is left, then a check by pid + start time. A second stop
@@ -242,12 +293,19 @@ abstract class ProcessSupervisor {
   Future<KillOutcome> stopOwner(ProcessOwner owner, {bool tagged = true, bool descendants = true});
 
   /// Ends [pid] and its tree like [stop] (a listed child is stopped as such). For a process the app didn't start
-  /// through the supervisor; [termWait] is the SIGTERM grace.
-  Future<KillOutcome> killTree(int pid, {Duration? termWait});
+  /// through the supervisor; [termWait] is the SIGTERM grace. With [expectedStart] (its `lstart` token), a pid
+  /// that is gone or now another process's start time is not signalled at all: `Ended([], skipped: why)`.
+  Future<KillOutcome> killTree(int pid, {Duration? termWait, String? expectedStart});
 
   /// Runs [exe] to its end, or until [timeout] / [cancel], when it is stopped (verified) with its whole group.
   /// Output past [maxOutputBytes] (per pipe) is read and dropped ([RunOutput.truncated]). When the program has
   /// exited but something it started still holds its pipes, that is stopped and noted ([Finished.leftRunning]).
+  ///
+  /// Never throws: a program that can't be started is [StartFailed]; while quitting or after, [Refused], except a
+  /// quit step ([duringQuit], while [stopAll] runs; it is ended by the end of [stopAll] like everything else).
+  ///
+  /// [exe] is a program, never a shell line: for shell syntax pass `/bin/sh` with `['-c', line]` yourself
+  /// (`cmd.exe` with `['/c', line]` on Windows).
   ///
   /// There is no synchronous version: a blocking run can't be bounded or killed from the same isolate, so the two
   /// `Process.runSync` sites (webview_browser.dart's pid checks) become async or use [scan].
@@ -267,6 +325,7 @@ abstract class ProcessSupervisor {
     Encoding stderrEncoding = systemEncoding,
     int? maxOutputBytes,
     String? label,
+    bool duringQuit = false,
   });
 
   /// The process table (shared: concurrent callers get one read).
@@ -279,10 +338,13 @@ abstract class ProcessSupervisor {
   /// The report of the sweep this run did, once done.
   ValueListenable<SweepReport?> get lastSweep;
 
-  /// Ends every listed child (the app quits) with [timings] and writes `quit.json`: what ended, what survived.
-  /// The ledger is deleted when everything ended, and kept (for the next launch's sweep) when not. Afterwards
-  /// spawns and adoptions are refused ([SupervisorClosed]).
-  Future<QuitReport> stopAll({StopTimings timings = StopTimings.quit});
+  /// Quits: from the call on, new spawns and adoptions are refused ([SupervisorClosed]; [runBounded] gives
+  /// [Refused]). Then [before] runs, in order: the quit steps (goodbye commands through
+  /// `runBounded(duringQuit: true)`, a server's own stop, closing a browser), each awaited, a failure logged and
+  /// passed over. Then every listed child is ended with [timings] (again while new quit-step children appear), and
+  /// `quit.json` says what ended and what survived. The ledger is deleted when everything ended, and kept (for the
+  /// next launch's sweep) when not. A second call joins the first, and once closed returns its report.
+  Future<QuitReport> stopAll({StopTimings timings = StopTimings.quit, List<Future<void> Function()> before = const []});
 
   /// The children still listed (live or not closed).
   List<SupervisedChild> get children;
@@ -295,4 +357,15 @@ abstract class ProcessSupervisor {
 
   /// The listed child with [pid].
   SupervisedChild? byPid(int pid);
+
+  /// How often running children's trees are read while nothing else needs the table (5 s unless the hooks say
+  /// otherwise). Something that wants fresher trees (a budget, a view) can ask for less.
+  Duration get treeScanInterval;
+  set treeScanInterval(Duration every);
+
+  /// What this run's ledger names as still running, read-only (pid, start, owner, kind, port, detail).
+  List<LedgerEntry> get ledgerEntries;
+
+  /// What dead runs' ledgers named when this run's sweep read them (whether or not it was still running).
+  List<LedgerEntry> get previousRunEntries;
 }

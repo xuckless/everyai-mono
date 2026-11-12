@@ -28,7 +28,7 @@ void track(int pid, {required String label, required String executable, required
 ChildPhase? phaseOf(int pid) => switch (_sup.byPid(pid)?.state) {
   ChildStarting() || ChildLaunched() || ChildRunning() || ChildUnverified() => ChildPhase.running,
   ChildTerming() || ChildKilling() || ChildNotClosed() => ChildPhase.stopping,
-  ChildExited() || ChildStartFailed() || null => null,
+  ChildExited() || ChildStartFailed() || ChildDisowned() || null => null,
 };
 
 Map<int, String> get tracked => {for (final c in _sup.children) ?c.pid: c.spec.label};

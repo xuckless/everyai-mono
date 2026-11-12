@@ -27,6 +27,7 @@ sealed class ProcessOwner {
   static ProcessOwner parse(String key) => switch (key) {
     'app' => const AppOwner(),
     _ when key.startsWith('session:') => SessionOwner(key.substring(8)),
+    _ when key.startsWith('terminal:') => TerminalOwner(key.substring(9)),
     _ when key.startsWith('probe:') => ProbeOwner(key.substring(6)),
     _ => ProbeOwner(key),
   };
@@ -51,6 +52,17 @@ final class SessionOwner extends ProcessOwner {
   final String id;
   @override
   String get key => 'session:$id';
+}
+
+/// The user's own terminal tab beside session [sessionId]: the app's to end at quit (and the sweep's and the
+/// watchdog's after a crash), but not the session's agent's. Tagged with [appEnvVar] and [ownerEnvVar]
+/// (`terminal:<id>`), never [sessionTagEnvVar], so `stopOwner(SessionOwner(id))` (an agent's Stop) leaves it alone;
+/// deleting the session ends it with `stopOwner(TerminalOwner(id))`.
+final class TerminalOwner extends ProcessOwner {
+  const TerminalOwner(this.sessionId);
+  final String sessionId;
+  @override
+  String get key => 'terminal:$sessionId';
 }
 
 /// A short look at something (a CLI's version, a scan).
@@ -231,24 +243,23 @@ final class Listed extends ProcessScan {
 sealed class KillOutcome {
   const KillOutcome();
 
-  /// One outcome for several stops: anything that survived wins, then a scan that failed, then processes that
-  /// couldn't be accounted for, else what ended.
+  /// One outcome for several stops: anything that survived wins, then a scan that failed, else what ended (with
+  /// every [Ended.maybeEscaped] kept).
   static KillOutcome merge(Iterable<KillOutcome> outcomes) {
     final ended = <int>{};
     final survived = <int>{};
-    final unaccounted = <int>{};
+    final escaped = <int>{};
+    final skips = <String>[];
     final reasons = <String>[];
     final failed = <String>[];
     for (final o in outcomes) {
       switch (o) {
-        case Ended(:final pids):
+        case Ended(:final pids, :final maybeEscaped, :final skipped):
           ended.addAll(pids);
+          escaped.addAll(maybeEscaped);
+          if (skipped != null) skips.add(skipped);
         case Survived(:final pids, :final reason, ended: final e):
           survived.addAll(pids);
-          ended.addAll(e);
-          if (!reasons.contains(reason)) reasons.add(reason);
-        case Unaccounted(:final candidates, :final reason, ended: final e):
-          unaccounted.addAll(candidates);
           ended.addAll(e);
           if (!reasons.contains(reason)) reasons.add(reason);
         case ScanFailed(:final why):
@@ -258,19 +269,36 @@ sealed class KillOutcome {
     List<int> sorted(Set<int> s) => s.toList()..sort();
     if (survived.isNotEmpty) return Survived(sorted(survived), reasons.join('; '), ended: sorted(ended));
     if (failed.isNotEmpty) return ScanFailed(failed.join('; '));
-    if (unaccounted.isNotEmpty) return Unaccounted(sorted(unaccounted), reasons.join('; '), ended: sorted(ended));
-    return Ended(sorted(ended));
+    return Ended(
+      sorted(ended),
+      maybeEscaped: sorted(escaped.difference(ended)),
+      skipped: skips.isEmpty ? null : skips.join('; '),
+    );
   }
 }
 
-/// Everything it signalled is gone (checked by pid + start time), and nothing it may have started is unaccounted for.
+/// Everything it signalled is gone (checked by pid + start time).
 final class Ended extends KillOutcome {
-  const Ended(this.pids);
+  const Ended(this.pids, {this.maybeEscaped = const [], this.skipped});
 
   /// What it ended (empty when nothing was running).
   final List<int> pids;
+
+  /// Processes that may have been started by it and left its tree unseen (macOS: orphaned during its life, the
+  /// environment hidden, so no tag can say), listed only when there is evidence of an escape (something below it
+  /// vanished between looks). Not touched; informational, never a reason to call the stop unclean.
+  final List<int> maybeEscaped;
+
+  /// Why nothing (or not everything) was signalled because it isn't the process asked for: the pid is gone, or
+  /// now another process's (a different start time). Null when nothing was skipped.
+  final String? skipped;
   @override
-  String toString() => 'Ended($pids)';
+  String toString() => [
+    'Ended($pids',
+    if (maybeEscaped.isNotEmpty) ', maybe escaped $maybeEscaped',
+    if (skipped != null) ', skipped: $skipped',
+    ')',
+  ].join();
 }
 
 /// These are still running after SIGKILL (or `taskkill /F`).
@@ -283,17 +311,6 @@ final class Survived extends KillOutcome {
   final List<int> ended;
   @override
   String toString() => 'Survived($pids: $reason; ended $ended)';
-}
-
-/// What it could see ended, but these processes may have been started by the child and left its tree (orphaned
-/// while it ran, environment hidden so their tags can't be read): they were not touched, and the end is not proven.
-final class Unaccounted extends KillOutcome {
-  const Unaccounted(this.candidates, this.reason, {this.ended = const []});
-  final List<int> candidates;
-  final String reason;
-  final List<int> ended;
-  @override
-  String toString() => 'Unaccounted($candidates: $reason; ended $ended)';
 }
 
 /// The process table couldn't be read, so nothing can be said about what is left: never "nothing running". Both a
@@ -356,36 +373,59 @@ final class Finished extends RunResult {
 const Encoding systemEncodingLike = utf8;
 
 final class TimedOut extends RunResult {
-  const TimedOut(this.kill, this.out, this.err, {this.encoding = systemEncodingLike});
+  const TimedOut(
+    this.kill,
+    this.out,
+    this.err, {
+    this.stdoutEncoding = systemEncodingLike,
+    this.stderrEncoding = systemEncodingLike,
+  });
   final KillOutcome kill;
 
   /// What it wrote before it was stopped.
   final RunOutput out;
   final RunOutput err;
-  final Encoding encoding;
-  String get stdout => out.text(encoding);
-  String get stderr => err.text(encoding);
+  final Encoding stdoutEncoding;
+  final Encoding stderrEncoding;
+  String get stdout => out.text(stdoutEncoding);
+  String get stderr => err.text(stderrEncoding);
   @override
   String toString() => 'TimedOut($kill)';
 }
 
 final class Cancelled extends RunResult {
-  const Cancelled(this.kill, this.out, this.err, {this.encoding = systemEncodingLike});
+  const Cancelled(
+    this.kill,
+    this.out,
+    this.err, {
+    this.stdoutEncoding = systemEncodingLike,
+    this.stderrEncoding = systemEncodingLike,
+  });
   final KillOutcome kill;
   final RunOutput out;
   final RunOutput err;
-  final Encoding encoding;
-  String get stdout => out.text(encoding);
-  String get stderr => err.text(encoding);
+  final Encoding stdoutEncoding;
+  final Encoding stderrEncoding;
+  String get stdout => out.text(stdoutEncoding);
+  String get stderr => err.text(stderrEncoding);
   @override
   String toString() => 'Cancelled($kill)';
 }
 
+/// The program couldn't be started (missing, not executable, the exec failed).
 final class StartFailed extends RunResult {
   const StartFailed(this.error);
   final String error;
   @override
   String toString() => 'StartFailed($error)';
+}
+
+/// Not started: the supervisor is quitting or has quit (and the run wasn't a quit step).
+final class Refused extends RunResult {
+  const Refused(this.reason);
+  final String reason;
+  @override
+  String toString() => 'Refused($reason)';
 }
 
 // ------------------------------------------------------------------ sweep and quit reports
@@ -440,17 +480,19 @@ final class QuitReport {
     'at': at.toUtc().toIso8601String(),
     'ended': [
       for (final e in entries)
-        if (e.outcome case Ended(:final pids)) {'id': e.id, 'label': e.label, 'owner': e.owner, 'pids': pids},
+        if (e.outcome case Ended(:final pids, :final maybeEscaped))
+          {
+            'id': e.id,
+            'label': e.label,
+            'owner': e.owner,
+            'pids': pids,
+            if (maybeEscaped.isNotEmpty) 'maybeEscaped': maybeEscaped,
+          },
     ],
     'survived': [
       for (final e in entries)
         if (e.outcome case Survived(:final pids, :final reason))
           {'id': e.id, 'label': e.label, 'owner': e.owner, 'pids': pids, 'reason': reason},
-    ],
-    'unaccounted': [
-      for (final e in entries)
-        if (e.outcome case Unaccounted(:final candidates, :final reason))
-          {'id': e.id, 'label': e.label, 'owner': e.owner, 'pids': candidates, 'reason': reason},
     ],
     'scanFailed': [
       for (final e in entries)
@@ -579,7 +621,6 @@ sealed class LedgerLine {
           owner: owner,
           kind: kind,
           label: label,
-          outlivesApp: j['outlives'] == true,
           port: j['port'] is int ? j['port'] as int : null,
           detail: j['detail'] is String ? j['detail'] as String : null,
         ),
@@ -593,6 +634,17 @@ sealed class LedgerLine {
         final ident? => LedgerRun(id: id, identity: ident),
         null => null,
       },
+      {'t': 'detached', 'pid': final int pid, 'exe': final String exe, 'label': final String label} => LedgerDetached(
+        pid: pid,
+        exe: exe,
+        label: label,
+        at: DateTime.fromMillisecondsSinceEpoch(j['at'] is int ? j['at'] as int : 0),
+      ),
+      {'t': 'note', 'id': final int id} => LedgerNote(
+        id: id,
+        port: j['port'] is int ? j['port'] as int : null,
+        detail: j['detail'] is String ? j['detail'] as String : null,
+      ),
       {'t': 'tree', 'id': final int id} => LedgerTree(id: id, processes: ids(j['procs'])),
       {'t': 'state', 'id': final int id, 'state': final String state} => LedgerState(id: id, state: state),
       {'t': 'exit', 'id': final int id} => LedgerExit(id: id, code: j['code'] is int ? j['code'] as int : null),
@@ -623,7 +675,6 @@ final class LedgerSpawn extends LedgerLine {
     required this.owner,
     required this.kind,
     required this.label,
-    this.outlivesApp = false,
     this.port,
     this.detail,
   });
@@ -632,9 +683,6 @@ final class LedgerSpawn extends LedgerLine {
   final String owner;
   final String kind;
   final String label;
-
-  /// Started to outlive the app on purpose (an editor, a file reveal, the updater's restart): never swept.
-  final bool outlivesApp;
   final int? port;
   final String? detail;
   @override
@@ -645,10 +693,38 @@ final class LedgerSpawn extends LedgerLine {
     'owner': owner,
     'kind': kind,
     'label': label,
-    if (outlivesApp) 'outlives': true,
     'port': ?port,
     'detail': ?detail,
   };
+}
+
+/// A program started to outlive the app ([ProcessSupervisor.launchDetached]): for the record only. Nothing reads it
+/// back to act on it (no sweep, watchdog, stop or quit).
+final class LedgerDetached extends LedgerLine {
+  const LedgerDetached({required this.pid, required this.exe, required this.label, required this.at});
+  final int pid;
+  final String exe;
+  final String label;
+  final DateTime at;
+  @override
+  Map<String, Object?> toJson() => {
+    't': 'detached',
+    'pid': pid,
+    'exe': exe,
+    'label': label,
+    'at': at.millisecondsSinceEpoch,
+  };
+}
+
+/// Facts learned after the start ([SupervisedChild.annotate]): a port, a detail (an emulator's serial). Replace the
+/// spawn line's.
+final class LedgerNote extends LedgerLine {
+  const LedgerNote({required this.id, this.port, this.detail});
+  final int id;
+  final int? port;
+  final String? detail;
+  @override
+  Map<String, Object?> toJson() => {'t': 'note', 'id': id, 'port': ?port, 'detail': ?detail};
 }
 
 /// Its pid, at once (before its start time is read).
@@ -725,7 +801,43 @@ final class LedgerNotClosed extends LedgerLine {
 typedef LedgerProcess = ({ProcessIdentity id, DateTime? at});
 
 /// What a ledger says is still running, by child: the child and what its tree held.
-typedef LedgerLive = ({int id, String label, String owner, List<LedgerProcess> processes});
+typedef LedgerLive = ({
+  int id,
+  String label,
+  String owner,
+  String kind,
+  int? port,
+  String? detail,
+  List<LedgerProcess> processes,
+});
+
+/// One process a ledger names, read-only (for an ownership check: is this pid one EveryAI started?).
+typedef LedgerEntry = ({
+  int pid,
+  String start,
+  DateTime? launchedAt,
+  String label,
+  String owner,
+  String kind,
+  int? port,
+  String? detail,
+});
+
+/// The processes of [live], one entry each.
+List<LedgerEntry> ledgerEntriesOf(Iterable<LedgerLive> live) => [
+  for (final c in live)
+    for (final p in c.processes)
+      (
+        pid: p.id.pid,
+        start: p.id.start,
+        launchedAt: p.at,
+        label: c.label,
+        owner: c.owner,
+        kind: c.kind,
+        port: c.port,
+        detail: c.detail,
+      ),
+];
 
 /// A ledger read back. Ids are this ledger's own (one run each); never mix two ledgers' ids.
 @immutable
@@ -743,6 +855,7 @@ final class LedgerFold {
     LedgerApp? app;
     var lastId = 0;
     final spawns = <int, LedgerSpawn>{};
+    final notes = <int, ({int? port, String? detail})>{};
     final self = <int, LedgerProcess>{};
     final trees = <int, List<ProcessIdentity>>{};
     final order = <int>[];
@@ -776,7 +889,10 @@ final class LedgerFold {
           see(id);
           self.remove(id);
           trees[id] = [...?trees[id], ...survivors];
-        case LedgerState() || null:
+        case LedgerNote(:final id, :final port, :final detail):
+          final was = notes[id];
+          notes[id] = (port: port ?? was?.port, detail: detail ?? was?.detail);
+        case LedgerState() || LedgerDetached() || null:
           break;
       }
     }
@@ -785,10 +901,17 @@ final class LedgerFold {
       lastId: lastId,
       live: [
         for (final id in order)
-          if (!(spawns[id]?.outlivesApp ?? false))
-            if ([?self[id], for (final t in trees[id] ?? const <ProcessIdentity>[]) (id: t, at: null)] case final p
-                when p.isNotEmpty)
-              (id: id, label: spawns[id]?.label ?? '?', owner: spawns[id]?.owner ?? 'app', processes: p),
+          if ([?self[id], for (final t in trees[id] ?? const <ProcessIdentity>[]) (id: t, at: null)] case final p
+              when p.isNotEmpty)
+            (
+              id: id,
+              label: spawns[id]?.label ?? '?',
+              owner: spawns[id]?.owner ?? 'app',
+              kind: spawns[id]?.kind ?? 'helper',
+              port: notes[id]?.port ?? spawns[id]?.port,
+              detail: notes[id]?.detail ?? spawns[id]?.detail,
+              processes: p,
+            ),
       ],
     );
   }
