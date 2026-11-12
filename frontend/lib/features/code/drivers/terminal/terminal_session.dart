@@ -4,7 +4,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:xterm/xterm.dart';
+
+import '../../../../core/process/process_model.dart' show Ended;
 
 import '../../domain/agent_mode.dart';
 import '../../domain/compaction.dart' show userTextOf;
@@ -181,7 +184,11 @@ final class TerminalSession implements HarnessSession {
     _closed = true;
     unregisterDriverRoot(sessionTag, pty.pid);
     untrackDriverClose(close);
-    if (!_exitedAlready) pty.kill();
+    if (!_exitedAlready) {
+      // Verified; one not closed is logged loudly (and stays listed by the supervisor).
+      final stop = await pty.kill();
+      if (stop is! Ended) debugPrint('NOT CLOSED: $label (${pty.pid}): $stop');
+    }
     if (!_drawn.isCompleted) _drawn.complete();
     await _output.cancel();
     await _live.close();

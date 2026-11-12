@@ -3,6 +3,9 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/config/version.dart';
 import '../../../../core/security/security_rules.dart';
 import '../../git/git_service_io.dart' show guardedEnv;
@@ -168,19 +171,30 @@ fi
   try {
     tmp = Directory.systemTemp.createTempSync('everyai-env');
     final file = File('${tmp.path}/probe.sh')..writeAsStringSync(script);
-    final res = await Process.run(
+    // Bounded: a probe that hangs (a slow `git status` on a huge repo) is stopped with what it started, verified.
+    final res = await ProcessSupervisor.instance.runBounded(
       env.shell,
       [file.path.replaceAll('\\', '/')],
+      timeout: const Duration(seconds: 8),
       // Its git calls are EveryAI's own: nothing the repository defines runs (git_guard.dart).
-      environment: await guardedEnv(workingDir, base: env.env),
-      workingDirectory: workingDir,
-    ).timeout(const Duration(seconds: 8));
-    for (final line in (res.stdout as String).split('\n')) {
-      final eq = line.indexOf('=');
-      if (eq > 0) facts[line.substring(0, eq)] = line.substring(eq + 1).trim();
+      env: await guardedEnv(workingDir, base: env.env),
+      cwd: workingDir,
+      owner: const ProbeOwner('environment'),
+      maxOutputBytes: 256 * 1024,
+      label: 'environment probe',
+    );
+    switch (res) {
+      case Finished(:final stdout):
+        for (final line in stdout.split('\n')) {
+          final eq = line.indexOf('=');
+          if (eq > 0) facts[line.substring(0, eq)] = line.substring(eq + 1).trim();
+        }
+      default:
+        // Without the probe the block still names the folder and shell.
+        debugPrint('The environment probe in $workingDir did not finish: $res');
     }
-  } on Object {
-    // Without the probe the block still names the folder and shell.
+  } on FileSystemException catch (e) {
+    debugPrint('The environment probe could not be written: $e');
   } finally {
     try {
       tmp?.deleteSync(recursive: true);

@@ -67,6 +67,8 @@ Future<String?> openAsText(String path) async {
     // Any execute bit.
     final cmd = textOpenCommand(path, os: Platform.operatingSystem, executable: stat.mode & 0x49 != 0);
     if (cmd == null) return "This file can't be opened as text here.";
+    // Meant to outlive the app (the user's editor).
+    // TODO(supervisor): launchDetached
     await Process.start(cmd.exe, cmd.args, mode: ProcessStartMode.detached);
     return null;
   } on Object catch (e) {

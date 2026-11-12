@@ -2,6 +2,7 @@
 
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import 'tools_io.dart';
 
@@ -59,12 +60,21 @@ bool _hasPlans(String root) {
 /// Whether git tracks [path] in [root]'s repository: a memory file that came
 /// with a cloned repository is someone else's text, so it isn't loaded.
 Future<bool> _tracked(String root, String path) async {
-  try {
-    final r = await Process.run('git', ['ls-files', '--error-unmatch', path], workingDirectory: root);
-    return r.exitCode == 0;
-  } on Object {
-    return false;
-  }
+  final r = await ProcessSupervisor.instance.runBounded(
+    'git',
+    ['ls-files', '--error-unmatch', path],
+    timeout: const Duration(seconds: 10),
+    cwd: root,
+    owner: const ProbeOwner('project-notes'),
+    maxOutputBytes: 64 * 1024,
+  );
+  return switch (r) {
+    Finished(:final code) => code == 0,
+    // No git here: nothing can track it.
+    StartFailed() => false,
+    // It hung or the app quits: unknown, so it counts as the repository's (not loaded).
+    _ => true,
+  };
 }
 
 /// The block a new session's system prompt gets: the project memory (when

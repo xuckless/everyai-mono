@@ -2363,7 +2363,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// What Stop ends a session's leftover processes with (a test sees the tags).
   @visibleForTesting
-  static Future<List<int>> Function({required String tag, required String workingDir, required bool ownsDir})
+  static Future<KillOutcome> Function({required String tag, required String workingDir, required bool ownsDir})
   killProcesses = killSessionProcesses;
 
   /// The longest one step of a workflow run's shutdown may take (see [WorkflowEngine.stepTimeout]).

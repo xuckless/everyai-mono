@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import '../../../core/process/supervisor.dart';
 import '../../code/harness/everyai/script_io.dart' show findDeno;
 import 'svg_script.dart';
 
@@ -45,9 +46,9 @@ Future<SvgScriptRun> runSvgScript(String code) async {
         'imports': {'file:///': 'https://blocked.invalid/', '/': 'https://blocked.invalid/', own: own},
       }),
     );
-    final process = await Process.start(
+    final r = await ProcessSupervisor.instance.runBounded(
       deno,
-      [
+      const [
         'run',
         '--no-prompt',
         '--no-config',
@@ -59,38 +60,37 @@ Future<SvgScriptRun> runSvgScript(String code) async {
         '--import-map=imports.json',
         'prelude.ts',
       ],
-      workingDirectory: dir.path,
-      environment: {'DENO_DIR': '${dir.path}/.cache', 'NO_COLOR': '1'},
+      timeout: _timeout,
+      cwd: dir.path,
+      env: {'DENO_DIR': '${dir.path}/.cache', 'NO_COLOR': '1'},
       includeParentEnvironment: false,
+      kind: ProcessKind.script,
+      owner: const ProbeOwner('svg_script'),
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+      maxOutputBytes: _maxOutput,
+      label: 'svg_script',
     );
-    unawaited(process.stdin.close());
-    final out = StringBuffer();
-    final err = StringBuffer();
-    void keep(StringBuffer to, String chunk) {
-      if (to.length < _maxOutput) to.write(chunk);
+    final String text;
+    final String? failed;
+    switch (r) {
+      case Finished(:final code, :final stdout, :final stderr):
+        text = stdout;
+        failed = code != 0 ? _cleanError(stderr, dir.path) : null;
+      case TimedOut(:final kill, :final stdout):
+        text = stdout;
+        failed =
+            'it ran past ${_timeout.inSeconds} s and was stopped'
+            '${kill is Ended ? '' : ', but it is not closed ($kill)'}.';
+      default:
+        text = '';
+        failed = "it didn't run: $r";
     }
-
-    final stdoutDone = process.stdout.transform(utf8.decoder).forEach((c) => keep(out, c));
-    final stderrDone = process.stderr.transform(utf8.decoder).forEach((c) => keep(err, c));
-    final code0 = await process.exitCode.timeout(
-      _timeout,
-      onTimeout: () {
-        process.kill(ProcessSignal.sigkill);
-        return -1;
-      },
-    );
-    await Future.wait([stdoutDone, stderrDone]).timeout(const Duration(seconds: 2), onTimeout: () => const []);
-    final text = out.toString();
     // Only the last <svg> printed counts.
     final svg = RegExp(r'<svg[\s\S]*?</svg>').allMatches(text).lastOrNull?.group(0);
     final printed = svg == null ? text : text.replaceFirst(svg, '[the SVG]');
-    final error = code0 == -1
-        ? 'it ran past ${_timeout.inSeconds} s and was stopped.'
-        : code0 != 0
-        ? _cleanError(err.toString(), dir.path)
-        : svg == null
-        ? 'it printed no <svg>…</svg>; print the finished SVG with console.log.'
-        : null;
+    final error =
+        failed ?? (svg == null ? 'it printed no <svg>…</svg>; print the finished SVG with console.log.' : null);
     return (svg: svg, output: printed.trim(), error: error);
   } finally {
     unawaited(dir.delete(recursive: true).catchError((Object _) => dir));

@@ -27,9 +27,9 @@ class ProcessesPane extends ConsumerWidget {
 
   final CodeSessionInfo session;
 
-  void _kill(BuildContext context, WidgetRef ref, SessionProcess p, {bool force = false}) {
-    final ok = killProcess(p.pid, force: force);
-    showAdaptiveToast(context, ok ? '${force ? 'Killed' : 'Stopped'} ${p.name} (${p.pid})' : "Couldn't stop ${p.pid}");
+  Future<void> _kill(BuildContext context, WidgetRef ref, SessionProcess p, {bool force = false}) async {
+    final out = await killProcess(p.pid, force: force);
+    if (context.mounted) showAdaptiveToast(context, killToast(out, p.name, p.pid, force: force));
     ref.invalidate(sessionProcessesProvider(session.id));
   }
 
@@ -110,7 +110,9 @@ class ProcessesPane extends ConsumerWidget {
             children: [
               Expanded(
                 child: Text(
-                  snapshot.isLoading && snapshot.value == null && shells.isEmpty
+                  snapshot.error is ProcessesUnreadableError
+                      ? "Couldn't read processes"
+                      : snapshot.isLoading && snapshot.value == null && shells.isEmpty
                       ? 'Looking…'
                       : '${running.length + others.length} running · '
                             '${list.fold(0, (n, p) => n + p.ports.length)} listening',

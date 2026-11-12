@@ -1,3 +1,4 @@
+import '../../../core/process/supervisor.dart' show ProcessOwner;
 import 'pty.dart';
 
 bool get shellSupported => false;
@@ -7,6 +8,7 @@ ShellPty? startShell({
   int rows = 24,
   int columns = 80,
   Map<String, String> env = const {},
+  ProcessOwner? owner,
 }) => null;
 
 Future<ShellPty?> startProgram({

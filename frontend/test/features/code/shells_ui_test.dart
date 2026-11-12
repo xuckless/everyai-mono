@@ -41,7 +41,8 @@ ShellEntry _entry(
 void main() {
   test('processes sit under the shell that started them; the rest are others', () {
     final shell = _entry('a/bg_1', pid: 100);
-    final ended = _entry('a/bg_2', pid: 200)..endedAt = DateTime.now();
+    final ended = _entry('a/bg_2', pid: 200);
+    ShellRegistry.forTest().setState(ended, ShellExited(0, DateTime.now()));
     final procs = [
       const SessionProcess(pid: 100, ppid: 1, command: 'zsh script', origin: ProcessOrigin.agent),
       const SessionProcess(pid: 101, ppid: 100, command: 'node vite', origin: ProcessOrigin.agent),
@@ -69,12 +70,11 @@ void main() {
     );
     final now = DateTime.now();
     final running = _entry('pane/bg_1', pid: 100, session: 'pane', command: 'npm run dev');
-    final older = _entry('pane/cmd_1', session: 'pane', background: false, command: 'dart test')
-      ..exitCode = 1
-      ..endedAt = now.subtract(const Duration(minutes: 5));
-    final newer = _entry('pane/bg_2', session: 'pane', command: 'flutter build')
-      ..exitCode = 0
-      ..endedAt = now.subtract(const Duration(minutes: 1));
+    final older = _entry('pane/cmd_1', session: 'pane', background: false, command: 'dart test');
+    final newer = _entry('pane/bg_2', session: 'pane', command: 'flutter build');
+    ShellRegistry.forTest()
+      ..setState(older, ShellExited(1, now.subtract(const Duration(minutes: 5))))
+      ..setState(newer, ShellExited(0, now.subtract(const Duration(minutes: 1))));
     final prefs = Preferences.inMemory();
     Widget pane() => ProviderScope(
       overrides: [

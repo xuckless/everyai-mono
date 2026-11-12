@@ -1,15 +1,16 @@
-import 'session_processes.dart' show ProcessTable;
+import '../../../core/process/process_model.dart' show KillOutcome, ScanFailed;
+import 'session_processes.dart' show SessionScan, SessionScanFailed;
 
-Future<List<int>> killSessionProcesses({
+Future<KillOutcome> killSessionProcesses({
   required String tag,
   required String workingDir,
   required bool ownsDir,
   Set<int> roots = const {},
-}) async => const [];
+}) async => const ScanFailed('processes are not listed on this platform');
 
-Future<(ProcessTable, List<int>)?> findSessionProcesses({
+Future<SessionScan> findSessionProcesses({
   required String tag,
   required String workingDir,
   required bool ownsDir,
   Set<int> roots = const {},
-}) async => null;
+}) async => const SessionScanFailed('processes are not listed on this platform');

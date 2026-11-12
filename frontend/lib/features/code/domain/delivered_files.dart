@@ -25,5 +25,7 @@ String resolveDelivered(String workingDir, String path) {
 
 Future<void> revealDelivered(String path) async {
   final c = revealCommand(path);
+  // The file manager it opens isn't the app's to end.
+  // TODO(supervisor): launchDetached
   await Process.run(c.exe, c.args);
 }

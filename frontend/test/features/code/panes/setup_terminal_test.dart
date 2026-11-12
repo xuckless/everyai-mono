@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:every_ai/features/code/environments/exec_env.dart';
+import 'package:every_ai/core/process/supervisor.dart' show Ended, SupervisedChild;
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:every_ai/features/code/panes/setup_terminal.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,7 +23,13 @@ final class _Pty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => kills++;
+  Future<KillOutcome> kill() async {
+    kills++;
+    return const Ended([]);
+  }
+
+  @override
+  SupervisedChild get child => throw UnimplementedError('not supervised (a fake)');
   void emit(String s) => _out.add(Uint8List.fromList(utf8.encode(s)));
 }
 

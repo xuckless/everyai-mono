@@ -4,13 +4,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:http/http.dart' as http;
 
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import '../../domain/mcp_tool_check.dart';
 import 'shell_io.dart';
 import 'tools_io.dart';
-import '../../../../core/process/child_processes.dart';
 
 /// One MCP server a session talks to: started over stdio (a local command)
 /// or reached over streamable HTTP, as `mcp_config` describes it (see
@@ -24,7 +25,13 @@ abstract class McpConnection {
   /// The server's tools, as `tools/list` gave them.
   List<Map<String, Object?>> tools = const [];
 
-  static Future<McpConnection> open(String name, Map<String, Object?> config, {http.Client? client}) async {
+  /// Connects to [name]; a local server is started for [owner] (the session it serves).
+  static Future<McpConnection> open(
+    String name,
+    Map<String, Object?> config, {
+    http.Client? client,
+    ProcessOwner owner = const AppOwner(),
+  }) async {
     final McpConnection c;
     if (config['url'] case final String url when url.isNotEmpty) {
       if (config['transport'] == 'sse') {
@@ -41,6 +48,7 @@ abstract class McpConnection {
         command,
         [for (final a in config['args'] as List<Object?>? ?? const []) '$a'],
         {for (final e in (config['env'] as Map<String, Object?>? ?? const {}).entries) e.key: '${e.value}'},
+        owner,
       );
     }
     try {
@@ -113,7 +121,8 @@ abstract class McpConnection {
 
   Future<void> _notify(String method);
 
-  Future<void> close();
+  /// Ends the connection; a local server is stopped (verified, with its group and tree): what came of it.
+  Future<KillOutcome> close();
 }
 
 final class McpError implements Exception {
@@ -135,7 +144,6 @@ Map<String, Object?> _resultOf(Map<String, Object?> reply) {
 /// the user's login-shell environment so `npx` and friends resolve.
 final class _StdioMcp extends McpConnection {
   _StdioMcp._(super.name, this._process) {
-    unawaited(_process.exitCode.then((_) => _exited = true));
     _process.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(_line, onDone: _closed);
     // Drained so a chatty server can't block on a full pipe; the tail helps errors.
     _process.stderr.transform(utf8.decoder).listen((s) {
@@ -149,29 +157,41 @@ final class _StdioMcp extends McpConnection {
     });
   }
 
-  final Process _process;
+  final SupervisedProcess _process;
   final _pending = <int, Completer<Map<String, Object?>>>{};
   final _stderr = StringBuffer();
   var _done = false;
-  var _exited = false;
-  var _shut = false;
+  Future<KillOutcome>? _closing;
 
-  static Future<_StdioMcp> start(String name, String command, List<String> args, Map<String, String> env) async {
+  static Future<_StdioMcp> start(
+    String name,
+    String command,
+    List<String> args,
+    Map<String, String> env,
+    ProcessOwner owner,
+  ) async {
     final shellEnv = await ShellEnv.load();
-    final process = await Process.start(
-      command,
-      args,
-      environment: {...shellEnv.env, ...env},
-      // Resolves the command on the login shell's PATH.
-      runInShell: true,
-    );
-    // Through a shell: the watchdog ends the shell's children too.
-    ChildProcesses.track(
-      process.pid,
-      label: 'MCP server $name',
-      executable: Platform.isWindows ? 'cmd.exe' : 'sh',
-      exited: process.exitCode,
-    );
+    final (exe, argv) = mcpLaunch(command, args, windows: Platform.isWindows);
+    final SupervisedProcess process;
+    try {
+      process = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: owner,
+          kind: ProcessKind.mcp,
+          // Looked up on the login shell's PATH (the supervisor resolves it there, never through a shell).
+          exe: exe,
+          args: argv,
+          env: {...shellEnv.env, ...env},
+          label: 'MCP server $name',
+          // A stdio server ends when its input closes; then SIGTERM.
+          politeStop: PoliteStop((c) => (c as SupervisedProcess).stdin.close()),
+        ),
+      );
+    } on SupervisorClosed catch (e) {
+      throw McpError('$name was not started: $e');
+    } on ProcessException catch (e) {
+      throw McpError("$name didn't start: ${e.message} (${e.executable})");
+    }
     return _StdioMcp._(name, process);
   }
 
@@ -229,14 +249,24 @@ final class _StdioMcp extends McpConnection {
   @override
   Future<void> _notify(String method) async => _write({'jsonrpc': '2.0', 'method': method});
 
+  /// Stops the server, its group and its tree through the supervisor (which knows when it exited, so a reused pid
+  /// is never signalled); a second close joins the first.
   @override
-  Future<void> close() async {
-    if (_shut) return;
-    _shut = _done = true;
-    // A server that closed its output may still run; one that exited may have
-    // left its pid to another program.
-    if (!_exited) await killTree(_process.pid);
-  }
+  Future<KillOutcome> close() => _closing ??= () async {
+    _done = true;
+    final out = await _process.stop();
+    if (out is! Ended) debugPrint('NOT CLOSED: MCP server $name: $out');
+    return out;
+  }();
+}
+
+/// How to start a stdio MCP server's [command] with [args]: the program itself (it leads its own group), or, when
+/// [command] needs a shell (spaces, quotes, pipes, `~`), `/bin/sh -c` with the arguments passed through (the
+/// group still covers the shell and what it runs). On Windows `cmd /c`, so `.cmd` shims (npx) run.
+(String, List<String>) mcpLaunch(String command, List<String> args, {required bool windows}) {
+  if (windows) return ('cmd.exe', ['/c', command, ...args]);
+  if (!RegExp(r'''[\s'"`$|&;<>()*?~\\]''').hasMatch(command)) return (command, args);
+  return ('/bin/sh', ['-c', '$command "\$@"', 'sh', ...args]);
 }
 
 /// A remote server over streamable HTTP: each message is a POST; the answer
@@ -316,14 +346,16 @@ final class _HttpMcp extends McpConnection {
     }
   }
 
+  /// No process here: the remote session is ended (best effort) and nothing runs on this machine.
   @override
-  Future<void> close() async {
-    if (_session == null) return;
+  Future<KillOutcome> close() async {
+    if (_session == null) return const Ended([]);
     try {
       await _http.delete(_url, headers: {..._headers, 'Mcp-Session-Id': _session!});
-    } on Object {
-      // Gone already.
+    } on Object catch (e) {
+      debugPrint('MCP $name: ending the remote session failed ($e); nothing runs here.');
     }
+    return const Ended([]);
   }
 }
 
@@ -360,6 +392,7 @@ final class McpTools {
     Set<String> prefixed = const {},
     Set<String> trusted = const {},
     http.Client? client,
+    ProcessOwner owner = const AppOwner(),
   }) async {
     final failures = <String, String>{};
     final opened = await Future.wait([
@@ -368,6 +401,7 @@ final class McpTools {
           e.key,
           (e.value as Map?)?.cast<String, Object?>() ?? const {},
           client: client,
+          owner: owner,
         ).then<McpConnection?>(
           (c) => c,
           onError: (Object err) {
@@ -477,7 +511,6 @@ final class McpTools {
     return target.$1.call(target.$2, args, wrap: !_trusted.contains(target.$1.name));
   }
 
-  Future<void> close() async {
-    await Future.wait([for (final c in connections) c.close()]);
-  }
+  /// Ends every connection (local servers verified): the merged outcome.
+  Future<KillOutcome> close() async => KillOutcome.merge(await Future.wait([for (final c in connections) c.close()]));
 }

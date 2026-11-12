@@ -1,8 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:convert';
-import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import 'screen_windows.dart';
 
 /// Max elements read from a window, how deep, and how long the text may be.
@@ -25,18 +25,23 @@ const axNotes = {_permissionNote, _automationNote, _unavailableNote};
 /// Runs a JXA script for the accessibility tree (a fake in tests).
 typedef AxRunner = Future<({int exitCode, String stdout, String stderr})> Function(String script);
 
-/// Runs a JXA [script] through osascript; killed after 10 s.
+/// Runs a JXA [script] through osascript; stopped (verified) after 10 s.
 Future<({int exitCode, String stdout, String stderr})> osascriptRunner(String script) async {
-  final p = await Process.start('osascript', ['-l', 'JavaScript', '-e', script]);
-  final out = utf8.decodeStream(p.stdout);
-  final err = utf8.decodeStream(p.stderr);
-  try {
-    final code = await p.exitCode.timeout(const Duration(seconds: 10));
-    return (exitCode: code, stdout: await out, stderr: await err);
-  } on Object {
-    p.kill(ProcessSignal.sigkill);
-    return (exitCode: -1, stdout: '', stderr: 'timed out');
-  }
+  final r = await ProcessSupervisor.instance.runBounded(
+    'osascript',
+    ['-l', 'JavaScript', '-e', script],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('accessibility'),
+    stdoutEncoding: utf8,
+    stderrEncoding: utf8,
+    maxOutputBytes: 8 * 1024 * 1024,
+    label: 'osascript (accessibility tree)',
+  );
+  return switch (r) {
+    Finished(:final code, :final stdout, :final stderr) => (exitCode: code, stdout: stdout, stderr: stderr),
+    TimedOut(:final kill) => (exitCode: -1, stdout: '', stderr: 'timed out${kill is Ended ? '' : ' ($kill)'}'),
+    _ => (exitCode: -1, stdout: '', stderr: '$r'),
+  };
 }
 
 /// The accessibility tree of window [w] as compact text, or a one-line note on why there is none. macOS

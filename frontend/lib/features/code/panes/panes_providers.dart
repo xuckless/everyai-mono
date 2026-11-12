@@ -6,6 +6,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../../core/preferences.dart';
+import '../../../core/process/supervisor.dart'
+    show
+        ChildExited,
+        ChildKilling,
+        ChildLaunched,
+        ChildNotClosed,
+        ChildRunning,
+        ChildStartFailed,
+        ChildStarting,
+        ChildState,
+        ChildTerming,
+        ChildUnverified,
+        Ended;
 import '../code_providers.dart';
 import '../domain/local_ports.dart';
 import 'processes.dart';
@@ -89,23 +102,87 @@ final class CodePanes extends Notifier<PaneState> {
   }
 }
 
-/// The shell in the Terminal pane: its pid while running, how it ended, and
-/// the local URLs it printed (oldest first).
+/// Where a terminal tab's shell is (from its supervisor child's state):
+///
+/// ```text
+///   idle ──start──▶ running ──TERM/KILL──▶ stopping ──exit──▶ exited(code)
+///                     │                       └──survivors──▶ notClosed(pids) ──exit──▶ exited
+///                     └──exit──────────────────────────────────────────────────────────▲
+/// ```
+@immutable
+sealed class TerminalPhase {
+  const TerminalPhase();
+}
+
+/// No shell started yet (or none on this platform).
+final class TerminalIdle extends TerminalPhase {
+  const TerminalIdle();
+}
+
+final class TerminalRunning extends TerminalPhase {
+  const TerminalRunning(this.pid);
+  final int pid;
+}
+
+final class TerminalStopping extends TerminalPhase {
+  const TerminalStopping(this.pid);
+  final int pid;
+}
+
+final class TerminalExited extends TerminalPhase {
+  const TerminalExited(this.code);
+
+  /// Null when its end was seen by a check (the code is unknown).
+  final int? code;
+}
+
+/// Still running after SIGKILL, or its end couldn't be checked: it is not closed, and says so.
+final class TerminalNotClosed extends TerminalPhase {
+  const TerminalNotClosed(this.pids, this.reason);
+  final List<int> pids;
+  final String reason;
+}
+
+/// The phase a supervisor child's state means for a terminal.
+TerminalPhase terminalPhaseOf(ChildState s, int pid) => switch (s) {
+  ChildStarting() || ChildLaunched() || ChildRunning() || ChildUnverified() => TerminalRunning(pid),
+  ChildTerming() || ChildKilling() => TerminalStopping(pid),
+  ChildExited(:final code) => TerminalExited(code),
+  ChildNotClosed(:final survivors, :final reason) => TerminalNotClosed([for (final p in survivors) p.pid], reason),
+  ChildStartFailed() => const TerminalExited(null),
+};
+
+/// The shell in the Terminal pane: where it is ([phase]), and the local URLs it printed (oldest first).
 @immutable
 final class TerminalStatus {
-  const TerminalStatus({this.pid, this.exitCode, this.urls = const []});
-  final int? pid;
-  final int? exitCode;
+  const TerminalStatus({this.phase = const TerminalIdle(), this.urls = const []});
+  final TerminalPhase phase;
   final List<String> urls;
 
-  bool get running => pid != null && exitCode == null;
+  /// Its pid while its process may be there (running, stopping, not closed).
+  int? get pid => switch (phase) {
+    TerminalRunning(:final pid) || TerminalStopping(:final pid) => pid,
+    TerminalNotClosed(:final pids) => pids.first,
+    TerminalIdle() || TerminalExited() => null,
+  };
+
+  /// Its exit code once it exited (null while it runs, isn't closed, or the code is unknown).
+  int? get exitCode => switch (phase) {
+    TerminalExited(:final code) => code,
+    _ => null,
+  };
+
+  bool get running => phase is TerminalRunning;
+
+  TerminalStatus withPhase(TerminalPhase p) => TerminalStatus(phase: p, urls: urls);
+  TerminalStatus withUrls(List<String> u) => TerminalStatus(phase: phase, urls: u);
 }
 
 final sessionTerminalProvider = NotifierProvider.family<SessionTerminal, TerminalStatus, String>(SessionTerminal.new);
 
 /// A session's terminal: an xterm buffer fed by a shell in the session's
 /// folder. It outlives the pane, so switching tabs keeps the shell and its
-/// scrollback.
+/// scrollback. Its shell is owned by the app (see [startShell]: quit and the sweep end it, an agent's Stop doesn't).
 final class SessionTerminal extends Notifier<TerminalStatus> {
   SessionTerminal(this.sessionId);
   final String sessionId;
@@ -113,6 +190,7 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
   final terminal = Terminal(maxLines: 10000);
   ShellPty? _pty;
   StreamSubscription<String>? _sub;
+  StreamSubscription<ChildState>? _states;
 
   /// The recent output, scanned for URLs.
   String _tail = '';
@@ -120,13 +198,17 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
 
   @override
   TerminalStatus build() {
-    ref.onDispose(_stop);
+    ref.onDispose(() {
+      // A dispose can't wait: the stop goes on, and one that doesn't close is logged (and stays listed).
+      if (_detach() case final pty?) unawaited(_end(pty));
+    });
     return const TerminalStatus();
   }
 
-  /// Starts the shell in [workingDir] unless it is running; [command] is typed into it once it starts.
+  /// Starts the shell in [workingDir] unless one is there (running, stopping or not closed); [command] is typed
+  /// into it once it starts.
   void start(String workingDir, {String? command}) {
-    if (_pty != null && state.running) return;
+    if (_pty != null && state.pid != null) return;
     final pty = startShell(
       workingDir: workingDir,
       rows: terminal.viewHeight,
@@ -140,15 +222,20 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
     }
     _pty = pty;
     if (command != null) pty.write(const Utf8Encoder().convert('$command\r'));
-    state = TerminalStatus(pid: pty.pid, urls: state.urls);
+    state = state.withPhase(terminalPhaseOf(pty.child.state, pty.pid));
     _sub = pty.output.cast<List<int>>().transform(const Utf8Decoder(allowMalformed: true)).listen(_output);
+    _states = pty.child.states.listen((s) {
+      if (!identical(_pty, pty) || !ref.mounted) return;
+      final next = terminalPhaseOf(s, pty.pid);
+      if (next case TerminalExited(:final code) when state.phase is! TerminalExited) {
+        terminal.write('\r\n[Process exited${code == null ? '' : ' with code $code'}]\r\n');
+      } else if (next case TerminalNotClosed(:final pids)) {
+        terminal.write('\r\n[Not closed: pids ${pids.join(', ')} are still running]\r\n');
+      }
+      state = state.withPhase(next);
+    });
     terminal.onOutput = (data) => _pty?.write(const Utf8Encoder().convert(data));
     terminal.onResize = (w, h, pw, ph) => _pty?.resize(h, w);
-    pty.exitCode.then((code) {
-      if (!identical(_pty, pty)) return;
-      terminal.write('\r\n[Process exited with code $code]\r\n');
-      if (ref.mounted) state = TerminalStatus(pid: state.pid, exitCode: code, urls: state.urls);
-    });
   }
 
   void _output(String data) {
@@ -163,22 +250,41 @@ final class SessionTerminal extends Notifier<TerminalStatus> {
         if (!urls.contains(u)) u,
       ...urls,
     ];
-    if (!listEquals(merged, state.urls)) state = TerminalStatus(pid: state.pid, exitCode: state.exitCode, urls: merged);
+    if (!listEquals(merged, state.urls)) state = state.withUrls(merged);
   }
 
-  /// Ends the shell (and the jobs it started) and starts a fresh one.
-  void restart(String workingDir) {
-    _stop();
+  /// Ends the shell (and the jobs it started, verified) and starts a fresh one. When the old one doesn't close, no
+  /// new one starts (the tab says what is still running).
+  Future<void> restart(String workingDir) async {
+    final old = _pty;
+    if (old != null) {
+      final out = await old.kill();
+      if (out is! Ended) {
+        terminal.write('\r\n[Not restarted: the old shell is not closed ($out)]\r\n');
+        return;
+      }
+    }
+    if (!ref.mounted) return;
+    if (identical(_pty, old)) _detach();
     terminal.write('\r\n');
     state = TerminalStatus(urls: state.urls);
     start(workingDir);
   }
 
-  void _stop() {
+  /// Lets the current shell go (its output and state no longer reach this tab); returns it.
+  ShellPty? _detach() {
     _sub?.cancel();
     _sub = null;
-    _pty?.kill();
+    _states?.cancel();
+    _states = null;
+    final pty = _pty;
     _pty = null;
+    return pty;
+  }
+
+  static Future<void> _end(ShellPty pty) async {
+    final out = await pty.kill();
+    if (out is! Ended) debugPrint('NOT CLOSED: terminal shell ${pty.pid}: $out');
   }
 }
 
@@ -254,7 +360,8 @@ final class TerminalTabs extends Notifier<TerminalTabsState> {
 }
 
 /// The session's processes and their ports, polled every 2 s while watched
-/// (5 s on Windows, where each scan starts PowerShell).
+/// (5 s on Windows, where each scan starts PowerShell). A table that can't be read is an error
+/// ([ProcessesUnreadableError]), never an empty list.
 final sessionProcessesProvider = StreamProvider.autoDispose.family<List<SessionProcess>, String>((ref, id) async* {
   var alive = true;
   ref.onDispose(() => alive = false);
@@ -266,13 +373,19 @@ final sessionProcessesProvider = StreamProvider.autoDispose.family<List<SessionP
     }
     final shell = ref.read(sessionTerminalProvider(id));
     final app = ref.exists(codeSessionProvider(id)) ? ref.read(codeSessionProvider(id).notifier).appRunPid : null;
-    yield await listSessionProcesses(
+    switch (await listSessionProcesses(
       tag: info.id,
       workingDir: info.workingDir,
       ownsDir: info.worktree != null,
       agentRoots: {?app},
-      terminalShells: {if (shell.running) shell.pid!},
-    );
+      terminalShells: {?shell.pid},
+    )) {
+      case ProcessesListed(:final processes):
+        yield processes;
+      case ProcessesUnreadable(:final why):
+        // An error, not an empty list: the pane says it couldn't read them (the last list stays as the value).
+        yield* Stream<List<SessionProcess>>.error(ProcessesUnreadableError(why));
+    }
     await Future<void>.delayed(Duration(seconds: defaultTargetPlatform == TargetPlatform.windows ? 5 : 2));
   }
 });

@@ -436,6 +436,8 @@ class BrowserDownloadsButton extends StatelessWidget {
         : Platform.isWindows
         ? ('explorer', ['/select,', path])
         : ('xdg-open', [File(path).parent.path]);
-    unawaited(Process.run(cmd, args).then((_) {}, onError: (Object _) {}));
+    // The file manager it opens isn't the app's to end.
+    // TODO(supervisor): launchDetached
+    unawaited(Process.run(cmd, args).then((_) {}, onError: (Object e) => debugPrint("Couldn't reveal $path: $e")));
   }
 }

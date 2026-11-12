@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import '../../live/app_endpoints.dart';
 import '../../live/app_sources.dart';
@@ -226,12 +227,21 @@ Future<String?> _foreignDevTools(AppEndpoint ep, Future<Set<int>> Function()? se
   if (ep.kind != AppKind.electron || sessionPids == null || Platform.isWindows) return null;
   final port = ep.uri.hasPort ? ep.uri.port : null;
   if (port == null) return null;
+  final r = await ProcessSupervisor.instance.runBounded(
+    'lsof',
+    ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t'],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('devtools-check'),
+    maxOutputBytes: 64 * 1024,
+  );
   final Set<int> listeners;
-  try {
-    final r = await Process.run('lsof', ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']);
-    listeners = {for (final l in '${r.stdout}'.split('\n')) ?int.tryParse(l.trim())};
-  } on Object {
-    return null;
+  switch (r) {
+    // 1: nothing listens there (nothing to attach to; the attach itself then fails).
+    case Finished(:final code, :final stdout) when code == 0 || code == 1:
+      listeners = {for (final l in stdout.split('\n')) ?int.tryParse(l.trim())};
+    default:
+      // Who listens is unknown: refused, never read as allowed.
+      return "EveryAI couldn't check who listens on port $port ($r), so it won't attach to it.";
   }
   if (listeners.isEmpty) return null;
   final mine = await sessionPids();

@@ -4,13 +4,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import '../harness.dart' show ScriptCaps;
 import 'llm.dart';
 import 'research_sites.dart' show secretPath;
 import 'exfil.dart';
 import 'tools_io.dart';
-import '../../../../core/process/child_processes.dart';
 
 // run_script: the model writes a TypeScript program that calls the harness's
 // read-only tools and two model helpers as functions, and only what it prints
@@ -198,11 +198,16 @@ typedef ScriptCall = ({String fn, String detail, bool failed});
 
 /// What a program did.
 final class ScriptResult {
-  ScriptResult({required this.output, required this.exitCode, required this.timedOut, required this.calls});
+  ScriptResult({required this.output, required this.exitCode, required this.timedOut, required this.calls, this.stop});
   final String output;
+
+  /// Its exit code; -1 when it was stopped and its code is unknown, or it isn't closed.
   final int exitCode;
   final bool timedOut;
   final List<ScriptCall> calls;
+
+  /// What stopping it (timeout, cancel, too much output) came to; null when it ended by itself.
+  final KillOutcome? stop;
 }
 
 /// The model and web calls one run_script (and the programs its llmQuery
@@ -330,14 +335,35 @@ final class ScriptRunner {
       ..createSync(recursive: true);
     // A JSON string is a valid JS string literal: the program can't end it early.
     File('${runDir.path}/prelude.ts').writeAsStringSync('const __src: string = ${jsonEncode(code)};\n$_prelude');
-    final process = await Process.start(
-      deno,
-      ['run', '--no-prompt', '--no-config', '--no-lock', '--no-remote', '--no-npm', '--quiet', 'prelude.ts'],
-      workingDirectory: runDir.path,
-      includeParentEnvironment: false,
-      environment: {'DENO_DIR': '$dir/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
+    final process = await ProcessSupervisor.instance.spawn(
+      SpawnSpec(
+        owner: sessionTag.isEmpty ? const AppOwner() : SessionOwner(sessionTag),
+        kind: ProcessKind.script,
+        exe: deno,
+        args: const [
+          'run',
+          '--no-prompt',
+          '--no-config',
+          '--no-lock',
+          '--no-remote',
+          '--no-npm',
+          '--quiet',
+          'prelude.ts',
+        ],
+        cwd: runDir.path,
+        includeParentEnvironment: false,
+        env: {'DENO_DIR': '$dir/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
+        label: 'run_script',
+      ),
     );
-    ChildProcesses.track(process.pid, label: 'run_script', executable: deno, exited: process.exitCode);
+    // One verified stop, whatever asks for it first (timeout, cancel, too much output); its outcome is awaited below.
+    Future<KillOutcome>? stopping;
+    final stopAsked = Completer<void>();
+    void stopIt() {
+      stopping ??= process.stop();
+      if (!stopAsked.isCompleted) stopAsked.complete();
+    }
+
     // Writes after the program ended fail; nothing waits on them.
     unawaited(process.stdin.done.catchError((_) {}));
     final out = StringBuffer();
@@ -394,7 +420,7 @@ final class ScriptRunner {
       streamed += chunk.length;
       if (streamed <= maxStream) return chunk;
       overflow = true;
-      process.kill(ProcessSignal.sigkill);
+      stopIt();
       return const [];
     }
 
@@ -420,13 +446,23 @@ final class ScriptRunner {
     var timedOut = false;
     final timer = Timer(timeout, () {
       timedOut = true;
-      process.kill(ProcessSignal.sigkill);
+      stopIt();
     });
-    unawaited(cancel?.then((_) => process.kill(ProcessSignal.sigkill)));
-    final exitCode = await process.exitCode;
-    closed = true;
+    unawaited(cancel?.then((_) => stopIt()));
+    final first = await Future.any<Object?>([process.exitCode, stopAsked.future]);
     timer.cancel();
-    await Future.wait([stdoutDone, stderrDone]);
+    final KillOutcome? stop = first is int ? null : await stopping;
+    final int exitCode;
+    if (first is int) {
+      exitCode = first;
+    } else if (stop is Ended) {
+      exitCode = await process.exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -1);
+    } else {
+      exitCode = -1;
+    }
+    closed = true;
+    // A program that isn't closed may hold its pipes: not waited on forever.
+    await Future.wait([stdoutDone, stderrDone]).timeout(const Duration(seconds: 2), onTimeout: () => const []);
     unawaited(process.stdin.close().catchError((_) {}));
     // Each run's folder goes; the shared Deno cache stays.
     try {
@@ -436,7 +472,14 @@ final class ScriptRunner {
     }
     if (pending.isNotEmpty) unawaited(Future.wait(pending));
     if (overflow) out.writeln('[The script wrote more than ${_mb(maxStream)} and was stopped.]');
-    return ScriptResult(output: out.toString().trimRight(), exitCode: exitCode, timedOut: timedOut, calls: calls);
+    if (stop != null && stop is! Ended) out.writeln('[The script was stopped, but it is not closed: $stop.]');
+    return ScriptResult(
+      output: out.toString().trimRight(),
+      exitCode: exitCode,
+      timedOut: timedOut,
+      calls: calls,
+      stop: stop,
+    );
   }
 
   static final _blobUrl = RegExp(r'blob:null/[0-9a-f-]+');
