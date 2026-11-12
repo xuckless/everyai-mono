@@ -3,6 +3,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/process/process_model.dart';
+import '../../../core/process/supervisor.dart' show DetachedLaunch;
 import '../domain/fm.dart';
 import '../domain/hardware.dart';
 import '../domain/local_server.dart';
@@ -93,6 +94,11 @@ abstract interface class LocalSystem {
     bool duringQuit = false,
     Duration timeout = const Duration(seconds: 10),
   });
+
+  /// Starts [exe] [args] meant to outlive the app: untagged (no `EVERYAI_*` variables), detached stdio, in no group
+  /// of ours, never listed, swept or stopped by the app. For a program that may start a user's own app (`lms server
+  /// start` can launch LM Studio's daemon), which no cleanup of ours may then reach.
+  Future<DetachedLaunch> launchDetached(String exe, List<String> args);
 
   /// Launches the server [id] ([exe] [args]; through `/bin/sh -c` as the leader of its own process group when
   /// [shell], for a user's own start command); its output goes to [logPath] when given; [port] is the port it

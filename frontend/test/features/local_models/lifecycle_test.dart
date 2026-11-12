@@ -88,6 +88,36 @@ void main() {
       return (c, s, http, prefs);
     }
 
+    test("LM Studio's server starts detached (not through run); ownership comes after the port answers", () async {
+      final system = FakeLocalSystem(lms: '/h/.lmstudio/bin/lms');
+      final (c, _, http, _) = await setUpContainer(system: system);
+      final lm = c.read(localServersProvider).value!.singleWhere((s) => s.id == 'lmstudio');
+      final lifecycles = c.read(serverLifecyclesProvider.notifier);
+      var answeredBeforeLaunch = false;
+      system.onDetached = (_, _) {
+        answeredBeforeLaunch = http.replies.containsKey('GET 127.0.0.1:1234/v1/models');
+        Future<void>.delayed(const Duration(milliseconds: 400), () {
+          http.replies['GET 127.0.0.1:1234/v1/models'] = json('{"data":[]}');
+          http.replies['GET 127.0.0.1:1234/api/v0/models'] = json('{"data":[]}');
+        });
+      };
+      expect(await lifecycles.start(lm), isNull);
+      expect(answeredBeforeLaunch, isFalse);
+      expect(system.detached, ['/h/.lmstudio/bin/lms server start --port 1234']);
+      expect(system.ran, isEmpty);
+      expect(c.read(serverLifecyclesProvider)['lmstudio'], const ServerRunning(ServerOwner.everyai));
+    });
+
+    test("a failed detached launch of LM Studio's server leaves ownership false", () async {
+      final system = FakeLocalSystem(lms: '/h/.lmstudio/bin/lms')..detachedFails = 'no such file';
+      final (c, _, _, _) = await setUpContainer(system: system);
+      final lm = c.read(localServersProvider).value!.singleWhere((s) => s.id == 'lmstudio');
+      final lifecycles = c.read(serverLifecyclesProvider.notifier);
+      expect(await lifecycles.start(lm), contains('no such file'));
+      expect(c.read(serverLifecyclesProvider)['lmstudio'], isNot(const ServerRunning(ServerOwner.everyai)));
+      expect(system.ran, isEmpty);
+    });
+
     test('a Stop before a start launched anything launches nothing and leaves the port alone', () async {
       final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
       final (c, _, http, _) = await setUpContainer(system: system);
