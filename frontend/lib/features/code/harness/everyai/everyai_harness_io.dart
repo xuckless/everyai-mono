@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart' show sha256;
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 
@@ -1171,9 +1171,27 @@ final class EveryAISession
   @override
   Future<KillOutcome> stopBackground(String id) async => await _shell.backgroundShell(id)?.kill() ?? const Ended([]); // no such shell: nothing of it runs
 
-  /// Ends what the session's shell is still running (verified): the merged outcome.
+  /// Ends what the session's shell is still running and its MCP and language servers (a Stop: they start again on
+  /// the next use), verified: the merged outcome.
   @override
-  Future<KillOutcome> killProcesses() => _shell.killAll();
+  Future<KillOutcome> killProcesses() async {
+    _idleTimer?.cancel();
+    final shells = await _shell.killAll();
+    final lsp = await _lsp.close();
+    final ready = _mcpReady;
+    _mcpReady = null;
+    if (ready != null) {
+      try {
+        await ready;
+      } on Object catch (e) {
+        debugPrint('MCP servers of session $id failed to start before the stop: $e');
+      }
+      final running = _mcp;
+      _mcp = McpTools.empty;
+      return KillOutcome.merge([shells, lsp, await running.close()]);
+    }
+    return KillOutcome.merge([shells, lsp]);
+  }
 
   // ------------------------------------------------------------------ loop
 

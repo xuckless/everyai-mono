@@ -930,7 +930,8 @@ final class ToolRunner {
   Future<ToolOutput> run(String tool, Map<String, Object?> raw, {Future<void>? cancel}) async {
     final out = await _runTool(tool, raw, cancel: cancel);
     // The runaway guard stopped this session's processes: the agent hears why, once.
-    final why = sessionTag.isEmpty ? null : ProcessBudgetWatch.takeNote(sessionTag);
+    // Noted under the process tag the session's processes carry (the shell's), not the billing tag.
+    final why = shell.sessionTag.isEmpty ? null : ProcessBudgetWatch.takeNote(shell.sessionTag);
     // Holding the session's browser idle while others queue: any tool's result says so (the browser tool's own
     // result already carries it).
     final nudge = sessionTag.isEmpty || tool == ToolNames.browser ? null : LivePool.nudgeForSession(sessionTag);

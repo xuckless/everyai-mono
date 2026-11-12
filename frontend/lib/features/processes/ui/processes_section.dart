@@ -10,7 +10,9 @@ import '../../../core/process/supervisor.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../../../core/ui/every_icons.dart';
+import '../../../core/process/pool.dart';
 import '../../code/code_providers.dart' show codeSessionsProvider;
+import '../../code/live/live_pool.dart';
 import '../../settings/settings_registry.dart';
 import '../../settings/ui/settings_modal.dart';
 import '../process_providers.dart';
@@ -292,12 +294,6 @@ const poolSettings = <({String key, String title, String help, List<int> options
     options: [1, 2, 4, 6, 8],
   ),
   (
-    key: 'code.pool.session',
-    title: 'Sessions',
-    help: 'Running sessions, forks and workflow agents; more wait their turn.',
-    options: [2, 4, 6, 8, 12, 16, 24],
-  ),
-  (
     key: 'code.process_budget',
     title: 'Processes per session',
     help: 'Past this, the session is stopped and told why.',
@@ -309,7 +305,53 @@ const poolSettings = <({String key, String title, String help, List<int> options
 List<Widget> poolRows() => [
   const AdaptiveSectionHeader('Capacity'),
   for (final s in poolSettings) _PoolRow(key: ValueKey('processes.pool.${s.key}'), setting: s),
+  const PoolHolders(key: ValueKey('processes.pool.holders')),
 ];
+
+/// Who holds each pooled resource and who waits for it, with Release for an agent's lease: the user's way out when
+/// an idle holder never lets go (the pool never takes a slot back by itself).
+class PoolHolders extends ConsumerWidget {
+  const PoolHolders({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pool = ref.watch(livePoolProvider);
+    return ListenableBuilder(
+      listenable: pool,
+      builder: (context, _) {
+        String name(String holder) => LivePool.nameOf?.call(holder) ?? holder;
+        final rows = <Widget>[
+          for (final kind in ResourceKind.values) ...[
+            for (final l in pool.holders(kind))
+              AdaptiveListTile(
+                key: ValueKey('processes.pool.lease.${l.id}'),
+                title: Text('${kind.label} · ${name(l.holder)}'),
+                subtitle: const Text('Holding'),
+                trailing: l.holder.startsWith('agent:')
+                    ? AdaptiveButton(
+                        label: 'Release',
+                        emphasis: ButtonEmphasis.secondary,
+                        onPressed: () => pool.release(l),
+                      )
+                    : null,
+              ),
+            for (final (i, l) in pool.queued(kind).indexed)
+              AdaptiveListTile(
+                key: ValueKey('processes.pool.lease.${l.id}'),
+                title: Text('${kind.label} · ${name(l.holder)}'),
+                subtitle: Text('Waiting (${i + 1} in line)'),
+              ),
+          ],
+        ];
+        if (rows.isEmpty) return const SizedBox.shrink();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [const AdaptiveSectionHeader('Holding'), ...rows],
+        );
+      },
+    );
+  }
+}
 
 class _PoolRow extends ConsumerStatefulWidget {
   const _PoolRow({super.key, required this.setting});
@@ -325,7 +367,12 @@ class _PoolRowState extends ConsumerState<_PoolRow> {
     final prefs = ref.watch(preferencesProvider);
     final s = widget.setting;
     final current = int.tryParse(prefs[s.key] ?? '');
-    void pick(int? v) => setState(() => prefs[s.key] = v?.toString());
+    void pick(int? v) {
+      setState(() => prefs[s.key] = v?.toString());
+      // At once: a smaller number queues the next caller, a larger one lets the queue in.
+      unawaited(LivePool.configure((k) => prefs[k]));
+    }
+
     return AdaptiveListTile(
       title: Text(s.title),
       subtitle: Text(s.help),

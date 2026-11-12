@@ -6,6 +6,7 @@ Future<WorkflowBridge> startWorkflowBridge({
   required String dir,
   required String source,
   required Map<String, Object?> args,
+  String? sessionId,
 }) async => throw StateError('Workflows run on the desktop app only.');
 
 Future<String> readJournalFile(String path) async => '';

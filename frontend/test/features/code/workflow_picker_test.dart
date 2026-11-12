@@ -90,7 +90,7 @@ void main() {
             ),
           ),
           codeSideModelProvider.overrideWithValue((messages) async => ''),
-          workflowBridgeProvider.overrideWithValue(({required dir, required source, required args}) async {
+          workflowBridgeProvider.overrideWithValue(({required dir, required source, required args, sessionId}) async {
             started.add((source: source, args: args));
             return bridge;
           }),

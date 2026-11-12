@@ -99,7 +99,7 @@ void main() {
       ),
       codeSideModelProvider.overrideWithValue((messages) async => ''),
       gatewayKeysProvider.overrideWith((ref) => GatewayKeys(store: _NoStore(), mint: () async => 'sk-eai-test')),
-      workflowBridgeProvider.overrideWithValue(({required dir, required source, required args}) async {
+      workflowBridgeProvider.overrideWithValue(({required dir, required source, required args, sessionId}) async {
         startedArgs = args;
         startedSource = source;
         return bridge;

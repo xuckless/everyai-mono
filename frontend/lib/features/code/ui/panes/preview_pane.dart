@@ -264,8 +264,13 @@ class _PreviewPaneState extends ConsumerState<PreviewPane> with WidgetsBindingOb
         if (mounted) setState(() => _queuedFor = null);
       }
     }
-    if (!mounted) throw StateError('The Preview closed while it waited for a browser.');
-    final b = LiveBrowsers.forSession(_id, profileDir: await _profile());
+    final profile = await _profile();
+    if (!mounted) {
+      // Granted after the pane went: the user's own lease, with no page made on it, goes back to the pool.
+      if (lease.holder == LivePool.userHolder(_id) && LiveBrowsers.of(_id) == null) LivePool.pool.release(lease);
+      throw StateError('The Preview closed while it waited for a browser.');
+    }
+    final b = LiveBrowsers.forSession(_id, profileDir: profile);
     _attach(b);
     return b;
   }

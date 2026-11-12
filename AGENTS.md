@@ -1239,8 +1239,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   min, `gaveBackText`), ghost cursor from `control.activity`. Agent API: `FrameBook` frame ids (`f_N`, geometry check,
   zoom regions), `pageSnapshotJs` element list with `ref_N`, `evalRefusal` (cookies/storage/other-site requests),
   eval results scrubbed. Chrome for Testing download pinned in `live/chrome_pin.dart` by
-  `tool/pin_chrome_for_testing.sh`. Dev MCP test rig: `tool/live_mcp/live_mcp_serve_test.dart` (env
-  `EVERYAI_LIVE_MCP_OUT`) serves the host browser tool + a demo shop for an outside agent to review.
+  `tool/pin_chrome_for_testing.sh`. A dev MCP test rig (removed in the
+  2026-11-12 test cut) served the host browser tool + a demo shop for an outside agent to review.
 - **Framework sources: the `app` tool (2026-11-06).** `live/app_endpoints.dart` finds apps in a shell's output
   (`flutter run`'s VM service line, Chromium's `DevTools listening on` for Electron, Metro's banner);
   `AppSources.running(sessions)` scans the sessions' registry shells (and an outside lead's output files via
@@ -1255,8 +1255,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   what changed on screen (`appTreeChange`); app text goes in an `untrusted` block. `bash_output {screen: true}`
   renders a TUI's screen (`shells/terminal_screen.dart`, headless xterm). Preview: source chips (Web + each app),
   Flutter picture view (polled inspector shots, taps/wheel forwarded), RN element list, Electron live page. Verified
-  against a running `flutter run -d flutter-tester` app (`tool/live_apps/flutter_app_probe_test.dart`,
-  `EVERYAI_FLUTTER_VM`); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
+  against a running `flutter run -d flutter-tester` app (a dev probe, removed in the 2026-11-12 test cut); Electron and RN paths tested with Chrome standing in (`app_sources_test.dart`); no real
   Electron or React Native app was run.
 - **iOS Simulator (2026-11-06).** The `app` tool's source "ios" drives a booted simulator for any app (native,
   Flutter, React Native) through AXe (`live/ios_simulator_io.dart`): `describe-ui` → `AppNode`s (points; refs `iN`
@@ -1268,7 +1267,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   1.8.0 is downloaded on first use into app data `tools/axe-1.8.0/` and checked against `axe_pin.dart`
   (`verified_download_io.dart`, shared with Chrome for Testing; `EVERYAI_AXE` overrides). Preview: `IosSimulatorView`
   paints `axe stream-video` MJPEG (~9 fps at half scale, `MjpegFrames` cuts by Content-Length), forwards clicks,
-  drags and the wheel. Dev probe `tool/live_apps/simulator_probe_test.dart` (`EVERYAI_SIM`).
+  drags and the wheel. (Its dev probe was removed in the 2026-11-12 test cut.)
 - **Android (2026-11-06).** The `app` tool's source "android" drives an emulator or device for any app through adb
   (`live/android_device_io.dart`, `live/adb_io.dart` finds the SDK: ANDROID_HOME/ANDROID_SDK_ROOT, the usual folders,
   PATH, `EVERYAI_ADB`; nothing downloaded): `uiautomator dump` → `AppNode`s in pixels (refs `aN`; a clickable
@@ -1283,9 +1282,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   deletes itself on exit, so it is pushed every start) and decodes its H.264 with VideoToolbox into a Flutter texture
   (`VideoDecoderBridge` / `H264Texture` in `macos/Runner/MainFlutterWindow.swift`, channel `everyai/h264`,
   `live/h264_texture.dart`); other OSes get screenshots each second. Touches, drags, the wheel and the keyboard go
-  through scrcpy's control socket. Checked in a real macOS build with `tool/live_apps/device_view_demo.dart` (both
-  device views; a tap sent through the view opened the app). Dev probe `tool/live_apps/android_probe_test.dart`
-  (`EVERYAI_ANDROID`).
+  through scrcpy's control socket. Checked in a real macOS build with a device-view demo (both
+  device views; a tap sent through the view opened the app); the demo and the Android dev probe were removed in the
+  2026-11-12 test cut.
   Fix #31 (2026-11-07): `source: "android"`/`"ios"` with no device of the session's yet (an outside lead, an emulator
   its shells never named) takes the one running device no other session holds (`claimNamedDevice`; several: `device`
   picks). React Native: `reload` detaches the inspector socket, every attach sends `Runtime.runIfWaitingForDebugger`,
@@ -1316,8 +1315,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   listen in one of the session's processes or a program built in the project (`_foreignDevTools`, lsof), so a user's
   own browser with remote debugging isn't attached.
   Preview `DesktopWindowView`: the live stream; clicks press through AX, else a real click (same consent); Bring to
-  front. Probe
-  `tool/live_apps/desktop_probe_test.dart` (`EVERYAI_DESKTOP_PID`); the MCP rig takes `EVERYAI_LIVE_WINDOW_MATCH`.
+  front. Its
+  probe and the MCP rig were removed in the 2026-11-12 test cut.
 - **Desktop windows on Windows and Linux (2026-11-07).** Same `desktop` source and driver; the helper differs
   (`live/desktop_helper_io.dart` `desktopHelper()`: same commands and JSON as everyai-ax, sources in
   `assets/helpers/`, installed under app data `tools/` named by content hash; `EVERYAI_DESKTOP_HELPER` overrides).
@@ -1542,8 +1541,8 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   next", Ultra/Max not pushed. README pitch and badge, CHANGELOG section, `releaseNotes` entry (8 items).
 - **Cursor CLI + outside agents on their own terms (2026-11-11; branch `feat/cursor-native`, plan
   `~/.claude/plans/cursor-native.md`).** Owner: EveryAI switches harnesses and offers tools; outside agents keep
-  their own modes, approvals and habits. Cursor (`agent acp`, checked live with
-  `tool/live_drivers/cursor_live_test.dart`): a permission request's text is kept off the call
+  their own modes, approvals and habits. Cursor (`agent acp`, checked live once with
+  a since-removed live test): a permission request's text is kept off the call
   (`acpWithoutAskText`; "Not in allowlist: …" showed as every asked call's result), Cursor's MCP calls
   (`{providerIdentifier, toolName, args}`) are MCP actions, no "ran without asking" notice, no
   ask_user_question/present_plan host tools (`DriverCap.nativeQuestions`; it has cursor/ask_question), models probed
@@ -1680,6 +1679,28 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   Survived outcome (no notice); phases 3–5 (UI for not-closed children and the ledger, the Windows path, removing
   `ChildProcesses`, still used only by `memory_lifecycle_test`); Windows and Linux never run; the Xcode build phase
   for `everyai-exec` checked by one debug build only.
+- **Process ownership, phases 3–5 and the test cut (2026-11-12; PR #86, branch `feat/process-ownership`).**
+  Stop (`CodeSessionController.stop`) bounds the interrupt (10 s, `stopStepBound`) then ends, verified, everything
+  the session started but the lead CLI (`stopKeepsKinds` = leadCli; the terminal driver's pty CLI is leadCli and a
+  registered driver root is kept too): the EveryAI harness's shells, MCP and language servers (`KillsOwnProcesses`;
+  restarted on next use), every other `SessionOwner` child, the tag sweep, the browser page (`closeKeepingJar`),
+  display, booted simulators and pool leases. Workflow scripts (label `workflowScriptLabel`, owner = the session's
+  proc tag passed into `startWorkflowBridge`) end only with Stop all. Survivors → `ProcessesNotClosed` (fails the
+  session; added to, never replacing, a budget notice). Forks are dropped only after an `Ended` stop. Delete
+  (`CodeSessions.remove` → `SessionTeardown`: requested → stoppingRun → stoppingProcesses → releasing → gone |
+  notClosed; any throw → notClosed) covers descendants at any depth, closes harness sessions before the owner stop,
+  releases pool leases in the release step, and keeps the session and its worktree when anything survives
+  (`SessionNotClosedError` toast). Quit is `app/app_quit.dart` (`runQuit` through `stopAll(before:)`, a bounded,
+  logged step each, SIGTERM too, `quit.json`); the launch sweep runs at start. Workflow `RunEnded.leftovers`.
+  Pool (`core/process/pool.dart`, `live/live_pool.dart`): FIFO per kind, auto capacities from RAM/cores, queued
+  calls wait 20 s then get their place, nudge on any tool result (EveryAI harness and host MCP), no eviction; tab
+  cap, background shell cap (16), per-session process budget (`ProcessBudgetWatch`, default max(400, cores×16), by
+  proc tag). Settings → Processes: every owned process by owner with its true state, launch-sweep and quit notices,
+  Capacity (applied at once) and a Holding list with Release per agent lease. Tests cut 3,362 → ~1,060 (kept: core,
+  security, state machines, drivers' contracts, one per feature; restored the JSON-RPC peer's pending-request case).
+  Not done: the session queue, displays/streams through the pool, a crashed browser's slot, the lead switch awaiting
+  the old lead's close, closing a fork's CLI on stop_fork/release, Android per-session stop, Windows/Linux never run,
+  nothing clicked through live.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

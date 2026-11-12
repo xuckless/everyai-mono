@@ -9,6 +9,8 @@ import 'dart:io';
 import 'package:every_ai/app/app_quit.dart';
 import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/code_providers.dart';
+import 'package:every_ai/features/code/harness/session_processes.dart' show registerDriverRoot, unregisterDriverRoot;
+import 'package:every_ai/features/code/workflows/workflow_bridge.dart' show workflowScriptLabel;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -26,13 +28,39 @@ void main() {
     final cli = await sup.spawn(
       SpawnSpec(owner: const SessionOwner(tag), kind: ProcessKind.leadCli, exe: '/bin/sleep', args: ['60']),
     );
-    await shell.landed;
-    await cli.landed;
+    // A terminal lead registered as a driver root (an older pty spawn), an MCP server and a workflow script.
+    final pty = await sup.spawn(
+      SpawnSpec(owner: const SessionOwner(tag), kind: ProcessKind.pty, exe: '/bin/sleep', args: ['60']),
+    );
+    final mcp = await sup.spawn(
+      SpawnSpec(owner: const SessionOwner(tag), kind: ProcessKind.mcp, exe: '/bin/sleep', args: ['60']),
+    );
+    final script = await sup.spawn(
+      SpawnSpec(
+        owner: const SessionOwner(tag),
+        kind: ProcessKind.script,
+        exe: '/bin/sleep',
+        args: ['60'],
+        label: workflowScriptLabel,
+      ),
+    );
+    for (final c in [shell, cli, pty, mcp, script]) {
+      await c.landed;
+    }
+    registerDriverRoot(tag, pty.pid!);
     final outcome = await stopSessionChildren(tag);
     expect(outcome, isA<Ended>());
     expect(shell.state.live, isFalse);
+    expect(mcp.state.live, isFalse);
     expect(cli.state.live, isTrue);
-    expect(await cli.stop(), isA<Ended>());
+    expect(pty.state.live, isTrue, reason: "a terminal lead is the session's link: Stop keeps it");
+    expect(script.state.live, isTrue, reason: 'workflow scripts end with Stop all');
+    expect(await stopSessionChildren(tag, workflows: true), isA<Ended>());
+    expect(script.state.live, isFalse);
+    unregisterDriverRoot(tag, pty.pid!);
+    for (final c in [cli, pty]) {
+      expect(await c.stop(), isA<Ended>());
+    }
   });
 
   test('a delete moves only along its table', () {

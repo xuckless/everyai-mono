@@ -79,7 +79,8 @@ Future<ShellPty?> startProgram({
       sup ?? supervisor,
       SpawnSpec(
         owner: owner ?? SessionOwner(sessionTag),
-        kind: ProcessKind.pty,
+        // The session's lead (a terminal driver's CLI): Stop keeps it, delete and quit end it.
+        kind: ProcessKind.leadCli,
         exe: executable,
         args: args,
         env: programEnv(shell.env, env, sessionTag),

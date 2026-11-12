@@ -21,6 +21,7 @@ Future<WorkflowBridge> startWorkflowBridge({
   required String dir,
   required String source,
   required Map<String, Object?> args,
+  String? sessionId,
 }) async {
   final deno = findDeno() ?? (throw StateError('Workflows need Deno, which this install of the app is missing.'));
   final runDir = Directory(dir)..createSync(recursive: true);
@@ -28,9 +29,8 @@ Future<WorkflowBridge> startWorkflowBridge({
   File('${runDir.path}/prelude.js').writeAsStringSync(workflowPrelude(args));
   final process = await ProcessSupervisor.instance.spawn(
     SpawnSpec(
-      // Its session's: the run's folder is `<data>/workflows/<session id>/<run id>` (code_providers'
-      // `_workflowDir`), so the session's stop ends it too.
-      owner: workflowOwnerOf(runDir.path),
+      // Its session's: Stop all and the session's delete end it (a plain Stop leaves it, by its label).
+      owner: sessionId == null || sessionId.isEmpty ? const AppOwner() : SessionOwner(sessionId),
       kind: ProcessKind.script,
       exe: deno,
       args: const [
@@ -47,7 +47,7 @@ Future<WorkflowBridge> startWorkflowBridge({
       includeParentEnvironment: false,
       // `workflows/cache`, next to the session folders.
       env: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
-      label: 'Workflow script',
+      label: workflowScriptLabel,
       detail: runDir.path,
     ),
   );

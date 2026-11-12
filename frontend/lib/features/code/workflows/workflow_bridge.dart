@@ -26,11 +26,17 @@ abstract interface class WorkflowBridge {
 /// Starts [source] (a workflow `.js`) with [args] in Deno, its files in
 /// [dir] (removed when it exits; the Deno cache is shared by every run).
 /// Throws a [StateError] when there is no Deno here.
+/// It belongs to session [sessionId] (the app's when null), labelled [workflowScriptLabel]: a plain Stop of the
+/// session leaves it running (workflows end with Stop all).
 Future<WorkflowBridge> startWorkflowBridge({
   required String dir,
   required String source,
   required Map<String, Object?> args,
-}) => impl.startWorkflowBridge(dir: dir, source: source, args: args);
+  String? sessionId,
+}) => impl.startWorkflowBridge(dir: dir, source: source, args: args, sessionId: sessionId);
+
+/// The supervisor label of a workflow script's process.
+const workflowScriptLabel = 'Workflow script';
 
 /// The journal lines of [path] ('' when it doesn't exist yet).
 Future<String> readJournalFile(String path) => impl.readJournalFile(path);

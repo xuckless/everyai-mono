@@ -147,6 +147,17 @@ abstract final class LiveBrowsers {
     await LivePool.releaseAround(liveId, ResourceKind.browser, b.close);
   }
 
+  /// Closes session [liveId]'s page on its Stop: the jar is saved and kept (its sign-ins stay), the browser lease
+  /// ends, and the next use opens a fresh page ([forSession]).
+  static Future<void> closeKeepingJar(String liveId) async {
+    final b = _bySession.remove(liveId);
+    if (b == null) return;
+    _changes.add(liveId);
+    b.loginWall.stop();
+    await _writeBack(b);
+    await LivePool.releaseAround(liveId, ResourceKind.browser, b.close);
+  }
+
   /// Stops every browser (the app quits); what didn't close is logged ([stopAllBrowsers] returns it).
   static Future<void> stopAll() async {
     final outcome = await stopAllBrowsers();

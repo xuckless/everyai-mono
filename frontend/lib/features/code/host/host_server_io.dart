@@ -1,5 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../live/live_pool.dart' show LivePool;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -65,6 +67,14 @@ final List<Map<String, Object?>> hostToolSpecs = List.unmodifiable([
   appRunSpec,
   appSpec,
 ]);
+
+/// [result] with the pool's nudge when session [session] holds a resource idle while others queue: on any host
+/// tool's result, as the EveryAI harness does (the browser tool's own result already carries it).
+HostResult _withNudge(HostResult result, String session, String tool) {
+  if (tool == browserTool || session.isEmpty) return result;
+  final nudge = LivePool.nudgeForSession(session);
+  return nudge == null ? result : (text: '${result.text}\n\n$nudge', isError: result.isError);
+}
 
 /// An OpenAI-style spec (flat or `{function: …}`) in MCP's shape.
 Map<String, Object?> _mcpTool(Map<String, Object?> spec) {
@@ -569,8 +579,10 @@ final class _HostServer implements HostServer {
           })
         : null;
     unawaited(
-      Future.sync(() => grant.tools.call(call))
-          .then(pending.finish, onError: (Object e) => pending.finish((text: 'Error: $e', isError: true))),
+      Future.sync(() => grant.tools.call(call)).then(
+        (r) => pending.finish(_withNudge(r, grant.sessionId, name)),
+        onError: (Object e) => pending.finish((text: 'Error: $e', isError: true)),
+      ),
     );
     final result = await pending.result.future;
     beat?.cancel();

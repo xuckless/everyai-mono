@@ -71,7 +71,21 @@ final class AppQuit {
   @visibleForTesting
   static ProcessSupervisor Function() supervisor = () => ProcessSupervisor.instance;
 
-  Future<AppQuitReport> quit() => _running ??= runQuit(supervisor(), steps());
+  /// One quit at a time; one that failed (threw) isn't kept, so the next ask runs it again.
+  Future<AppQuitReport> quit() {
+    final running = _running;
+    if (running != null) return running;
+    final f = runQuit(supervisor(), steps());
+    _running = f;
+    f.then(
+      (_) {},
+      onError: (Object e) {
+        debugPrint('NOT CLOSED: the quit failed: $e');
+        if (identical(_running, f)) _running = null;
+      },
+    );
+    return f;
+  }
 
   List<QuitStep> steps() {
     const short = Duration(seconds: 3);
@@ -127,8 +141,14 @@ final appQuitProvider = Provider<AppQuit>((ref) {
     onError: (Object e) => debugPrint('Launch sweep failed: $e'),
   );
   final lifecycle = AppLifecycleListener(
+    // Always lets the app quit: a quit that failed is logged (the supervisor's ledger keeps what is left for the
+    // next launch's sweep).
     onExitRequested: () async {
-      await quit.quit();
+      try {
+        await quit.quit();
+      } on Object catch (e) {
+        debugPrint('NOT CLOSED: the quit failed: $e');
+      }
       return AppExitResponse.exit;
     },
     // The engine is going away: the same sequence, as far as it gets (its steps log their outcomes).
@@ -137,8 +157,13 @@ final appQuitProvider = Provider<AppQuit>((ref) {
   StreamSubscription<ProcessSignal>? term;
   if (!kIsWeb && !Platform.isWindows) {
     term = ProcessSignal.sigterm.watch().listen((_) async {
-      final report = await quit.quit();
-      exit(report.clean ? 0 : 1);
+      try {
+        final report = await quit.quit();
+        exit(report.clean ? 0 : 1);
+      } on Object catch (e) {
+        debugPrint('NOT CLOSED: the quit failed: $e');
+        exit(1);
+      }
     });
   }
   ref.onDispose(() {
