@@ -71,7 +71,9 @@ phones, tablets and browsers drive a paired desktop through the remote relay. Fo
 - `ui/`: a header with the title menu, the git button (Commit → Create PR → View PR → Merge locally) and a
   five-tab panel: Session (environment, context, usage and limits, running work, changes), Diff, Preview, Files
   (tree plus light editing, saved after a checkpoint) and Processes. The terminal lives in a bottom drawer with tabs.
-- `board/`: every session in Needs you, Running and Done columns; approvals and questions are answered on the card.
+- `board/`: every session in Needs you, Running and Done columns; approvals and questions are answered on the card. A
+  Plan lane splits a goal into tasks and delegates them in dependency order; Race runs one prompt on 2–4 agents to
+  compare and keep one.
 
 ### Live views, the `app` tool and shells
 - `live/`: one Chrome per project (the system Chrome, or Chrome for Testing downloaded on first use) shared by the

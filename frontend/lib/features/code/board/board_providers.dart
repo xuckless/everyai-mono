@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/preferences.dart';
-import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider;
+import '../code_providers.dart' show codeSessionProvider, codeSessionsProvider, codeStatusesProvider;
 import '../domain/permissions.dart' show ApprovalScope;
 import '../domain/code_session.dart';
 import '../drivers/driver_registry.dart' show driverRegistryProvider;
@@ -62,8 +62,28 @@ Map<String, List<CodeSessionInfo>> childrenByParent(Iterable<CodeSessionInfo> se
 };
 
 /// What a session is doing, in one line, from its live transcript: the approval or question it waits on, else its
-/// latest step or words. Empty when there is nothing to say.
-String boardActivity(Transcript t) {
+/// latest step or words, as plain text ([plainActivityLine]). Empty when there is nothing to say.
+String boardActivity(Transcript t) => plainActivityLine(_activity(t));
+
+final _mdLink = RegExp(r'!?\[([^\]]*)\]\([^)]*\)');
+// Stars and tildes anywhere; underscores only at word edges, so snake_case names stay.
+final _mdEmphasis = RegExp(r'(\*\*|\*|~~)(?=\S)(.+?)(?<=\S)\1|(?<!\w)(__|_)(?=\S)(.+?)(?<=\S)\3(?!\w)');
+final _mdLead = RegExp(r'^(#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)+');
+
+/// [text]'s first non-blank line with its Markdown taken out (headings, quotes, list markers, links, emphasis, code
+/// ticks), for a card's one-line activity: the card shows text, not Markdown.
+String plainActivityLine(String text) {
+  final line = text.split('\n').map((l) => l.trim()).firstWhere((l) => l.isNotEmpty, orElse: () => '');
+  var out = line.replaceFirst(_mdLead, '').replaceAllMapped(_mdLink, (m) => m[1]!);
+  // Emphasis can nest (**_x_**): strip until nothing changes.
+  for (var before = ''; before != out;) {
+    before = out;
+    out = out.replaceAllMapped(_mdEmphasis, (m) => m[2] ?? m[4]!);
+  }
+  return out.replaceAll('`', '').replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+String _activity(Transcript t) {
   if (t.pending.isNotEmpty) {
     final title = approvalTitle(t.pending.first);
     return t.pending.length == 1 ? title : '$title (+${t.pending.length - 1})';
@@ -79,7 +99,7 @@ String boardActivity(Transcript t) {
       case SubagentItem(:final step):
         return 'Subagent: ${step.call.summary.isEmpty ? step.call.toolName : step.call.summary}';
       case AgentText(:final text) when text.trim().isNotEmpty:
-        return text.trim().split('\n').first;
+        return text;
       case UserTurn():
         if (t.streaming.trim().isNotEmpty) return t.streaming.trim().split('\n').last;
         return '';
@@ -398,12 +418,11 @@ List<CodeSessionInfo> boardSessions(List<CodeSessionInfo> all, Set<String> detac
 ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
 /// What a closed session last did, read from its harness's files (null when the harness keeps none). Keyed by the
-/// session and its status, so a status change reads it again.
-final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcript?, (String, SessionStatus)>((
-  ref,
-  key,
-) async {
-  final info = ref.read(codeSessionsProvider).where((s) => s.id == key.$1).firstOrNull;
+/// session alone: a change of its polled status reads it again, and the last read stays shown meanwhile (no loading
+/// flash on the card or the inspector). Read only by what is on screen (a card, the inspector).
+final boardRecentTranscriptProvider = FutureProvider.autoDispose.family<Transcript?, String>((ref, id) async {
+  ref.watch(codeStatusesProvider.select((m) => m[id]));
+  final info = ref.read(codeSessionsProvider).where((s) => s.id == id).firstOrNull;
   if (info == null || info.removedHarness) return null;
   final driver = ref.read(driverRegistryProvider).resolve(info.harness);
   if (driver is! ReadsRecentEvents) return null;

@@ -708,7 +708,8 @@ class TranscriptList extends StatelessWidget {
         const KeyedSubtree(key: ValueKey('transcript-tail'), child: _Working())
       else if (offer case final offer?)
         KeyedSubtree(key: const ValueKey('transcript-tail'), child: offer)
-      else if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck)
+      // Also a run that ended on a failure its harness now reports as idle (Codex): Retry sends a carry-on turn.
+      else if (t.status == ExecutionStatus.error || t.status == ExecutionStatus.stuck || endedOnFailure(t))
         NoticeView(
           item: NoticeItem(
             'stopped',

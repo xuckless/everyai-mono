@@ -336,6 +336,14 @@ final class RetryState extends HarnessEvent {
 final class ConversationFailure extends HarnessEvent {
   const ConversationFailure({required super.id, required super.raw, required this.message});
   final String message;
+
+  /// Whether the run itself failed, rather than a note the user should see (a mode the agent refused, a rule it
+  /// couldn't remember, a reply cut at its token limit). From the event's `fatal`; events without one (recorded
+  /// before it existed) count as fatal unless the app wrote them as a note (`source: environment`).
+  bool get fatal => switch (raw['fatal']) {
+    final bool f => f,
+    _ => raw['source'] != 'environment',
+  };
 }
 
 /// Not from the server: the session's event socket connected or dropped

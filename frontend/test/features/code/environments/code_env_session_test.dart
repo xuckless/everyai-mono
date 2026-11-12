@@ -172,7 +172,12 @@ void main() {
     await tmp.delete(recursive: true);
   });
 
-  Future<CodeSessionInfo> start(String projectId, {String harness = 'test', bool isolated = false}) => container
+  Future<CodeSessionInfo> start(
+    String projectId, {
+    String harness = 'test',
+    bool isolated = false,
+    bool requireWorktree = false,
+  }) => container
       .read(codeSessionsProvider.notifier)
       .start(
         project: container.read(codeProjectsProvider).firstWhere((p) => p.id == projectId),
@@ -181,6 +186,7 @@ void main() {
         mode: AgentMode.ask,
         harness: harness,
         isolated: isolated,
+        requireWorktree: requireWorktree,
       );
 
   test('a session in an environment gets its paths and the host address as seen from inside', () async {
@@ -325,5 +331,15 @@ void main() {
     expect(Directory('${tmp.path}/data/worktrees').existsSync(), isFalse);
     expect((await Process.run('git', ['branch', '--list', 'everyai/*'], workingDirectory: dir)).stdout, isEmpty);
     expect(fake.specs, isEmpty);
+  });
+
+  test("a Board task or race runner that needs its own branch is refused where the project can't have one", () async {
+    // Not a git repository: an ordinary isolated session falls back to the folder; the Board's don't.
+    await expectLater(
+      start('p1', isolated: true, requireWorktree: true),
+      throwsA(isA<HarnessError>().having((e) => e.message, 'message', contains("can't have worktrees"))),
+    );
+    expect(fake.specs, isEmpty);
+    expect(container.read(codeSessionsProvider), isEmpty);
   });
 }

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/every_theme.dart';
 import '../../../core/ui/adaptive.dart';
 import '../code_providers.dart' show codeSessionsProvider, isDemoPath;
+import 'board_providers.dart' show boardDetachedProvider, boardDismissedProvider, boardSessions;
 import '../domain/code_session.dart';
 import '../git/git_service.dart';
 
@@ -84,6 +85,30 @@ String? prTarget(CodeSessionInfo s) {
   if (s.prNumber case final n?) return '$n';
   if (s.worktree case final w?) return w.branch.isEmpty ? null : w.branch;
   return const {'', 'main', 'master', 'trunk', 'develop'}.contains(s.branch) ? null : s.branch;
+}
+
+/// Which card shows finished (merged or closed) pull request #[number], which [s]'s card found: several sessions on
+/// one pull request would otherwise all repeat "PR #2 · Merged" (an open one still shows on each, as each may be the
+/// one to merge it).
+///
+/// The candidates are the cards on the Board ([shown]: detached forks in, removed harnesses and cleared cards out)
+/// in [s]'s project whose card found the same pull request ([numberOf]: the number a card shows, null while it knows
+/// none), so a session that found it by number (EveryAI opened it) and one that found it by branch count as one. Of
+/// those, a session EveryAI opened it for ([CodeSessionInfo.prNumber]) wins, then the newest. [s] always counts, so
+/// the chip shows somewhere.
+String finishedPrOwner(
+  Iterable<CodeSessionInfo> shown,
+  CodeSessionInfo s, {
+  required int number,
+  required int? Function(String id) numberOf,
+}) {
+  var owner = s;
+  for (final o in shown) {
+    if (o.id == s.id || o.projectId != s.projectId || numberOf(o.id) != number) continue;
+    final opened = o.prNumber == number, ownerOpened = owner.prNumber == number;
+    if (opened != ownerOpened ? opened : o.createdAt.isAfter(owner.createdAt)) owner = o;
+  }
+  return owner.id;
 }
 
 /// A card's pull request, as far as the Board knows, and a merge from it:
@@ -314,6 +339,29 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
     }
   }
 
+  /// [finishedPrOwner] over the cards on the Board; only cards already on screen are asked what they show (asking
+  /// would start a lookup for the rest).
+  String _finishedOwner(int number) {
+    final detached = ref.watch(boardDetachedProvider);
+    final dismissed = ref.watch(boardDismissedProvider);
+    final shown = [
+      for (final o in boardSessions(ref.watch(codeSessionsProvider), detached))
+        if (!dismissed.contains(o.id) && o.projectId == widget.info.projectId) o,
+    ];
+    return finishedPrOwner(
+      shown,
+      widget.info,
+      number: number,
+      numberOf: (id) {
+        if (id != widget.info.id && !ref.exists(boardPrProvider(id))) return null;
+        return switch (ref.watch(boardPrProvider(id))) {
+          PrShown(:final pr) || PrMerging(:final pr) => pr.number,
+          PrUnknown() || PrNone() => null,
+        };
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(boardPrProvider(widget.info.id));
@@ -323,6 +371,9 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
       PrUnknown() || PrNone() => (null, false),
     };
     if (pr == null) return const SizedBox.shrink();
+    // A merged or closed pull request shows once, on the newest of the sessions that share it ([finishedPrOwner]).
+    final finished = pr.state == PrState.merged || pr.state == PrState.closed;
+    if (finished && _finishedOwner(pr.number) != widget.info.id) return const SizedBox.shrink();
     final theme = EveryTheme.of(context);
     final text = prChipText(pr, done: widget.done);
     final checksColor = switch (pr.checks) {
@@ -353,7 +404,7 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
           if (text.ready.isNotEmpty)
             Text(text.ready, key: ValueKey('board.pr.ready.${widget.info.id}'), style: quiet.mono),
           // Only once nothing runs: a merge while the agent works could take half-done work.
-          if (widget.done && pr.readyToMerge)
+          if (widget.done && !finished && pr.readyToMerge)
             KitButton(
               key: ValueKey('board.pr.merge.${widget.info.id}'),
               label: 'Merge',

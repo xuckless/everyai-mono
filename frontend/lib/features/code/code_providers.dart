@@ -746,8 +746,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   CodeSessionInfo? byId(String id) => state.where((s) => s.id == id).firstOrNull;
 
-  /// Starts a session on [project] with [prompt] as the first message.
+  /// Starts a session on [project] with [prompt] as the first message. [sessionId] is the id it gets (picked by the
+  /// caller when it must find the session again after a quit, as the Board's tasks and race runners do), else a new
+  /// one.
   Future<CodeSessionInfo> start({
+    String? sessionId,
     required CodeProject project,
     required String prompt,
     required String model,
@@ -758,8 +761,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     HarnessTier? tier,
     String harness = everyaiHarnessName,
     WorkflowPick? workflow,
+    String? fromCommit,
+    bool requireWorktree = false,
   }) async {
-    final id = const Uuid().v7();
+    final id = sessionId ?? const Uuid().v7();
+    if (byId(id) != null) throw HarnessError('A session with the id $id exists already.');
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
     // Sessions work in the project folder itself, in a real shell, unless asked
     // to be isolated (then a worktree on its own branch). A remote host's
@@ -778,8 +784,21 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       if (await _workflowProblem(ref, project.path, script) case final why?) throw HarnessError(why);
     }
     final worktree = local && isolated
-        ? await _worktreeFor(project, title, id, env: driver == null ? HostEnv.instance : _envOf(driver))
+        ? await _worktreeFor(
+            project,
+            title,
+            id,
+            env: driver == null ? HostEnv.instance : _envOf(driver),
+            from: fromCommit,
+          )
         : null;
+    // The Board's tasks and race runners must not share the project folder when they asked for their own branch.
+    if (requireWorktree && isolated && worktree == null) {
+      throw const HarnessError(
+        "This project can't have worktrees (it isn't a git repository with a commit yet), so this would run in "
+        'the project folder itself.',
+      );
+    }
     final baseline = local && worktree == null ? await _baselineFor(project.path) : null;
     final workingDir = worktree?.path ?? project.path;
     tier ??= ref.read(codeSettingsProvider).tier;
@@ -1768,6 +1787,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String title,
     String id, {
     ExecEnv env = HostEnv.instance,
+    String? from,
   }) async {
     final root = await GitService.repoRoot(project.path);
     if (root == null || !await GitService.hasCommits(root)) return null;
@@ -1780,6 +1800,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       slug: sessionSlug(title, id),
       worktreesDir: dir,
       hooksDir: '$data/git-hooks',
+      from: from,
     );
   }
 
@@ -1815,6 +1836,25 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   /// Removes session [id] and the subagents it started; an outside agent's
   /// host token ends and its briefing is deleted (done when this completes).
+  /// Stops [id] and what it runs without opening (connecting) it: through its controller when one is open; else its
+  /// harness session, live in this run, is interrupted and the processes it left are ended. A session with neither
+  /// has nothing running here (after a relaunch nothing runs until it is opened).
+  Future<void> stopWithoutOpening(String id) async {
+    if (ref.exists(codeSessionProvider(id))) return ref.read(codeSessionProvider(id).notifier).stopAll();
+    final live = ref.read(_liveProvider)[id];
+    final info = byId(id);
+    if (live == null || info == null) return;
+    await Future.wait([
+      live.interrupt(),
+      if (killsOwnProcesses(info))
+        CodeSessionController.killProcesses(
+          tag: info.id,
+          workingDir: info.workingDir,
+          ownsDir: ownsWorkingDir(info, parent: byId(info.parentId ?? '')),
+        ),
+    ]);
+  }
+
   Future<void> remove(String id) async {
     final gone = {
       id,
@@ -1850,6 +1890,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
       ref.read(preferencesProvider)['$codeLayoutPrefix$g'] = null;
       ref.read(preferencesProvider)['$codeLimitBannerPrefix$g'] = null;
     }
+    ref.read(codeFailedRunsProvider.notifier).forget(gone);
     // The harnesses' own copies (every lead the session had) go too, so they don't come back under Earlier.
     final natives = [
       for (final s in state)
@@ -2065,6 +2106,8 @@ final class CodeSessionState {
     _ when subagentNeedsInput => SessionStatus.needsInput,
     Transcript(status: ExecutionStatus.running) => SessionStatus.running,
     Transcript(status: ExecutionStatus.error || ExecutionStatus.stuck) => SessionStatus.failed,
+    // Its last turn ended on an error, though the harness reports idle again (Codex reattaches its thread).
+    final t when endedOnFailure(t) => SessionStatus.failed,
     Transcript(status: ExecutionStatus.finished) => SessionStatus.done,
     _ when !connected => SessionStatus.starting,
     _ => SessionStatus.idle,
@@ -2558,6 +2601,14 @@ final class CodeSessionController extends Notifier<CodeSessionState>
       for (final w in _workflows.values) {
         w.detach();
       }
+    });
+    // A run that ended on a failure the harness then reports as idle (Codex reattaches) is remembered, so the
+    // session still reads Failed once its view closes and only the harness's status is polled ([CodeFailedRuns]).
+    // Only from a connected session with its history in: an empty transcript while it loads says nothing.
+    listenSelf((_, next) {
+      final t = next.transcript;
+      if (!next.connected || t.items.isEmpty) return;
+      ref.read(codeFailedRunsProvider.notifier).set(sessionId, failed: endedOnFailure(t));
     });
     // Subagents and forks don't notify: an approval they wait on shows on the
     // parent (subagentNeedsInput), and their questions are the orchestrator's.
@@ -5240,10 +5291,16 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// upstream error); the conversation keeps everything so far. A stuck
   /// agent needs a new message: the server's stuck check reads the history
   /// and would stop a plain re-run at once.
+  ///
+  /// A run that ended on a failure the harness then reports as idle ([endedOnFailure]; Codex reattaches its thread)
+  /// gets a carry-on turn too: the driver's `resume()` has nothing paused to continue, so the session would stay
+  /// Failed. The turn's user message is what clears it.
   Future<void> retry() async {
     if (!_withinBudget()) return;
-    if (state.transcript.status == ExecutionStatus.stuck) {
-      await send('Carry on from where you stopped.');
+    final t = state.transcript;
+    final idleAfterFailure = t.status != ExecutionStatus.error && endedOnFailure(t);
+    if (t.status == ExecutionStatus.stuck || idleAfterFailure) {
+      await send(resumeAfterLimitMessage);
       return;
     }
     await _session?.resume();
@@ -7377,6 +7434,44 @@ final class CodeStatusesLoad extends Notifier<StatusesLoad> {
   }
 }
 
+/// A polled [status] for a session whose last run ended on a failure the harness now reports as idle or done
+/// ([failedRun], from [CodeFailedRuns]): Failed, as its open view said. A running or waiting session is past it.
+SessionStatus failedRunStatus(SessionStatus status, {required bool failedRun}) =>
+    failedRun && (status == SessionStatus.idle || status == SessionStatus.done) ? SessionStatus.failed : status;
+
+/// Sessions whose last run ended on a failure ([endedOnFailure]), kept while their view is closed; Preferences
+/// `code.failed_runs`. Set and cleared by the session's controller as its transcript changes (a new turn clears it),
+/// and dropped with the session.
+final codeFailedRunsProvider = NotifierProvider<CodeFailedRuns, Set<String>>(CodeFailedRuns.new);
+
+final class CodeFailedRuns extends Notifier<Set<String>> {
+  static const key = 'code.failed_runs';
+
+  @override
+  Set<String> build() {
+    try {
+      return {...(jsonDecode(ref.read(preferencesProvider)[key] ?? '[]') as List).whereType<String>()};
+    } on Object {
+      return const {};
+    }
+  }
+
+  void set(String id, {required bool failed}) {
+    if (state.contains(id) == failed) return;
+    _save(failed ? {...state, id} : ({...state}..remove(id)));
+  }
+
+  void forget(Iterable<String> ids) {
+    if (!ids.any(state.contains)) return;
+    _save({...state}..removeAll(ids));
+  }
+
+  void _save(Set<String> ids) {
+    state = ids;
+    ref.read(preferencesProvider)[key] = ids.isEmpty ? null : jsonEncode([...ids]);
+  }
+}
+
 final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
   Timer? _timer;
 
@@ -7403,9 +7498,11 @@ final class CodeStatuses extends Notifier<Map<String, SessionStatus>> {
       final byConversation = await _driverStatuses(ref, sessions);
       if (!ref.mounted) return;
       final before = state;
+      final failedRuns = ref.read(codeFailedRunsProvider);
       state = {
         for (final s in sessions)
-          if (byConversation[s.conversationId] case final status?) s.id: _sessionStatus(status),
+          if (byConversation[s.conversationId] case final status?)
+            s.id: failedRunStatus(_sessionStatus(status), failedRun: failedRuns.contains(s.id)),
       };
       ref.read(codeStatusesLoadProvider.notifier).loaded();
       // Sessions whose view is closed still tell the user when they need them.
@@ -7815,12 +7912,13 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
     await refresh();
   }
 
-  /// Removes the session, its worktree, branch and checkpoints.
-  Future<void> discard() async {
+  /// Removes the session, its worktree, branch and checkpoints; with [keepBranch] the branch stays (a race's runners
+  /// that weren't kept: their work and any pull request from it stay reachable).
+  Future<void> discard({bool keepBranch = false}) async {
     final w = _w;
     final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
     await ref.read(codeSessionsProvider.notifier).remove(sessionId);
-    await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
+    await GitService.removeWorktree(w, hooksDir: '$data/git-hooks', deleteBranch: !keepBranch);
   }
 }
 
