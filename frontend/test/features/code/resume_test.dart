@@ -17,6 +17,7 @@ import 'package:every_ai/features/code/domain/transcript.dart';
 import 'package:every_ai/features/code/drivers/acp/acp_mapping.dart' show agentMessageEvent, userMessageEvent;
 import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
+import 'package:every_ai/features/code/drivers/usage_limit.dart' show usageLimitEvent;
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/code/git/git_service_io.dart' show worktreePaths;
 import 'package:every_ai/features/code/harness/events.dart';
@@ -256,6 +257,23 @@ void main() {
     container.dispose();
     container = make();
     expect([for (final p in await listed()) p.nativeId], ['a2']);
+  });
+
+  test('Resume after a usage limit sends a carry-on turn, even to a lead whose own resume does nothing', () async {
+    final info = await container
+        .read(codeSessionsProvider.notifier)
+        .start(project: theProject(), prompt: 'Add dark mode', model: '', mode: AgentMode.ask, harness: 'alpha');
+    container.listen(codeSessionProvider(info.id), (_, _) {});
+    await whenValue(container, codeSessionProvider(info.id).select((s) => s.connected), (bool c) => c);
+    final lead = (drivers['alpha']! as _Adopting).inner.latest!;
+    lead.add(usageLimitEvent('lim', 'You hit your limit', resetsAt: DateTime.now()));
+    await pumpEventQueue();
+    final before = lead.sent.length;
+    expect(await container.read(codeSessionProvider(info.id).notifier).resumeAfterLimit(), isNull);
+    await pumpEventQueue();
+    // One turn (the session's mode note may lead it), ending in the carry-on words.
+    expect(lead.sent.skip(before), [endsWith(resumeAfterLimitMessage)]);
+    expect(lead.resumes, 0);
   });
 
   test('inside another environment the host-stored sessions are listed but not openable', () async {

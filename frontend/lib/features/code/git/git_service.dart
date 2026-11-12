@@ -93,6 +93,21 @@ abstract final class GitService {
   /// outside git.
   static Future<Set<String>> ignoredAmong(String dir, List<String> paths) => impl.ignoredAmong(dir, paths);
 
+  /// [target]'s pull request (a number or a branch) as the Board's chip shows it; null when gh says there is none.
+  /// Throws [GitError] when it couldn't ask (no gh, the network, a rate limit, signed out, the folder gone).
+  static Future<PrStatus?> prStatus(String dir, String target) => impl.prStatus(dir, target);
+
+  /// How [pr] merges, from what its own repository allows ([prMergeMethodOf]).
+  static Future<PrMergeMethod> prMergeMethod(String dir, PrStatus pr) => impl.prMergeMethod(dir, pr);
+
+  /// Why [pr] shouldn't merge from the session in [dir] now (uncommitted changes, or the folder isn't at the pull
+  /// request's head), or null.
+  static Future<String?> prMergeBlocker(String dir, PrStatus pr) => impl.prMergeBlocker(dir, pr);
+
+  /// Merges [pr] with [method], only at the commit it was shown at (`--match-head-commit`); throws [GitError] when
+  /// gh refuses.
+  static Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) => impl.mergePr(dir, pr, method);
+
   /// Whether the GitHub CLI is installed and signed in.
   static Future<bool> ghReady(String dir) => impl.ghReady(dir);
 

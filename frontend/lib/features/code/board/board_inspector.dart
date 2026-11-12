@@ -15,6 +15,8 @@ import '../ui/harness_logo.dart';
 import '../ui/session_view.dart' show StatusPill, TranscriptList;
 import '../ui/transcript/session_approval.dart';
 import '../ui/transcript/transcript_items.dart' show TranscriptScope;
+import '../../usage/usage_totals.dart' show UsageTotals;
+import 'board_limits.dart' show boardCostLine;
 import 'board_providers.dart' show boardRecentTranscriptProvider;
 import 'board_state.dart';
 import 'board_triage.dart' show InspectorView;
@@ -66,62 +68,72 @@ class BoardInspectorPane extends ConsumerWidget {
   final VoidCallback onClose;
   final VoidCallback onOpenFull;
 
-  Widget _header(CodeSessionInfo info, ModelSpec? model, SessionStatus status, EveryTheme theme) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-    child: Row(
-      children: [
-        if (cover) ...[
-          KitIconButton(
-            key: const ValueKey('board.inspector.back'),
-            icon: EveryIcon.chevronLeft,
-            tooltip: 'Back to the Board',
-            size: 16,
-            onPressed: onClose,
-          ),
-          const SizedBox(width: 4),
-        ],
-        HarnessLogo(info.harness, size: 22),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                info.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.type.callout.semibold.tint(theme.text),
+  /// [cost]: the session's spend or plan tokens ([boardCostLine]), '' when its usage isn't running.
+  Widget _header(CodeSessionInfo info, ModelSpec? model, SessionStatus status, EveryTheme theme, {String cost = ''}) =>
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        child: Row(
+          children: [
+            if (cover) ...[
+              KitIconButton(
+                key: const ValueKey('board.inspector.back'),
+                icon: EveryIcon.chevronLeft,
+                tooltip: 'Back to the Board',
+                size: 16,
+                onPressed: onClose,
               ),
-              if ((model?.name ?? info.model).isNotEmpty)
-                Text(
-                  model?.name ?? info.model,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.type.caption.tint(theme.textSubtle),
-                ),
+              const SizedBox(width: 4),
             ],
-          ),
+            HarnessLogo(info.harness, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    info.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.type.callout.semibold.tint(theme.text),
+                  ),
+                  if ((model?.name ?? info.model).isNotEmpty || cost.isNotEmpty)
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          if ((model?.name ?? info.model).isNotEmpty) TextSpan(text: model?.name ?? info.model),
+                          if ((model?.name ?? info.model).isNotEmpty && cost.isNotEmpty) const TextSpan(text: '  ·  '),
+                          if (cost.isNotEmpty)
+                            TextSpan(text: cost, style: theme.type.caption.mono.tint(theme.textSubtle)),
+                        ],
+                      ),
+                      key: const ValueKey('board.inspector.meta'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.type.caption.tint(theme.textSubtle),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            StatusPill(status: status, dense: true),
+            const SizedBox(width: 4),
+            KitButton(
+              key: const ValueKey('board.inspector.open'),
+              label: 'Open',
+              style: KitButtonStyle.ghost,
+              onPressed: onOpenFull,
+            ),
+            if (!cover)
+              KitIconButton(
+                key: const ValueKey('board.inspector.close'),
+                icon: EveryIcon.close,
+                tooltip: 'Close (Esc)',
+                size: 16,
+                onPressed: onClose,
+              ),
+          ],
         ),
-        const SizedBox(width: 8),
-        StatusPill(status: status, dense: true),
-        const SizedBox(width: 4),
-        KitButton(
-          key: const ValueKey('board.inspector.open'),
-          label: 'Open',
-          style: KitButtonStyle.ghost,
-          onPressed: onOpenFull,
-        ),
-        if (!cover)
-          KitIconButton(
-            key: const ValueKey('board.inspector.close'),
-            icon: EveryIcon.close,
-            tooltip: 'Close (Esc)',
-            size: 16,
-            onPressed: onClose,
-          ),
-      ],
-    ),
-  );
+      );
 
   /// The session as its harness's files last showed it, read-only: looking attaches nothing.
   Widget _preview(BuildContext context, WidgetRef ref, CodeSessionInfo info, EveryTheme theme) {
@@ -189,12 +201,16 @@ class BoardInspectorPane extends ConsumerWidget {
       if (context.mounted) markBoardSeen(ref, sessionId, seen);
     });
     final model = ref.watch(modelCatalogProvider)[ModelId(info.model)];
+    // What it cost so far, as on its card (read when the session's meter is already up; never started for this).
+    final cost = ref.exists(codeUsageProvider(sessionId))
+        ? boardCostLine(ref.watch(codeUsageProvider(sessionId)).value ?? UsageTotals.zero)
+        : '';
 
     return Column(
       key: ValueKey('board.inspector.$sessionId'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _header(info, model, state.status, theme),
+        _header(info, model, state.status, theme, cost: cost),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: BoardWork(sessionId: sessionId),

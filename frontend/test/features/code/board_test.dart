@@ -8,10 +8,17 @@ import 'package:every_ai/core/net/api_client.dart';
 import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart' show apiClientProvider;
+import 'package:every_ai/features/usage/usage_totals.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:every_ai/core/ui/anchored_popover.dart' show PopoverRow;
 import 'package:every_ai/core/ui/kit.dart' show KitButton;
 import 'package:every_ai/features/code/board/board_providers.dart';
 import 'package:every_ai/features/code/board/board_screen.dart';
+import 'package:every_ai/features/code/board/board_snooze.dart' show boardSnoozedProvider;
 import 'package:every_ai/features/code/board/board_state.dart';
+import 'package:every_ai/features/code/drivers/usage_limit.dart' show usageLimitEvent;
+import 'package:every_ai/features/code/limit_providers.dart' show codePlanLimitsProvider;
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -23,9 +30,6 @@ import 'package:every_ai/features/code/ui/panes/login_ask_card.dart';
 import 'package:every_ai/features/code/workflows/workflow_engine.dart';
 import 'package:every_ai/features/code/workflows/workflow_runs.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
-import 'package:every_ai/features/usage/usage_totals.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart';
@@ -621,6 +625,10 @@ void main() {
           (id, {required approve, required callIds}) async =>
               decisions.add('$id ${approve ? 'approve' : 'deny'} ${callIds.join(',')}'),
         ),
+        boardResumeProvider.overrideWithValue((id) async {
+          decisions.add('$id resume');
+          return null;
+        }),
       ],
     );
     for (final id in live.keys) {
@@ -1043,6 +1051,133 @@ void main() {
     await settle(tester);
     expect(decisions, isEmpty);
 
+    await done(tester, c);
+  });
+
+  testWidgets('the limits strip shows what the sessions reported, and hides with nothing known', (tester) async {
+    final c = await board(
+      tester,
+      sessions: [
+        _s('a', harness: 'claude-code'),
+        _s('b', harness: 'claude-code'),
+      ],
+      live: {'a': const CodeSessionState(connected: true), 'b': const CodeSessionState(connected: true)},
+      statuses: const {'a': SessionStatus.running, 'b': SessionStatus.running},
+      decisions: [],
+    );
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.limits')), findsNothing);
+
+    final reset = DateTime.now().add(const Duration(days: 2));
+    for (final (id, used) in [('a', 0.4), ('b', 0.8)]) {
+      c
+          .read(codePlanLimitsProvider(id).notifier)
+          .set(
+            PlanLimits.of(
+              id: id,
+              windows: [PlanWindow(name: 'seven_day', used: used, resetsAt: reset, minutes: 10080)],
+            ),
+          );
+    }
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.limits')), findsOneWidget);
+    // One bar for the harness's window, at the latest reading.
+    expect(find.text('80% used'), findsOneWidget);
+    expect(find.textContaining('This week', findRichText: true), findsOneWidget);
+    // A click lists the sessions it covers; picking one opens it in the inspector.
+    await tester.tap(find.byKey(const ValueKey('board.limit.claude-code||seven_day')));
+    await settle(tester);
+    final row = find.descendant(of: find.byType(PopoverRow), matching: find.text('Session b'));
+    expect(row, findsOneWidget);
+    await tester.tap(row);
+    await settle(tester);
+
+    expect(find.byKey(const ValueKey('board.inspector.b')), findsOneWidget);
+    await done(tester, c);
+  });
+
+  testWidgets('a card stopped on a limit counts down and snoozes into its fold; Resume only once it reset', (
+    tester,
+  ) async {
+    Transcript limited(DateTime resetsAt) =>
+        (TranscriptBuilder()..add(usageLimitEvent('lim', 'You hit your limit', resetsAt: resetsAt))).snapshot;
+    final decisions = <String>[];
+    final c = await board(
+      tester,
+      sessions: [_s('a'), _s('b'), _s('soon')],
+      live: {
+        'a': CodeSessionState(connected: true, transcript: limited(DateTime.now().add(const Duration(hours: 2)))),
+        'b': CodeSessionState(
+          connected: true,
+          transcript: limited(DateTime.now().subtract(const Duration(minutes: 1))),
+        ),
+        // Resets in a few seconds: the card turns to Resume by itself, with nothing else changing.
+        'soon': CodeSessionState(connected: true, transcript: limited(DateTime.now().add(const Duration(seconds: 3)))),
+      },
+      statuses: const {'a': SessionStatus.failed, 'b': SessionStatus.failed, 'soon': SessionStatus.failed},
+      decisions: decisions,
+    );
+    await settle(tester);
+    expect(find.textContaining('Limit reached · Resets in 1h'), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.resume.a')), findsNothing);
+    expect(find.byKey(const ValueKey('board.resume.soon')), findsNothing);
+    // b has reset: Resume is offered (never run by itself).
+    expect(find.byKey(const ValueKey('board.resume.b')), findsOneWidget);
+    expect(find.byKey(const ValueKey('board.snooze.b')), findsNothing);
+    expect(decisions, isEmpty);
+
+    // Time passes the reset of "soon": it offers Resume without anything else rebuilding the Board.
+    await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 4)));
+    await tester.pump(const Duration(seconds: 5));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.resume.soon')), findsOneWidget);
+    expect(decisions, isEmpty);
+
+    // Resume carries the session on (every harness gets a carry-on turn).
+    await tester.tap(find.byKey(const ValueKey('board.resume.b')));
+    await settle(tester);
+    expect(decisions, ['b resume']);
+
+    await tester.tap(find.byKey(const ValueKey('board.snooze.a')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.a.0')), findsNothing);
+    expect(find.text('Snoozed'), findsOneWidget);
+    expect(c.read(boardSnoozedProvider).keys, ['a']);
+    await tester.tap(find.text('Snoozed'));
+    await settle(tester);
+    expect(find.textContaining('Back in 1h'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('board.unsnooze.a')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.a.0')), findsOneWidget);
+    expect(find.text('Snoozed'), findsNothing);
+    await done(tester, c);
+  });
+
+  testWidgets("a closed session's snooze folds it until the reset, then ends; deleted sessions' snoozes go", (
+    tester,
+  ) async {
+    final c = await board(
+      tester,
+      sessions: [_s('a'), _s('closed')],
+      live: {'a': const CodeSessionState(connected: true)},
+      statuses: const {'a': SessionStatus.done, 'closed': SessionStatus.done},
+      decisions: [],
+    );
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsOneWidget);
+    c.read(boardSnoozedProvider.notifier)
+      ..snooze('closed', DateTime.now().add(const Duration(seconds: 3)))
+      ..snooze('deleted', DateTime.now().add(const Duration(hours: 1)));
+    await settle(tester);
+    // Folded by its stored snooze alone (no transcript here), and the deleted session's snooze is gone.
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsNothing);
+    expect(c.read(boardSnoozedProvider).keys, ['closed']);
+
+    await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 4)));
+    await tester.pump(const Duration(seconds: 5));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('board.card.closed.0')), findsOneWidget);
+    expect(c.read(boardSnoozedProvider), isEmpty);
     await done(tester, c);
   });
 
