@@ -18,6 +18,7 @@ import '../../code/ui/code_settings_section.dart';
 import '../../code/ui/logins_settings.dart';
 import '../../code/ui/mcp_settings_screen.dart';
 import '../../local_models/ui/local_models_section.dart';
+import '../../processes/ui/processes_section.dart';
 import '../../memory/ui/memory_screen.dart';
 import '../../models/models_providers.dart';
 import '../../models/ui/model_avatar.dart';
@@ -57,6 +58,7 @@ Widget settingsSectionBody(SettingsSection section, Map<String, String> args) =>
   SettingsSection.schedules => const ScheduledTasksBody(),
   SettingsSection.mcp => McpSettingsBody(projectId: args['project']),
   SettingsSection.logins => LoginsSettingsBody(projectId: args['project']),
+  SettingsSection.processes => const ProcessesSection(),
   SettingsSection.skills => SkillsSettingsBody(projectId: args['project']),
   SettingsSection.agents => const AgentsSettingsBody(),
   SettingsSection.commands => const CustomCommandsBody(),
