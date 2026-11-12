@@ -26,7 +26,7 @@ final class NotLimited extends BoardLimitState {
   const NotLimited();
 }
 
-/// Stopped on a limit that hasn't reset; [resetsAt] when the harness said (Snooze needs it).
+/// Stopped on a limit that hasn't reset; [resetsAt] is when it does (Snooze needs it).
 final class Limited extends BoardLimitState {
   const Limited(this.resetsAt);
   final DateTime? resetsAt;
@@ -40,17 +40,27 @@ final class Snoozed extends BoardLimitState {
 
 /// The limit has reset: Resume carries on.
 final class ReadyToResume extends BoardLimitState {
-  const ReadyToResume();
+  const ReadyToResume({this.resetKnown = true});
+
+  /// False when the harness never said when the limit resets.
+  final bool resetKnown;
 }
 
 /// [limit] is what the transcript ends on ([stoppedOnLimit]); [snoozedUntil] the card's snooze, if any.
 BoardLimitState boardLimitState({UsageLimit? limit, DateTime? snoozedUntil, required DateTime now}) {
   if (limit == null) return const NotLimited();
   final reset = limit.resetsAt;
-  if (reset != null && !now.isBefore(reset)) return const ReadyToResume();
+  // No known reset: nothing says to wait, so Resume is offered at once (never run by itself).
+  if (reset == null) return const ReadyToResume(resetKnown: false);
+  if (!now.isBefore(reset)) return const ReadyToResume();
   if (snoozedUntil != null && now.isBefore(snoozedUntil)) return Snoozed(snoozedUntil);
   return Limited(reset);
 }
+
+/// Whether [transcript] can be read for a limit: the session is connected and its history has come in. Before that
+/// an empty transcript says nothing, and must not look like "no longer limited".
+bool transcriptSettled({required bool connected, required Transcript transcript}) =>
+    connected && transcript.items.isNotEmpty;
 
 /// The usage limit a session stopped on: the last thing its transcript shows, with nothing running since.
 UsageLimit? stoppedOnLimit(Transcript t) {

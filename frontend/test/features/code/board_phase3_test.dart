@@ -129,9 +129,9 @@ void main() {
       expect(pooled.single.percent, 5);
 
       final cap = busiestCap([
-        (sessionId: 'a', title: 'A', chargedMicros: 1000000, budgetUsd: 5),
-        (sessionId: 'b', title: 'B', chargedMicros: 4000000, budgetUsd: 5),
-        (sessionId: 'c', title: 'C', chargedMicros: 9000000, budgetUsd: null),
+        (sessionId: 'a', title: 'A', spentMicros: 1000000, budgetUsd: 5),
+        (sessionId: 'b', title: 'B', spentMicros: 4000000, budgetUsd: 5),
+        (sessionId: 'c', title: 'C', spentMicros: 9000000, budgetUsd: null),
       ])!;
       expect((cap.label, cap.scope, cap.percent), ('Session cap', r'B · $5.00', 80));
       expect(cap.sessions, ['b']);
@@ -156,14 +156,19 @@ void main() {
       expect(boardLimitState(limit: limit, snoozedUntil: reset, now: now), isA<Snoozed>());
       expect(boardLimitState(limit: limit, snoozedUntil: reset, now: reset), isA<ReadyToResume>());
       expect(boardLimitState(limit: limit, now: reset.add(const Duration(minutes: 1))), isA<ReadyToResume>());
-      // A limit with no known reset can't be snoozed or resume by itself: it stays limited.
+      // A limit with no known reset can't be snoozed; Resume is offered at once.
       expect(
         boardLimitState(
           limit: const UsageLimit(message: 'out'),
           now: now,
         ),
-        isA<Limited>(),
+        isA<ReadyToResume>().having((r) => r.resetKnown, 'resetKnown', false),
       );
+    });
+
+    test('a transcript is read only once connected and replayed', () {
+      expect(transcriptSettled(connected: false, transcript: const Transcript()), isFalse);
+      expect(transcriptSettled(connected: true, transcript: const Transcript()), isFalse);
     });
 
     test('countdown text', () {
@@ -304,7 +309,7 @@ void main() {
       expect(prPollDelay(found: true, failures: 9), const Duration(minutes: 10));
     });
 
-    testWidgets('the chip shows the pull request; Merge asks first and runs once', (tester) async {
+    testWidgets('the chip shows the pull request; Merge runs once, without a confirm', (tester) async {
       debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
       final db = AppDatabase(NativeDatabase.memory());
       final prefs = await Preferences.load(db);
@@ -328,7 +333,7 @@ void main() {
           preferencesProvider.overrideWithValue(prefs),
           boardPrSourceProvider.overrideWithValue((
             ready: (_) async => true,
-            status: (_, _) async => pr,
+            status: (_, _) async => merges.isEmpty ? pr : pr.withState(PrState.merged),
             method: (_, _) async => PrMergeMethod.squash,
             blocker: (_, _) async => blocker,
             merge: (_, p, m) async {
@@ -355,7 +360,7 @@ void main() {
       expect(find.text('Checks pass'), findsOneWidget);
       expect(find.text('Ready to merge +5 −1'), findsOneWidget);
 
-      // Something unpushed in the session: no confirm, the reason instead.
+      // Something unpushed in the session: the reason instead.
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
       await tester.pumpAndSettle();
       expect(find.text('Merge pull request #12?'), findsNothing);
@@ -363,26 +368,16 @@ void main() {
       await tester.pump(const Duration(seconds: 5));
       blocker = null;
 
-      // Cancelled: nothing merges. The confirm says how it merges.
+      // One click merges (no confirm), and a second click while it runs does nothing.
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
-      await tester.pumpAndSettle();
-      expect(find.text('Merge pull request #12?'), findsOneWidget);
-      expect(find.textContaining('squash and merge'), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
-      expect(merges, isEmpty);
-
-      // Confirmed: one merge, and a second click while it runs does nothing.
-      await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')));
-      await tester.pumpAndSettle();
-      // The dialog's Merge (the chip's own sits under the dialog).
-      await tester.tap(find.text('Merge').last);
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.pump(const Duration(milliseconds: 10));
       await tester.tap(find.byKey(const ValueKey('board.pr.merge.a')), warnIfMissed: false);
       await tester.pump();
       expect(merges, [(12, PrMergeMethod.squash)]);
       mergeGate.complete();
-      await tester.pump();
+      await tester.pump(Duration.zero);
+      await tester.pump(Duration.zero);
       // Merged at once, before gh is asked again.
       expect(find.text('Merged'), findsOneWidget);
       expect(find.byKey(const ValueKey('board.pr.merge.a')), findsNothing);

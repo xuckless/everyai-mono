@@ -630,14 +630,25 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
         final ms? => DateTime.fromMillisecondsSinceEpoch(ms),
         null => null,
       };
-      if (!isOpen(s)) {
+      // Open but not connected (or nothing replayed yet) tells nothing: like a closed one, only the stored snooze
+      // counts, so opening a snoozed session doesn't clear it while its history replays.
+      final read = isOpen(s)
+          ? ref.watch(
+              codeSessionProvider(s.id).select(
+                (st) => (
+                  settled: transcriptSettled(connected: st.connected, transcript: st.transcript),
+                  limit: stoppedOnLimit(st.transcript),
+                ),
+              ),
+            )
+          : null;
+      if (read == null || !read.settled) {
         // A closed session (after a restart) has no transcript here: its snooze alone folds it until the reset,
         // then ends; the card shows its limit again once the session is opened.
         if (until != null) limitOf[s.id] = now.isBefore(until) ? Snoozed(until) : const NotLimited();
         continue;
       }
-      final limit = ref.watch(codeSessionProvider(s.id).select((st) => stoppedOnLimit(st.transcript)));
-      limitOf[s.id] = boardLimitState(limit: limit, snoozedUntil: until, now: now);
+      limitOf[s.id] = boardLimitState(limit: read.limit, snoozedUntil: until, now: now);
     }
     final snoozed = {
       for (final MapEntry(:key, :value) in limitOf.entries)
@@ -713,13 +724,20 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
             ),
     ];
     final budgets = ref.watch(codeSettingsProvider.select((st) => st.budgets));
+    // Spend is what the cap stops the session at: the session and its forks (`budgetSpentMicros`).
+    final everySession = ref.watch(codeSessionsProvider);
     final cap = busiestCap([
       for (final s in all)
         if (budgets[s.id] != null && isOpen(s) && ref.exists(codeUsageProvider(s.id)))
           (
             sessionId: s.id,
             title: s.title,
-            chargedMicros: ref.watch(codeUsageProvider(s.id)).value?.chargedMicros ?? 0,
+            spentMicros: budgetSpentMicros(
+              s.id,
+              sessions: everySession,
+              usage: (id) =>
+                  ref.exists(codeUsageProvider(id)) ? ref.watch(codeUsageProvider(id)).value?.spentMicros : null,
+            ),
             budgetUsd: budgets[s.id],
           ),
     ]);
@@ -1936,6 +1954,7 @@ class _LimitLine extends StatelessWidget {
     };
     final text = switch (limit) {
       Limited() => 'Limit reached',
+      ReadyToResume(resetKnown: false) => 'Limit reached',
       ReadyToResume() => 'Limit reset',
       NotLimited() || Snoozed() => '',
     };

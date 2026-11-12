@@ -95,14 +95,16 @@ bool _newer(PlanWindow a, PlanWindow b) {
 }
 
 /// A session's spend against its cap, for [busiestCap].
-typedef SessionCap = ({String sessionId, String title, int chargedMicros, double? budgetUsd});
+/// [spentMicros] is what the cap is enforced against (`budgetSpentMicros`: the session and its forks), not the lead's
+/// own charge.
+typedef SessionCap = ({String sessionId, String title, int spentMicros, double? budgetUsd});
 
 /// The spending cap closest to full among the Board's sessions, as one bar ("Session cap · <title>"): caps are per
 /// session, so the one about to stop a session is the one worth showing. Null when no shown session has a cap.
 BoardLimit? busiestCap(List<SessionCap> caps) {
   ({SessionCap cap, double fill})? top;
   for (final c in caps) {
-    final fill = budgetFill(c.chargedMicros, c.budgetUsd);
+    final fill = budgetFill(c.spentMicros, c.budgetUsd);
     if (fill == null) continue;
     if (top == null || fill > top.fill) top = (cap: c, fill: fill);
   }

@@ -50,7 +50,15 @@ final class BoardGhGate {
     return ask;
   }
 
-  Future<PrStatus?> status(String dir, String target) => _call(() => _source.status(dir, target));
+  final _asking = <String, Future<PrStatus?>>{};
+
+  /// One ask per folder and target at a time: cards on the same branch share the answer.
+  Future<PrStatus?> status(String dir, String target) {
+    final key = '$dir\x00$target';
+    return _asking[key] ??= _call(() => _source.status(dir, target)).whenComplete(() {
+      _asking.remove(key);
+    });
+  }
 
   /// Runs [job] once fewer than [maxCalls] gh calls are running.
   Future<T> _call<T>(Future<T> Function() job) async {
@@ -289,15 +297,6 @@ class _BoardPrChipState extends ConsumerState<BoardPrChip> {
       }
       final method = await source.method(dir, shown);
       if (!mounted) return pr.cancelMerge();
-      final ok = await showAdaptiveConfirm(
-        context,
-        title: 'Merge pull request #${shown.number}?',
-        message:
-            '"${widget.info.title}" merges into its base branch on GitHub: ${method.label.toLowerCase()}, at the '
-            'commit shown here.',
-        confirmLabel: 'Merge',
-      );
-      if (!ok) return pr.cancelMerge();
       await pr.merge(dir, shown, method);
       if (mounted) showAdaptiveToast(context, 'Merged #${shown.number}');
     } on Object catch (e) {
