@@ -35,7 +35,7 @@ Future<List<RepoFinding>> checkRepo(String dir) async {
       case TimedOut(:final kill) || Cancelled(:final kill):
         logStop('git ${args.first} (repo check)', kill);
         throw StateError(runProblem('git ${args.first}', r)!);
-      case StartFailed(:final error):
+      case StartFailed(:final error) || Refused(reason: final error):
         throw ProcessException('git', args, error);
     }
   }

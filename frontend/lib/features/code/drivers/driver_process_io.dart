@@ -29,21 +29,18 @@ Future<DriverProcess> spawnDriver({
   final shell = await ShellEnv.load();
   // Before the start: it is the working directory of an environment's bridge.
   File(logPath).parent.createSync(recursive: true);
-  // In the root zone: the supervisor's timers for it are real time even when the caller's aren't (widget tests).
-  final child = await Zone.root.run(
-    () => ProcessSupervisor.instance.spawn(
-      SpawnSpec(
-        owner: driverOwner(sessionTag),
-        kind: ProcessKind.leadCli,
-        exe: executable,
-        args: args,
-        env: {...shell.env, ...env, sessionEnvVar: sessionTag},
-        cwd: cwd,
-        label: 'Driver ${_name(executable)}',
-        detail: sessionTag,
-        // A CLI on stdio ends by itself when its input closes (claude -p, codex app-server, ACP agents).
-        politeStop: closeInputFirst ? _closeInput : null,
-      ),
+  final child = await ProcessSupervisor.instance.spawn(
+    SpawnSpec(
+      owner: driverOwner(sessionTag),
+      kind: ProcessKind.leadCli,
+      exe: executable,
+      args: args,
+      env: {...shell.env, ...env, sessionEnvVar: sessionTag},
+      cwd: cwd,
+      label: 'Driver ${_name(executable)}',
+      detail: sessionTag,
+      // A CLI on stdio ends by itself when its input closes (claude -p, codex app-server, ACP agents).
+      politeStop: closeInputFirst ? _closeInput : null,
     ),
   );
   registerDriverRoot(sessionTag, child.pid!);
@@ -124,6 +121,7 @@ Future<DriverProcess> spawnDriverTty({
   // Only what this run writes counts as its last words.
   final logStart = _length(logPath);
   final TtyProgram program;
+  final startedAt = DateTime.now();
   try {
     program = await start(
       '/bin/sh',
@@ -157,6 +155,8 @@ Future<DriverProcess> spawnDriverTty({
         detail: sessionTag,
       ),
       exitCode: program.exitCode,
+      // Our own child, just started: matched by its start time before it is ever signalled.
+      startedWithin: DateTime.now().difference(startedAt) + adoptSlack,
     );
   } on SupervisorClosed {
     // Started while the app quits: it must not outlive it.
@@ -455,7 +455,8 @@ Future<DriverStatus> _version(String command, String path, List<String> versionA
           "$command didn't say its version.${logStop('$command --version', kill) is Ended ? '' : ' (still running?)'}",
     ),
     Cancelled() => DriverStatus(installed: true, path: path, problem: "$command's check was cancelled."),
-    StartFailed(:final error) => DriverStatus(installed: true, path: path, problem: "Couldn't run $command: $error"),
+    StartFailed(:final error) ||
+    Refused(reason: final error) => DriverStatus(installed: true, path: path, problem: "Couldn't run $command: $error"),
   };
 }
 

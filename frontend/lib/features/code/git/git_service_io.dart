@@ -73,7 +73,7 @@ ProcessResult _result(String what, String exe, List<String> args, RunResult r, {
     case TimedOut(:final kill) || Cancelled(:final kill):
       logStop(what, kill);
       throw GitError(runProblem(what, r)!);
-    case StartFailed(:final error):
+    case StartFailed(:final error) || Refused(reason: final error):
       throw ProcessException(exe, args, error);
   }
 }

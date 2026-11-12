@@ -16,6 +16,17 @@ import 'package:every_ai/features/code/harness/session_processes.dart';
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Now, as `ps -o lstart=` says it (the adoption checks the pty's process started just now).
+var _started = '';
+
+String _lstartNow() {
+  final t = DateTime.now();
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${days[t.weekday - 1]}_${months[t.month - 1]}_${t.day}_${two(t.hour)}:${two(t.minute)}:${two(t.second)}_${t.year}';
+}
+
 /// What the fake supervisor's process table holds, and the signals it was asked to send.
 final _alive = <int>{};
 final _signals = <(int, ProcessSignal)>[];
@@ -24,10 +35,7 @@ final _signals = <(int, ProcessSignal)>[];
 ProcessSupervisor _fakeSupervisor() => ProcessSupervisor.create(
   hooks: SupervisorHooks(
     scan: ({required bool env}) async => Listed(
-      ProcessList([
-        for (final p in _alive)
-          ScanRow(pid: p, ppid: pid, pgid: pid, start: 'Thu_Nov_12_01:50:25_2026', command: 'aider'),
-      ]),
+      ProcessList([for (final p in _alive) ScanRow(pid: p, ppid: pid, pgid: pid, start: _started, command: 'aider')]),
       at: DateTime.now(),
     ),
     signal: (p, sig) {
@@ -46,6 +54,7 @@ ProcessSupervisor _fakeSupervisor() => ProcessSupervisor.create(
 
 final class FakePty implements ShellPty {
   FakePty() {
+    _started = _lstartNow();
     _alive.add(pid);
   }
   final _out = StreamController<Uint8List>();

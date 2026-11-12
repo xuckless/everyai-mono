@@ -176,7 +176,7 @@ Future<({int code, String stdout})?> _status(String executable, List<String> arg
     case TimedOut(:final kill) || Cancelled(:final kill):
       logStop('$executable ${args.join(' ')}', kill);
       return null;
-    case StartFailed():
+    case StartFailed() || Refused():
       return null;
   }
 }

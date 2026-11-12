@@ -85,7 +85,7 @@ Future<int?> runCli(String command, List<String> args, {required Duration timeou
     case TimedOut(:final kill) || Cancelled(:final kill):
       logStop('$command ${args.join(' ')}', kill);
       return -1;
-    case StartFailed():
+    case StartFailed() || Refused():
       return null;
   }
 }

@@ -43,7 +43,7 @@ Future<bool> isGitCommit(String dir, String ref) async {
   return switch (r) {
     Finished(:final code) => code == 0,
     // Hung (stopped, verified) or no git: not known to be a commit.
-    TimedOut() || Cancelled() || StartFailed() => () {
+    TimedOut() || Cancelled() || StartFailed() || Refused() => () {
       debugPrint('EveryAI workflows: ${runProblem('git rev-parse', r)}');
       return false;
     }(),

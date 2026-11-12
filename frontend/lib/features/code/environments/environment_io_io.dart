@@ -70,7 +70,7 @@ Future<CommandResult?> _run(
   );
   return switch (r) {
     Finished(:final code, :final stdoutBytes) => (code: code, stdout: stdoutBytes),
-    TimedOut() || Cancelled() || StartFailed() => _failed(executable, r),
+    TimedOut() || Cancelled() || StartFailed() || Refused() => _failed(executable, r),
   };
 }
 

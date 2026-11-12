@@ -10,7 +10,7 @@ import '../../panes/pty.dart';
 import '../briefing/briefing_types.dart' show briefingRootOf;
 import '../driver.dart';
 import '../driver_process.dart';
-import '../short_run.dart' show logStop;
+import '../short_run.dart' show adoptSlack, logStop;
 import 'session_text_stub.dart' if (dart.library.io) 'session_text_io.dart' as text;
 import 'terminal_session.dart';
 
@@ -75,6 +75,7 @@ final class TerminalDriver implements HarnessDriver {
     final path = status.path;
     if (!status.installed || path == null) throw HarnessError("$label isn't installed.");
     final owner = SessionOwner(spec.procTag);
+    final startedAt = DateTime.now();
     final pty = await startPty(
       executable: path,
       args: args,
@@ -90,6 +91,8 @@ final class TerminalDriver implements HarnessDriver {
         pty.pid,
         SpawnSpec(owner: owner, kind: ProcessKind.pty, exe: path, args: args, label: '$label (terminal)'),
         exitCode: pty.exitCode,
+        // Our own child, just started: matched by its start time before it is ever signalled.
+        startedWithin: DateTime.now().difference(startedAt) + adoptSlack,
       );
     } on SupervisorClosed {
       // Started while the app quits: it must not outlive it.

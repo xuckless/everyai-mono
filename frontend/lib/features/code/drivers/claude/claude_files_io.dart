@@ -47,7 +47,7 @@ Future<String?> runQuiet(String executable, List<String> args) async {
       logStop('$executable ${args.join(' ')}', kill);
       return null;
     }(),
-    StartFailed() => null,
+    StartFailed() || Refused() => null,
   };
 }
 

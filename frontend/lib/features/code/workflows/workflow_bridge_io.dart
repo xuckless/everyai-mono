@@ -26,34 +26,41 @@ Future<WorkflowBridge> startWorkflowBridge({
   final runDir = Directory(dir)..createSync(recursive: true);
   File('${runDir.path}/main.js').writeAsStringSync(workflowModule(source));
   File('${runDir.path}/prelude.js').writeAsStringSync(workflowPrelude(args));
-  // In the root zone: the supervisor's timers for it are real time even in a fake-time test zone.
-  final process = await Zone.root.run(
-    () => ProcessSupervisor.instance.spawn(
-      SpawnSpec(
-        // The run's folder names no session here; the workflow engine ends it (and the quit ends what is left).
-        owner: const AppOwner(),
-        kind: ProcessKind.script,
-        exe: deno,
-        args: const [
-          'run',
-          '--no-prompt',
-          '--no-config',
-          '--no-lock',
-          '--no-remote',
-          '--no-npm',
-          '--quiet',
-          'prelude.js',
-        ],
-        cwd: runDir.path,
-        includeParentEnvironment: false,
-        // `workflows/cache`, next to the session folders.
-        env: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
-        label: 'Workflow script',
-        detail: runDir.path,
-      ),
+  final process = await ProcessSupervisor.instance.spawn(
+    SpawnSpec(
+      // Its session's: the run's folder is `<data>/workflows/<session id>/<run id>` (code_providers'
+      // `_workflowDir`), so the session's stop ends it too.
+      owner: workflowOwnerOf(runDir.path),
+      kind: ProcessKind.script,
+      exe: deno,
+      args: const [
+        'run',
+        '--no-prompt',
+        '--no-config',
+        '--no-lock',
+        '--no-remote',
+        '--no-npm',
+        '--quiet',
+        'prelude.js',
+      ],
+      cwd: runDir.path,
+      includeParentEnvironment: false,
+      // `workflows/cache`, next to the session folders.
+      env: {'DENO_DIR': '${runDir.parent.parent.path}/cache', 'DENO_NO_UPDATE_CHECK': '1', 'NO_COLOR': '1'},
+      label: 'Workflow script',
+      detail: runDir.path,
     ),
   );
   return _DenoBridge(process, runDir);
+}
+
+/// The owner of a workflow script run in [runDir]: the session the folder names (`…/workflows/<session>/<run>`), or
+/// the app when the folder isn't laid out that way.
+ProcessOwner workflowOwnerOf(String runDir) {
+  final parts = runDir.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty).toList();
+  return parts.length >= 3 && parts[parts.length - 3] == 'workflows'
+      ? SessionOwner(parts[parts.length - 2])
+      : const AppOwner();
 }
 
 final class _DenoBridge implements WorkflowBridge {

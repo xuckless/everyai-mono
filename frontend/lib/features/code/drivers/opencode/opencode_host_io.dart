@@ -26,7 +26,7 @@ Future<CliRun> runOpenCodeCli(String executable, List<String> args, {String? cwd
     case TimedOut(:final kill) || Cancelled(:final kill):
       logStop('opencode ${args.take(2).join(' ')}', kill);
       throw HarnessError(runProblem('opencode ${args.take(2).join(' ')}', r)!);
-    case StartFailed():
+    case StartFailed() || Refused():
       throw HarnessError(runProblem('opencode', r)!);
   }
 }

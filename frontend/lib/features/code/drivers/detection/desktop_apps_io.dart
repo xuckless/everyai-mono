@@ -36,7 +36,7 @@ Future<String> _reg(String executable, List<String> args) async {
     case TimedOut(:final kill) || Cancelled(:final kill):
       logStop('$executable ${args.join(' ')}', kill);
       return '';
-    case Finished() || StartFailed():
+    case Finished() || StartFailed() || Refused():
       return '';
   }
 }

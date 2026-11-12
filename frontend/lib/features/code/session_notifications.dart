@@ -60,7 +60,7 @@ final class CommandNotifier implements SystemNotifier {
       case TimedOut(:final kill) || Cancelled(:final kill):
         logStop('notification', kill);
         debugPrint('EveryAI notifications: ${runProblem('notification', r)}');
-      case Finished() || StartFailed():
+      case Finished() || StartFailed() || Refused():
         break;
     }
   }

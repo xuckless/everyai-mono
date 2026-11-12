@@ -154,7 +154,7 @@ Future<String> _runKilling(String executable, List<String> args, Duration limit,
     case Cancelled(:final kill):
       logStop('$executable ${args.join(' ')}', kill);
       throw ProcessException(executable, args, 'cancelled');
-    case StartFailed(:final error):
+    case StartFailed(:final error) || Refused(reason: final error):
       throw ProcessException(executable, args, error);
   }
 }
