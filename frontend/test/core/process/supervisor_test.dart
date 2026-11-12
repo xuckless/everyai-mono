@@ -237,7 +237,11 @@ void main() {
       expect(s.children, isEmpty);
     });
 
-    for (final via in [LaunchVia.helper, if (Platform.isMacOS) LaunchVia.perl]) {
+    for (final via in [
+      LaunchVia.helper,
+      if (Platform.isMacOS) LaunchVia.perl,
+      if (Platform.isLinux) LaunchVia.setsid,
+    ]) {
       test('${via.name}: the pid is the program, and a signal reads as a negative code', () async {
         final s = supervisor(
           hooks: SupervisorHooks(timings: fast, launch: via),
@@ -245,7 +249,14 @@ void main() {
         final p = await s.spawn(napSpec());
         await p.landed;
         expect(pgidOf(p.pid!), p.pid);
-        expect(_ps(['-o', 'command=', '-p', '${p.pid}']), '/bin/sleep $nap', reason: 'nothing in between');
+        // A session of its own (macOS ps has no `sid`).
+        if (Platform.isLinux) expect(int.parse(_ps(['-o', 'sid=', '-p', '${p.pid}'])), p.pid);
+        // `sleep` as resolved on PATH: /bin/sleep on macOS, /usr/bin/sleep first on most Linux systems.
+        expect(
+          _ps(['-o', 'command=', '-p', '${p.pid}']),
+          matches('^(/usr)?/bin/sleep $nap\$'),
+          reason: 'nothing in between',
+        );
         expect(p.signal(ProcessSignal.sigterm), isTrue);
         expect(await p.exitCode, -15);
       });
@@ -791,6 +802,23 @@ void main() {
       expect(result, isA<Finished>());
       expect((result! as Finished).code, 0);
       expect(tester.binding.clock.now(), fakeNow, reason: 'no fake time passed');
+    });
+
+    test('a write to a child that closed its input fails where the caller can catch it', () async {
+      // The process is started in the root zone; this test runs in a guarded zone of its own. The child closes its
+      // stdin and lives on, so the writes below fail with EPIPE.
+      final s = supervisor();
+      final p = await s.spawn(sh('exec 0<&-; echo closed; exec sleep $nap'));
+      final caught = Completer<Object?>();
+      unawaited(p.stdin.done.then((_) => caught.complete(null), onError: caught.complete));
+      await p.stdout.transform(utf8.decoder).first;
+      for (var i = 0; i < 64; i++) {
+        p.stdin.writeln('x' * 1024);
+        await Future<void>.delayed(Duration.zero);
+      }
+      final error = await caught.future.timeout(const Duration(seconds: 5));
+      expect(error, anyOf(isNull, isA<SocketException>(), isA<FileSystemException>()));
+      expect(await p.stop(), isA<Ended>());
     });
   });
 

@@ -219,8 +219,8 @@ abstract interface class SupervisedProcess implements SupervisedChild {
 ///
 /// A pty (flutter_pty starts it): `Pty.start(exe, environment: {...env, ...supervisor.tagsFor(owner)})`, then
 /// `supervisor.adopt(pty.pid, SpawnSpec(owner: owner, kind: ProcessKind.pty, exe: exe), exitCode: pty.exitCode)`,
-/// and stop it with the child's `stop()`, not `pty.kill()`. It stays in the app's process group (flutter_pty makes
-/// its own session for it), so it is ended by its tree.
+/// and stop it with the child's `stop()`, not `pty.kill()`. flutter_pty's forkpty makes it the leader of a session
+/// and group of its own (seen on Linux), which adoption reads from the process table, so it is ended by its group.
 abstract class ProcessSupervisor {
   /// The app's supervisor (watchdog and launch sweep on; off under `flutter test`). Tests may swap in their own.
   static ProcessSupervisor instance = impl.createSupervisor(

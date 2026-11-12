@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:every_ai/core/process/budget.dart';
 import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
+import 'package:every_ai/features/code/live/nested_display_io.dart';
 import 'package:every_ai/features/code/shells/shell_registry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -75,6 +76,8 @@ void main() {
       for (final b in started) {
         await b.kill();
       }
+      // Linux with Xvfb installed: the session's commands opened a display of its own (the app ends it on Stop).
+      await NestedDisplays.stopOf('bgcap');
     });
     await expectLater(
       shell.start('sleep 30'),

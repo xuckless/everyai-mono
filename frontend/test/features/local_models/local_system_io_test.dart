@@ -65,13 +65,14 @@ void main() {
     final other = await Process.start('python3', ['-m', 'http.server', '$port', '--bind', '127.0.0.1']);
     addTearDown(() => other.kill(ProcessSignal.sigkill));
     final system = IoLocalSystem(supervisor: _made.add(ProcessSupervisor.create(ledgerDir: '${dir.path}/l')));
-    // Up once it listens.
-    for (
-      var i = 0;
-      i < 100 && (await system.run('lsof', ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']))!.out.isEmpty;
-      i++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Up once it accepts a connection (lsof may be missing on Linux, where ss stands in for it).
+    for (var i = 0; i < 100; i++) {
+      try {
+        await (await Socket.connect(InternetAddress.loopbackIPv4, port)).close();
+        break;
+      } on SocketException {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
     }
     final r = await system.stopListener(server(LocalServerKind.ollama), port: port);
     expect(r, isA<ServerStopRefused>().having((r) => r.owner, 'owner', contains('http.server')));

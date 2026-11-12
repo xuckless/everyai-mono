@@ -1635,7 +1635,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   (`leftRunning` when a grandchild held the pipes) | TimedOut | Cancelled | StartFailed, `maxOutputBytes`, bytes mode;
   no sync version (`webview_browser.dart`'s two `Process.runSync` must go async). `ChildProcesses` is a shim; `killTree`
   delegates. Raw-spawn guard `test/core/process/raw_spawn_guard_test.dart` counts raw calls per allowlisted file.
-  Windows: compile-safe only (no groups, no start times, `taskkill /T /F`). Linux: not run. Not migrated: every other
+  Windows: compile-safe only (no groups, no start times, `taskkill /T /F`). Linux: verified 2026-11-12 (below). Not migrated: every other
   spawner (phase 2).
   Second review (same branch): `launchDetached(exe, args)` → `Launched(pid) | LaunchFailed` replaces
   `outlivesApp` (no pipes, no `EVERYAI_*`, a ledger note nothing acts on, never in `children`); `runBounded` never
@@ -1677,7 +1677,7 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   second live EveryAI on the same data folder (`BackendBlocked`) instead of killing it; the emulator is no longer
   detached. Not done: nothing calls `stopOwner(TerminalOwner(id))` on session delete yet; Session Stop ignores a
   Survived outcome (no notice); phases 3–5 (UI for not-closed children and the ledger, the Windows path, removing
-  `ChildProcesses`, still used only by `memory_lifecycle_test`); Windows and Linux never run; the Xcode build phase
+  `ChildProcesses`, still used only by `memory_lifecycle_test`); Windows never run (Linux: see below); the Xcode build phase
   for `everyai-exec` checked by one debug build only.
 - **Process ownership, phases 3–5 and the test cut (2026-11-12; PR #86, branch `feat/process-ownership`).**
   Stop (`CodeSessionController.stop`) bounds the interrupt (10 s, `stopStepBound`) then ends, verified, everything
@@ -1717,6 +1717,28 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   three ("Cleaned up 3 processes left by the last run"). Still not seen live: the real app's UI (Settings →
   Processes, toasts), a `claude`/`codex` lead's Stop, Chrome-backed browsers, devices and displays. Known: after a
   crash, the next launch reads the `quit.json` of the run before the crash (it is only replaced by a quit).
+  the old lead's close, closing a fork's CLI on stop_fork/release, Android per-session stop, Windows never run,
+  nothing clicked through live.
+- **Process supervisor on Linux, verified (2026-11-12; branch `verify/linux`).** Ubuntu 22.04 arm64 container
+  (Docker on the Mac, image `everyai-verify:flutter-3.47.9`), Flutter 3.47.9, non-root user, `--init`. Run there and
+  passing: `test/core/process` (setsid launcher now in the per-launcher test), shell_supervision, session_processes,
+  live_processes, teardown, driver_races, driver_tty, local_system_io (with and without lsof), local_backend,
+  memory_lifecycle, environments (env_processes, driver_env_spawn, code_env_session, drivers_in_env); ptys too with a
+  hand-built `libflutter_pty.so` (`flutter test` doesn't build it; the shells otherwise fall back to pipes). By hand:
+  `everyai-exec` (compiled with -Wall, clean) and `/usr/bin/setsid` both give pid = pgid = sid, no tty; env tags read
+  from `/proc/<pid>/environ` find a nohup orphan and a setsid double-forked escapee (`maybeEscaped` empty); the real
+  watchdog (detached, its own session) ended a group, its grandchild and a tagged escapee 0.6–1.7 s after the app was
+  SIGKILLed, then removed its list and marker; the launch sweep ended a dead run's child and left a mismatched start
+  alone; a TERM-ignoring child → SIGKILL → Ended; spawn overhead ~7 ms vs ~4.5 ms plain (both launchers); a pty child
+  leads its own session; `ss -Hltnp` output parsed; `NestedDisplays` with the real Xvfb (an app on the session's
+  display found by everyai_x11.py, stop verified, the X socket gone, a start timeout leaves nothing);
+  `tool/desktop_helpers/linux_check_in_container.sh` passes. Fixed: `SupervisedProcess.stdin` answers in the
+  spawning zone (`_CallerSink`; a write after the child died raised EPIPE in the root zone, uncaught whatever the
+  caller's handler, and killed the isolate: on every OS, Linux's timing showed it); `stopListener` falls back to
+  `ss` on Linux without lsof (it refused every outside server); budget and shell_supervision tests stop the session's
+  Xvfb they start. Not verified on Linux: a desktop session (systemd `--user` subreaper instead of pid 1, Wayland, a
+  real `:0`), the bundled `everyai-exec` path inside a Linux build/AppImage, Chrome/scrcpy/emulator children, the
+  local servers (no Ollama), x86_64.
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),
