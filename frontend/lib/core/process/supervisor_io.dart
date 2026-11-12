@@ -828,13 +828,19 @@ final class _Supervisor extends ProcessSupervisor {
         }
       }
     }
-    try {
-      Directory(dir).createSync(recursive: true);
-    } on FileSystemException catch (e) {
-      debugPrint('Process supervisor: the ledger folder $dir could not be made: $e');
+    // A folder of its own (tests, a temp one): made with the first line, removed again whenever it holds nothing.
+    final owned = _dirChoice == null && (!app || _underTest);
+    _files.removeDirWhenEmpty = owned;
+    if (owned) {
+      _files.markFolderAbsent(dir);
+      if (app) await _clearDeadTestFolders();
+    } else {
+      try {
+        Directory(dir).createSync(recursive: true);
+      } on FileSystemException catch (e) {
+        debugPrint('Process supervisor: the ledger folder $dir could not be made: $e');
+      }
     }
-    // A folder of its own (tests, a temp one): removed again whenever it holds nothing.
-    _files.removeDirWhenEmpty = _dirChoice == null && (!app || _underTest);
     // The same run reopened (a hot restart): go on with its ledger and take back what it still runs.
     final own = File(_Files.ledgerIn(dir));
     final LedgerFold? reopened = own.existsSync() ? LedgerFold.of(await own.readAsLines()) : null;
@@ -846,6 +852,24 @@ final class _Supervisor extends ProcessSupervisor {
     // After this start has returned (the sweep reads the folder through [ledgerDirectory] too).
     if (sweeps) scheduleMicrotask(() => unawaited(sweepPreviousRuns()));
     return dir;
+  }
+
+  /// `flutter test`: the folders of test processes that have ended (they quit without a stop) go.
+  Future<void> _clearDeadTestFolders() async {
+    final scan = await _scanner.get();
+    if (scan is! Listed) return;
+    final name = RegExp(r'^everyai-processes-test-(\d+)$');
+    try {
+      for (final e in Directory.systemTemp.listSync()) {
+        final m = name.firstMatch(e.uri.pathSegments.where((x) => x.isNotEmpty).last);
+        if (e is! Directory || m == null) continue;
+        final owner = int.parse(m.group(1)!);
+        if (owner == pid || scan.table.rows.containsKey(owner)) continue;
+        e.deleteSync(recursive: true);
+      }
+    } on FileSystemException catch (e) {
+      debugPrint('Process supervisor: old test folders could not be cleared: $e');
+    }
   }
 
   Future<void> _readopt(LedgerFold fold) async {
@@ -2214,6 +2238,11 @@ final class _Files {
     }
   }
 
+  /// [dir] is made only when something is written there.
+  void markFolderAbsent(String dir) {
+    if (!Directory(dir).existsSync()) _folder = _Folder.removed;
+  }
+
   Future<void> _ensureFolder() async {
     if (_folder == _Folder.present) return;
     await Directory(dir!).create(recursive: true);
@@ -2367,6 +2396,7 @@ final class _Files {
     _enqueue(() async {
       try {
         if (!(clean && removeDirWhenEmpty)) {
+          await _ensureFolder();
           await File('$d/quit.json').writeAsString(const JsonEncoder.withIndent('  ').convert(report.toJson()));
         }
         await _closeHandle();
