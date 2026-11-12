@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/native.dart';
+import 'package:every_ai/core/process/supervisor.dart' show Ended;
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_client.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/features/code/code_providers.dart';
+import 'package:every_ai/features/code/harness/session_processes.dart' show killSessionProcesses;
 import 'package:every_ai/features/code/code_settings_providers.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/code_session.dart';
@@ -925,6 +927,11 @@ void main() {
 
   test('leaving the EveryAI harness stops its background forks, once the user agrees', () async {
     CodeSessionController.liveAfter = Duration.zero;
+    // Not about the processes a Stop ends: the real table walk (ps + lsof, seconds on a loaded machine) only made the
+    // test slow enough for the usage read below to land while EveryAI still led.
+    CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async =>
+        const Ended(<int>[]);
+    addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
     final everyai = d(everyaiHarnessName);
     // The lead left a fork working in the background; its turn has ended.
     everyai.conversations['e1'] = FakeLeadSession(
@@ -977,6 +984,9 @@ void main() {
     final outcome = await c.switchLead('beta', run: false, stopFirst: true);
     expect(outcome.failed, isFalse);
     expect(infoOf('s1').harness, 'beta');
+    // While EveryAI led, its usage reading may reach the backend (its debounce can fire on a slow run); from here on
+    // the tearDown's check holds: the outside lead reaches nothing.
+    _sent.clear();
     expect(fork.interrupts, greaterThan(0));
     expect(c.leaveStopsChildren(everyaiHarnessName), isFalse);
   });

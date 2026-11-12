@@ -38,6 +38,7 @@ Future<void> eventually(bool Function() ok, {Duration within = const Duration(se
 }
 
 void main() {
+  final made = <ProcessSupervisor>[];
   late Directory tmp;
   late Directory ledgers;
   late ShellRegistry registry;
@@ -67,11 +68,17 @@ void main() {
       Process.killPid(p, ProcessSignal.sigkill);
     }
     await eventually(() => naps().isEmpty);
+    // Closed before the ledgers' folder goes (tearDownAll): their writes are batched.
+    await Future.wait([for (final s in made) s.stopAll(timings: fast)]);
+    made.clear();
     await tmp.delete(recursive: true);
   });
 
-  ProcessSupervisor supervisor({SupervisorHooks hooks = const SupervisorHooks(timings: fast)}) =>
-      ProcessSupervisor.create(hooks: hooks, ledgerDir: '${ledgers.path}/${tmp.path.split('/').last}');
+  ProcessSupervisor supervisor({SupervisorHooks hooks = const SupervisorHooks(timings: fast)}) {
+    final s = ProcessSupervisor.create(hooks: hooks, ledgerDir: '${ledgers.path}/${tmp.path.split('/').last}');
+    made.add(s);
+    return s;
+  }
 
   SessionShell shell(ProcessSupervisor sup) => SessionShell(
     root: tmp.path,

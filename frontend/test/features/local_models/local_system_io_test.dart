@@ -27,10 +27,27 @@ List<String> leftovers() => [
 LocalServer server(LocalServerKind kind, {String url = 'http://127.0.0.1:11434/v1', String? start}) =>
     LocalServer(id: kind.name, kind: kind, label: kind.label, baseUrl: url, startCommand: start);
 
+/// Every supervisor a test makes, closed before its folder goes (their ledger writes are batched).
+final _made = _Made();
+
+final class _Made {
+  final _all = <ProcessSupervisor>[];
+  ProcessSupervisor add(ProcessSupervisor s) {
+    _all.add(s);
+    return s;
+  }
+
+  Future<void> closeAll() async {
+    await Future.wait([for (final s in _all) s.stopAll(timings: fast)]);
+    _all.clear();
+  }
+}
+
 void main() {
   late Directory dir;
   setUp(() => dir = Directory.systemTemp.createTempSync('local_system_io'));
   tearDown(() async {
+    await _made.closeAll();
     expect(leftovers(), isEmpty);
     dir.deleteSync(recursive: true);
   });
@@ -47,7 +64,7 @@ void main() {
     await socket.close();
     final other = await Process.start('python3', ['-m', 'http.server', '$port', '--bind', '127.0.0.1']);
     addTearDown(() => other.kill(ProcessSignal.sigkill));
-    final system = IoLocalSystem(supervisor: ProcessSupervisor.create(ledgerDir: '${dir.path}/l'));
+    final system = IoLocalSystem(supervisor: _made.add(ProcessSupervisor.create(ledgerDir: '${dir.path}/l')));
     // Up once it listens.
     for (
       var i = 0;
@@ -64,32 +81,34 @@ void main() {
   test('a listener whose start time changed (its pid reused) is never signalled', () async {
     final signals = <int>[];
     var scans = 0;
-    final sup = ProcessSupervisor.create(
-      ledgerDir: '${dir.path}/l',
-      hooks: SupervisorHooks(
-        timings: fast,
-        scan: ({required env}) async {
-          scans++;
-          return Listed(
-            ProcessList([
-              ScanRow(pid: pid, ppid: 1, pgid: pid, start: 'me', command: 'test', uid: 501),
-              // The second look finds pid 4242 started at another time: another program now.
-              ScanRow(
-                pid: 4242,
-                ppid: 1,
-                pgid: 4242,
-                start: scans <= 1 ? 'A' : 'B',
-                command: '/usr/bin/ollama serve',
-                uid: 501,
-              ),
-            ]),
-            at: DateTime.now(),
-          );
-        },
-        signal: (p, s) {
-          signals.add(p);
-          return true;
-        },
+    final sup = _made.add(
+      ProcessSupervisor.create(
+        ledgerDir: '${dir.path}/l',
+        hooks: SupervisorHooks(
+          timings: fast,
+          scan: ({required env}) async {
+            scans++;
+            return Listed(
+              ProcessList([
+                ScanRow(pid: pid, ppid: 1, pgid: pid, start: 'me', command: 'test', uid: 501),
+                // The second look finds pid 4242 started at another time: another program now.
+                ScanRow(
+                  pid: 4242,
+                  ppid: 1,
+                  pgid: 4242,
+                  start: scans <= 1 ? 'A' : 'B',
+                  command: '/usr/bin/ollama serve',
+                  uid: 501,
+                ),
+              ]),
+              at: DateTime.now(),
+            );
+          },
+          signal: (p, s) {
+            signals.add(p);
+            return true;
+          },
+        ),
       ),
     );
     final system = IoLocalSystem(
@@ -103,17 +122,21 @@ void main() {
 
   test('a server EveryAI started is still its own after a relaunch of the run (the ledger)', () async {
     final ledger = '${dir.path}/ledger';
-    final first = ProcessSupervisor.create(
-      ledgerDir: ledger,
-      hooks: const SupervisorHooks(timings: fast),
+    final first = _made.add(
+      ProcessSupervisor.create(
+        ledgerDir: ledger,
+        hooks: const SupervisorHooks(timings: fast),
+      ),
     );
     final launched = await IoLocalSystem(supervisor: first).launch('fm', 'sleep', [nap], port: 4567);
     expect(launched, isNotNull);
     await first.byPid(launched!.pid)!.landed;
     // A new supervisor on the same ledger (this process's run, as after a hot restart) takes it back.
-    final again = ProcessSupervisor.create(
-      ledgerDir: ledger,
-      hooks: const SupervisorHooks(timings: fast),
+    final again = _made.add(
+      ProcessSupervisor.create(
+        ledgerDir: ledger,
+        hooks: const SupervisorHooks(timings: fast),
+      ),
     );
     await again.ledgerDirectory;
     final system = IoLocalSystem(supervisor: again);
@@ -125,9 +148,11 @@ void main() {
   });
 
   test('a start command that puts the server in the background is still ended with its group', () async {
-    final sup = ProcessSupervisor.create(
-      ledgerDir: '${dir.path}/l',
-      hooks: const SupervisorHooks(timings: fast),
+    final sup = _made.add(
+      ProcessSupervisor.create(
+        ledgerDir: '${dir.path}/l',
+        hooks: const SupervisorHooks(timings: fast),
+      ),
     );
     final system = IoLocalSystem(supervisor: sup);
     final launched = await system.launch('custom:1', 'sleep $nap & wait', const [], shell: true, port: 9000);
@@ -139,9 +164,11 @@ void main() {
   });
 
   test('a short command that hangs is killed at its timeout, and says so', () async {
-    final sup = ProcessSupervisor.create(
-      ledgerDir: '${dir.path}/l',
-      hooks: const SupervisorHooks(timings: fast),
+    final sup = _made.add(
+      ProcessSupervisor.create(
+        ledgerDir: '${dir.path}/l',
+        hooks: const SupervisorHooks(timings: fast),
+      ),
     );
     final r = await runProgram(
       '/bin/sh',

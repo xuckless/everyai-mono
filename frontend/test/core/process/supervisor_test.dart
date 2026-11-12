@@ -1082,7 +1082,9 @@ void main() {
         'spawn: plain ${(plain.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, supervised '
         '${(supervised.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, extra ${extra.toStringAsFixed(2)} ms each',
       );
-      expect(extra, lessThan(25), reason: 'a loose bound: other test processes share the machine');
+      // Measured 3.8 ms extra on a quiet machine during the full suite (2026-11-12); 10 ms leaves room for the
+      // suite's other isolates without hiding a regression to a scan or a sleep per spawn.
+      expect(extra, lessThan(10), reason: 'other test processes share the machine');
     });
   });
 }

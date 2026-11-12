@@ -41,7 +41,9 @@ void main() {
       hooks: const SupervisorHooks(timings: fast),
     );
   });
-  tearDown(() {
+  tearDown(() async {
+    // Closed before its folder goes: its ledger writes are batched.
+    await ProcessSupervisor.instance.stopAll(timings: fast);
     ProcessSupervisor.instance = app;
     expect(leftovers(), isEmpty);
     dir.deleteSync(recursive: true);

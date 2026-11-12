@@ -142,6 +142,9 @@ void main() {
       ledgerDir: '${dir.path}/ledger',
       hooks: const SupervisorHooks(timings: fast),
     );
+    // Closed before its folder is deleted (registered after it, so it runs first): its ledger writes are batched
+    // and would otherwise land while the folder goes.
+    addTearDown(sup.stopAll);
     final data = Directory('${dir.path}/data');
     final backend = IoLocalBackend(binary: fakeBackend(dir).path, dataDir: data.path, supervisor: sup);
     final info = await backend.ensureStarted();
@@ -166,6 +169,9 @@ void main() {
       ledgerDir: '${dir.path}/ledger',
       hooks: const SupervisorHooks(timings: fast),
     );
+    // Closed before its folder is deleted (registered after it, so it runs first): its ledger writes are batched
+    // and would otherwise land while the folder goes.
+    addTearDown(sup.stopAll);
     final backend = IoLocalBackend(
       binary: fakeBackend(dir, ignoreTerm: true).path,
       dataDir: '${dir.path}/data',
@@ -191,6 +197,9 @@ void main() {
       ledgerDir: '${dir.path}/ledger',
       hooks: const SupervisorHooks(timings: fast),
     );
+    // Closed before its folder is deleted (registered after it, so it runs first): its ledger writes are batched
+    // and would otherwise land while the folder goes.
+    addTearDown(sup.stopAll);
     // Stand-ins: "the other app" and "its server".
     final app = await Process.start('sleep', ['32.$pid']);
     final server = await Process.start('sleep', ['32.$pid']);
@@ -219,6 +228,9 @@ void main() {
       ledgerDir: '${dir.path}/ledger',
       hooks: const SupervisorHooks(timings: fast),
     );
+    // Closed before its folder is deleted (registered after it, so it runs first): its ledger writes are batched
+    // and would otherwise land while the folder goes.
+    addTearDown(sup.stopAll);
     final data = Directory('${dir.path}/data')..createSync();
     File('${data.path}/server.owner.json').writeAsStringSync('{"app":"1:x","pid":999999,"start":"x"}');
     final backend = IoLocalBackend(binary: fakeBackend(dir).path, dataDir: data.path, supervisor: sup);
