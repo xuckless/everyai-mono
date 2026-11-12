@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:every_ai/core/process/process_model.dart';
+import 'package:every_ai/core/process/supervisor.dart' show DetachedLaunch, LaunchFailed, Launched;
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/features/local_models/data/local_system.dart';
 import 'package:every_ai/features/local_models/domain/fm.dart';
@@ -68,6 +69,7 @@ final class FakeLocalSystem implements LocalSystem {
     this.fm = FmStatus.missing,
     this.ollama,
     this.fmPort,
+    this.lms,
   });
 
   @override
@@ -117,6 +119,19 @@ final class FakeLocalSystem implements LocalSystem {
   }) async {
     ran.add([exe, ...args].join(' '));
     return (code: 0, out: '');
+  }
+
+  /// Detached launches (`exe args`), what they answer (null: launched), and a hook to make the server answer.
+  final detached = <String>[];
+  String? detachedFails;
+  void Function(String exe, List<String> args)? onDetached;
+
+  @override
+  Future<DetachedLaunch> launchDetached(String exe, List<String> args) async {
+    detached.add([exe, ...args].join(' '));
+    if (detachedFails case final why?) return LaunchFailed(why);
+    onDetached?.call(exe, args);
+    return const Launched(4242);
   }
 
   @override

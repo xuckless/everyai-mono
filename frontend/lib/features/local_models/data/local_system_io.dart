@@ -138,6 +138,10 @@ final class IoLocalSystem implements LocalSystem {
   String? get launchProblem => _launchProblem;
 
   @override
+  Future<DetachedLaunch> launchDetached(String exe, List<String> args) =>
+      _sup.launchDetached(exe, args, label: 'local server (started detached)');
+
+  @override
   Future<LaunchedServer?> launch(
     String id,
     String exe,
