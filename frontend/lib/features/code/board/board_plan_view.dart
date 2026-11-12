@@ -13,6 +13,7 @@ import '../../usage/usage_totals.dart';
 import '../code_providers.dart';
 import '../domain/agent_mode.dart';
 import '../domain/code_session.dart';
+import '../repo_configs/repo_config_note.dart' show confirmRepoConfigs;
 import '../ui/console/git_button.dart' show mergeLocally;
 import '../ui/harness_logo.dart';
 import 'board_limits.dart' show boardCostLine;
@@ -35,14 +36,17 @@ String phaseWord(BoardPhase p) => switch (p) {
   BoardPhase.doneUnseen || BoardPhase.doneSeen => 'Done',
 };
 
+/// A goal's or race's mode pick, named: [autonomousMode] or an AgentMode.
+String modeLabel(String picked) =>
+    picked == autonomousMode ? 'Most autonomous' : AgentMode.values.asNameMap()[picked]?.label ?? 'Most autonomous';
+
 String _leadText(String label, String model) => model.isEmpty ? label : '$label · $model';
 
-/// Keeps a race's Keep: the winner's work merged (the session's own merge, with its confirms), the losers' worktrees
-/// removed. Tests replace it.
+/// A race's Keep merges the winner through the session's own merge, with its confirms (the losers are removed by
+/// [BoardRaces]). Tests replace it.
 abstract interface class RaceActions {
   /// True when the winner's work landed (false when the user said no, or the agent was asked to tidy its branch).
   Future<bool> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner);
-  Future<void> discard(WidgetRef ref, CodeSessionInfo loser);
 }
 
 final boardRaceActionsProvider = Provider<RaceActions>((ref) => const _AppRaceActions());
@@ -52,11 +56,21 @@ final class _AppRaceActions implements RaceActions {
 
   @override
   Future<bool> merge(BuildContext context, WidgetRef ref, CodeSessionInfo winner) => mergeLocally(context, ref, winner);
+}
 
-  @override
-  Future<void> discard(WidgetRef ref, CodeSessionInfo loser) => loser.worktree != null
-      ? ref.read(codeGitProvider(loser.id).notifier).discard()
-      : ref.read(codeSessionsProvider.notifier).remove(loser.id);
+/// Before Board work starts on [harnesses] in [project]: the one-time note about a CLI's project config (Gemini,
+/// Qwen, Kiro, Cursor), as a session started from Code home shows it. False when the user cancelled.
+Future<bool> confirmBoardRepoConfigs(
+  BuildContext context,
+  WidgetRef ref, {
+  required CodeProject project,
+  required Iterable<String> harnesses,
+}) async {
+  for (final h in {...harnesses}) {
+    if (!context.mounted) return false;
+    if (!await confirmRepoConfigs(context, ref, projectId: project.id, dir: project.path, harness: h)) return false;
+  }
+  return true;
 }
 
 /// The Plan lane: goals (newest first), then races. [phases] are the Board's phases of the sessions the tasks and
@@ -83,12 +97,7 @@ class PlanLane extends ConsumerStatefulWidget {
   ConsumerState<PlanLane> createState() => _PlanLaneState();
 }
 
-/// A Keep in flight from the lane (one at a time; a second click meanwhile does nothing).
-enum _Keep { idle, keeping }
-
 class _PlanLaneState extends ConsumerState<PlanLane> {
-  var _keep = _Keep.idle;
-
   void _newGoal() {
     final projects = ref.read(codeProjectsProvider);
     if (projects.isEmpty) {
@@ -109,11 +118,11 @@ class _PlanLaneState extends ConsumerState<PlanLane> {
 
   /// Keeps [session]'s runner of [raceId] once the user agrees: the winner's own merge runs first (asking the agent
   /// to tidy its branch first when it needs to), and only once its work has landed are the other runners stopped and
-  /// removed with their worktrees. A merge that didn't happen loses nothing.
+  /// their worktrees removed; their branches stay. A merge that didn't happen loses nothing. The Keep is the race's
+  /// own stage ([RaceKeeping]), so the lane being rebuilt or the app quitting mid-merge doesn't lose it.
   Future<void> keepRunner(String raceId, String session) async {
-    if (_keep != _Keep.idle) return;
     final races = ref.read(boardRacesProvider.notifier);
-    if (races.keepBlocked(raceId) case final why?) {
+    if (races.keepBlocked(raceId, winner: session) case final why?) {
       showAdaptiveToast(context, why);
       return;
     }
@@ -139,41 +148,35 @@ class _PlanLaneState extends ConsumerState<PlanLane> {
         '"${winner.title}" on ${_leadText(leads[winner.harness] ?? winner.harness, winner.model)} merges first (you '
             'confirm the merge).',
         if (losers.isNotEmpty)
-          'Once it has merged, these are stopped and removed with their worktrees and branches: '
+          'Once it has merged, these are stopped and their worktrees removed; their branches are kept: '
               '${losers.map(name).join(', ')}.',
       ].join(' '),
       confirmLabel: 'Keep',
     );
     if (!ok || !mounted) return;
-    setState(() => _keep = _Keep.keeping);
+    if (races.beginKeep(raceId, session) case final why?) {
+      showAdaptiveToast(context, why);
+      return;
+    }
+    final actions = ref.read(boardRaceActionsProvider);
+    var merged = false;
     try {
-      final actions = ref.read(boardRaceActionsProvider);
-      final merged = await actions.merge(context, ref, winner);
-      if (!mounted) return;
-      if (!merged) {
-        showAdaptiveToast(context, 'Nothing merged yet, so the other runners are kept.');
-        return;
-      }
-      races.keep(raceId, session);
-      final starter = ref.read(boardStarterProvider);
-      for (final l in losers) {
-        try {
-          if (working.contains(l.id)) await starter.stop(l.id);
-          await actions.discard(ref, l);
-        } on Object catch (e) {
-          if (mounted) showAdaptiveToast(context, "Couldn't remove ${l.title}: $e");
-        }
-      }
-    } finally {
-      if (mounted) setState(() => _keep = _Keep.idle);
+      merged = await actions.merge(context, ref, winner);
+    } on Object {
+      // Checked on its base branch below.
+    }
+    // Not tied to this widget: the race finishes its Keep even if the lane was rebuilt meanwhile.
+    await races.settleKeep(raceId, merged: merged);
+    if (mounted && races.race(raceId)?.stage is RaceComparing) {
+      showAdaptiveToast(context, 'Nothing merged yet, so the other runners are kept.');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = EveryTheme.of(context);
-    final goals = ref.watch(boardPlansProvider);
-    final races = ref.watch(boardRacesProvider);
+    final goals = shownGoals(ref.watch(boardPlansProvider));
+    final races = shownRaces(ref.watch(boardRacesProvider));
     final head = Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 0, 8),
       child: SizedBox(
@@ -242,7 +245,6 @@ class _PlanLaneState extends ConsumerState<PlanLane> {
             phases: widget.phases,
             onInspect: widget.onInspect,
             onCompare: () => _compare(r),
-            keeping: _keep == _Keep.keeping,
           ).settle(),
         ),
     ];
@@ -313,7 +315,7 @@ class PlanRail extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = EveryTheme.of(context);
-    final n = ref.watch(boardPlansProvider).length + ref.watch(boardRacesProvider).length;
+    final n = planCount(ref.watch(boardPlansProvider), shownRaces(ref.watch(boardRacesProvider)).length);
     return Column(
       key: const ValueKey('board.plan.rail'),
       children: [
@@ -435,11 +437,47 @@ class _GoalCardState extends ConsumerState<GoalCard> {
     if (!same) setState(() => _centres = next);
   }
 
-  void _delegate({String? taskId}) {
-    if (_plans.delegate(widget.goal.id, taskId: taskId) case final why?) showAdaptiveToast(context, why);
+  CodeProject? get _project => ref.read(codeProjectsProvider).where((p) => p.id == widget.goal.projectId).firstOrNull;
+
+  /// Delegates (no estimate, budget or confirm step: owner). Only the one-time note about a CLI's project config
+  /// comes first, as for any session start.
+  Future<void> _delegate({String? taskId}) async {
+    final g = widget.goal;
+    final project = _project;
+    final leads = [
+      for (final t in g.tasks)
+        if (t.run is TaskDraft && (taskId == null || t.id == taskId || _waitedOnBy(t.id, taskId))) t.lead.harness,
+    ];
+    if (project != null && !await confirmBoardRepoConfigs(context, ref, project: project, harnesses: leads)) return;
+    if (!mounted) return;
+    if (_plans.delegate(g.id, taskId: taskId) case final why?) showAdaptiveToast(context, why);
   }
 
-  int get _startedCount => widget.goal.tasks.where((t) => t.run is TaskStarted || t.run is TaskStarting).length;
+  /// Whether [taskId] (directly or not) waits on [depId].
+  bool _waitedOnBy(String depId, String taskId) {
+    final seen = <String>{};
+    bool walk(String id) {
+      final t = widget.goal.task(id);
+      if (t == null || !seen.add(id)) return false;
+      return t.after.contains(depId) || t.after.any(walk);
+    }
+
+    return walk(taskId);
+  }
+
+  /// Splits; a planner CLI that reads the project's own config gets the one-time note about it first.
+  Future<void> _split() async {
+    final g = widget.goal;
+    final project = _project;
+    if (project != null &&
+        !await confirmBoardRepoConfigs(context, ref, project: project, harnesses: [g.planner.harness])) {
+      return;
+    }
+    if (mounted) unawaited(_plans.split(g.id));
+  }
+
+  int get _startedCount =>
+      widget.goal.tasks.where((t) => t.run is TaskStarted || t.run is TaskStarting || t.run is TaskStopping).length;
 
   Future<void> _cancel() async {
     final g = widget.goal;
@@ -510,6 +548,7 @@ class _GoalCardState extends ConsumerState<GoalCard> {
       GoalStage.done => 'Done',
       GoalStage.failed => 'Stuck',
       GoalStage.cancelled => 'Cancelled',
+      GoalStage.removing => 'Removing',
     };
     final progress = g.progress;
     final drafts = g.tasks.any((t) => t.run is TaskDraft) && g.stage != GoalStage.cancelled;
@@ -586,10 +625,15 @@ class _GoalCardState extends ConsumerState<GoalCard> {
                 key: ValueKey('board.goal.split.${g.id}'),
                 label: 'Split',
                 busy: splitting,
-                onPressed: splitting || g.text.trim().isEmpty ? null : () => unawaited(_plans.split(g.id)),
+                onPressed: splitting || g.text.trim().isEmpty ? null : () => unawaited(_split()),
               ),
             ],
           ),
+          if (PlannerCli.of(g.planner.harness) case final cli?)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(cli.guard, style: theme.type.caption.tint(theme.textSubtle)),
+            ),
           if (splitting)
             Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -660,7 +704,7 @@ class _GoalCardState extends ConsumerState<GoalCard> {
                         final s? => widget.phases[s],
                         null => null,
                       },
-                      onDelegate: () => _delegate(taskId: t.id),
+                      onDelegate: () => unawaited(_delegate(taskId: t.id)),
                       onInspect: widget.onInspect,
                     ),
                   );
@@ -700,19 +744,26 @@ class _GoalCardState extends ConsumerState<GoalCard> {
                   key: ValueKey('board.goal.mode.${g.id}'),
                   tooltip: 'Delegated tasks start in',
                   actions: [
+                    MenuAction(
+                      label: 'Most autonomous',
+                      checked: g.mode == autonomousMode,
+                      onSelected: () => _plans.setMode(g.id, autonomousMode),
+                    ),
                     for (final m in const [AgentMode.ask, AgentMode.autoEdit, AgentMode.auto, AgentMode.fullAuto])
-                      MenuAction(label: m.label, checked: g.mode == m.name, onSelected: () => _plans.setMode(g.id, m)),
+                      MenuAction(
+                        label: m.label,
+                        checked: g.mode == m.name,
+                        onSelected: () => _plans.setMode(g.id, m.name),
+                      ),
                   ],
-                  child: QuietTrigger(
-                    label: 'In ${(AgentMode.values.asNameMap()[g.mode] ?? AgentMode.autoEdit).label}',
-                  ),
+                  child: QuietTrigger(label: 'In ${modeLabel(g.mode)}'),
                 ),
               if (drafts)
                 KitButton(
                   key: ValueKey('board.goal.delegate.${g.id}'),
                   label: 'Delegate all',
                   icon: EveryIcon.play,
-                  onPressed: _delegate,
+                  onPressed: () => unawaited(_delegate()),
                 ),
             ],
           ),
@@ -846,6 +897,7 @@ class _TaskCardState extends ConsumerState<TaskCard> {
       ),
       TaskQueued() => ('Waiting on ${waitsOn.join(', ')}', DotStatus.idle, theme.textMuted),
       TaskStarting() => ('Starting…', DotStatus.running, theme.textMuted),
+      TaskStopping() => ('Stopping once it has started…', DotStatus.idle, theme.textSubtle),
       TaskStarted() => (
         widget.phase == null ? 'Started' : phaseWord(widget.phase!),
         switch (widget.phase) {
@@ -1044,14 +1096,15 @@ class RaceCard extends ConsumerWidget {
     required this.phases,
     required this.onInspect,
     required this.onCompare,
-    required this.keeping,
   });
 
   final BoardRace race;
   final Map<String, BoardPhase> phases;
   final ValueChanged<String> onInspect;
   final VoidCallback onCompare;
-  final bool keeping;
+
+  /// A runner tile's width when they don't all fit side by side (the row then scrolls).
+  static const tileWidth = 150.0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1059,14 +1112,20 @@ class RaceCard extends ConsumerWidget {
     final labels = {for (final l in ref.watch(plannerLeadsProvider)) l.id: l.label};
     final races = ref.read(boardRacesProvider.notifier);
     final anyDone = race.runners.any((r) => r.run is RunnerDone);
+    final keeping = race.stage is RaceKeeping;
+    final working = races.working(race.id) || race.runners.any((r) => runnerPending(r.run));
     final stageText = switch (race.stage) {
-      RaceStage.starting => 'Starting',
-      RaceStage.running => 'Racing',
-      RaceStage.comparing => 'Ready to compare',
-      RaceStage.kept => 'Kept one',
-      RaceStage.cancelled => 'Cancelled',
+      RaceStarting() => 'Starting',
+      RaceRunning() => 'Racing',
+      RaceComparing() => 'Ready to compare',
+      RaceKeeping(step: KeepStep.merging) => 'Merging the one kept',
+      RaceKeeping(step: KeepStep.removingLosers) => 'Removing the others',
+      RaceKept() => 'Kept one',
+      RaceCancelled() => 'Cancelled',
+      RaceRemoving() => 'Removing',
     };
-    final live = race.stage == RaceStage.running || race.stage == RaceStage.starting;
+    final live = race.stage.live;
+    final winner = winnerOf(race.stage);
     return GlowPulse(
       active: live,
       color: theme.cyan,
@@ -1089,19 +1148,23 @@ class RaceCard extends ConsumerWidget {
                   icon: EveryIcon.close,
                   tooltip: live ? 'Stop following this race' : 'Remove race',
                   size: 13,
-                  onPressed: () async {
-                    if (!live) return races.remove(race.id);
-                    final choice = await askStartedChoice(
-                      context,
-                      title: 'Cancel this race?',
-                      body:
-                          'Its runners can keep running as ordinary sessions, or stop and be removed with their '
-                          'worktrees.',
-                      keyPrefix: 'board.race.cancel',
-                      stopLabel: 'Stop and remove',
-                    );
-                    if (choice != null) races.cancel(race.id, started: choice);
-                  },
+                  onPressed: keeping
+                      ? null
+                      : () async {
+                          // Runners still at work (also after Compare now): asked what happens to them first.
+                          final ask = race.stage is! RaceCancelled && race.stage is! RaceKept && working;
+                          if (!ask) return races.remove(race.id);
+                          final choice = await askStartedChoice(
+                            context,
+                            title: 'Cancel this race?',
+                            body:
+                                'Its runners can keep running as ordinary sessions, or stop and have their worktrees '
+                                'removed. Their branches are kept either way.',
+                            keyPrefix: 'board.race.cancel',
+                            stopLabel: 'Stop and remove',
+                          );
+                          if (choice != null) races.cancel(race.id, started: choice);
+                        },
                 ),
               ],
             ),
@@ -1115,44 +1178,77 @@ class RaceCard extends ConsumerWidget {
             const SizedBox(height: 10),
             PeriodicRebuild(
               period: const Duration(seconds: 30),
-              builder: (context) => Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final (i, r) in race.runners.indexed) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    Expanded(
-                      child: _RunnerTile(
-                        key: ValueKey('board.race.runner.${race.id}.$i'),
-                        runner: r,
-                        label: _leadText(labels[r.lead.harness] ?? r.lead.harness, r.lead.model),
-                        phase: switch (sessionOfRunner(r.run)) {
-                          final s? => phases[s],
-                          null => null,
-                        },
-                        kept: race.keptSession != null && sessionOfRunner(r.run) == race.keptSession,
-                        onInspect: onInspect,
-                      ),
+              builder: (context) => LayoutBuilder(
+                builder: (context, box) {
+                  Widget tile(int i, RaceRunner r) => _RunnerTile(
+                    key: ValueKey('board.race.runner.${race.id}.$i'),
+                    runner: r,
+                    label: _leadText(labels[r.lead.harness] ?? r.lead.harness, r.lead.model),
+                    phase: switch (sessionOfRunner(r.run)) {
+                      final s? => phases[s],
+                      null => null,
+                    },
+                    kept: winner != null && sessionOfRunner(r.run) == winner,
+                    onInspect: onInspect,
+                  );
+                  final n = race.runners.length;
+                  // Side by side while they fit; many runners scroll sideways at a fixed width.
+                  if (n * tileWidth + (n - 1) * 6 <= box.maxWidth || !box.hasBoundedWidth) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final (i, r) in race.runners.indexed) ...[
+                          if (i > 0) const SizedBox(width: 6),
+                          Expanded(child: tile(i, r)),
+                        ],
+                      ],
+                    );
+                  }
+                  return SingleChildScrollView(
+                    key: ValueKey('board.race.runners.${race.id}'),
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final (i, r) in race.runners.indexed) ...[
+                          if (i > 0) const SizedBox(width: 6),
+                          SizedBox(width: tileWidth, child: tile(i, r)),
+                        ],
+                      ],
                     ),
-                  ],
-                ],
+                  );
+                },
               ),
             ),
-            if (race.stage != RaceStage.kept && race.stage != RaceStage.cancelled) ...[
+            if (race.stage is! RaceKept && race.stage is! RaceCancelled) ...[
               const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerRight,
-                child: KitButton(
-                  key: ValueKey('board.race.compare.${race.id}'),
-                  label: race.stage == RaceStage.comparing ? 'Compare' : 'Compare now',
-                  style: race.stage == RaceStage.comparing ? KitButtonStyle.primary : KitButtonStyle.soft,
-                  busy: keeping,
-                  onPressed: anyDone && !keeping
-                      ? () {
-                          races.compare(race.id);
-                          onCompare();
-                        }
-                      : null,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  // After Compare now, the runners still at work can be stopped without ending the race.
+                  if (race.stage is RaceComparing && working)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: KitButton(
+                        key: ValueKey('board.race.stop.${race.id}'),
+                        label: 'Stop the rest',
+                        style: KitButtonStyle.ghost,
+                        onPressed: () => races.stopWorking(race.id),
+                      ),
+                    ),
+                  KitButton(
+                    key: ValueKey('board.race.compare.${race.id}'),
+                    label: race.stage is RaceRunning || race.stage is RaceStarting ? 'Compare now' : 'Compare',
+                    style: race.stage is RaceComparing ? KitButtonStyle.primary : KitButtonStyle.soft,
+                    busy: keeping,
+                    onPressed: anyDone && !keeping
+                        ? () {
+                            races.compare(race.id);
+                            onCompare();
+                          }
+                        : null,
+                  ),
+                ],
               ),
             ],
           ],
@@ -1184,7 +1280,10 @@ class _RunnerTile extends StatelessWidget {
     final started = runner.startedAt;
     String since() => started == null ? '' : ' · ${wallText(DateTime.now().difference(started))}';
     final Widget status = switch (runner.run) {
+      RunnerQueued() => Text('Waiting to start', style: theme.type.caption.tint(theme.textSubtle)),
       RunnerStarting() => ShimmerText('Starting', style: theme.type.caption),
+      RunnerStopping() => Text('Stopping once started', style: theme.type.caption.tint(theme.textSubtle)),
+      RunnerGone() => Text('Session deleted', style: theme.type.caption.tint(theme.textSubtle)),
       RunnerRunning() when phase == BoardPhase.needsYou => Text(
         'Needs you${since()}',
         style: theme.type.caption.tint(theme.accentText),
@@ -1276,25 +1375,46 @@ class CompareView extends ConsumerWidget {
             const SizedBox(height: 14),
             Flexible(
               child: SingleChildScrollView(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final (i, r) in race.runners.indexed) ...[
-                      if (i > 0) const SizedBox(width: 10),
-                      Expanded(
-                        child: _CompareColumn(
-                          key: ValueKey('board.compare.$i'),
-                          runner: r,
-                          label: _leadText(labels[r.lead.harness] ?? r.lead.harness, r.lead.model),
-                          info: switch (sessionOfRunner(r.run)) {
-                            final id? => sessions[id],
-                            null => null,
-                          },
-                          canKeep: race.stage != RaceStage.kept && r.run is RunnerDone,
-                        ),
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    Widget column(int i, RaceRunner r) => _CompareColumn(
+                      key: ValueKey('board.compare.$i'),
+                      runner: r,
+                      label: _leadText(labels[r.lead.harness] ?? r.lead.harness, r.lead.model),
+                      info: switch (sessionOfRunner(r.run)) {
+                        final id? => sessions[id],
+                        null => null,
+                      },
+                      // Only a finished runner whose session is still there, and not while a Keep runs.
+                      canKeep: (race.stage is RaceComparing || race.stage is RaceRunning) && r.run is RunnerDone,
+                    );
+                    const width = 260.0;
+                    final n = race.runners.length;
+                    if (n * width + (n - 1) * 10 <= box.maxWidth) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final (i, r) in race.runners.indexed) ...[
+                            if (i > 0) const SizedBox(width: 10),
+                            Expanded(child: column(i, r)),
+                          ],
+                        ],
+                      );
+                    }
+                    // Many runners: side by side at a fixed width, scrolled sideways.
+                    return SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final (i, r) in race.runners.indexed) ...[
+                            if (i > 0) const SizedBox(width: 10),
+                            SizedBox(width: width, child: column(i, r)),
+                          ],
+                        ],
                       ),
-                    ],
-                  ],
+                    );
+                  },
                 ),
               ),
             ),
@@ -1451,10 +1571,19 @@ Future<void> startRace(
   if (pick == null || !context.mounted) return;
   final project = ref.read(codeProjectsProvider).where((p) => p.id == pick.projectId).firstOrNull;
   if (project == null) return;
+  // No estimate, budget or confirm step (owner); only the one-time note about a CLI's project config.
+  if (!await confirmBoardRepoConfigs(
+    context,
+    ref,
+    project: project,
+    harnesses: [for (final l in pick.leads) l.harness],
+  )) {
+    return;
+  }
   ref.read(boardRacesProvider.notifier).start(project: project, prompt: pick.prompt, leads: pick.leads, goalId: goalId);
 }
 
-/// What a new race runs: the project, the prompt and 2–4 leads.
+/// What a new race runs: the project, the prompt and two or more leads (no upper limit).
 typedef RacePick = ({String projectId, String prompt, List<LeadPick> leads});
 
 /// Asks for a race: its prompt, project and runners (the two leads the user starts most sessions with, picked first).
@@ -1494,9 +1623,10 @@ class _RaceDialogState extends ConsumerState<_RaceDialog> {
       usable: usable.contains,
       fallback: [ref.read(defaultLeadProvider), ...fallback],
     );
+    // Every model each harness offers (its default first), after the pairs used most: no Board-only shortlist.
     _offered = {
       ...defaultRunners(ref.read(codeSessionsProvider), usable: usable.contains, fallback: fallback, count: 6),
-      ...fallback,
+      for (final l in leads) ...[(harness: l.id, model: ''), for (final m in l.models) (harness: l.id, model: m)],
     }.toList();
     _prompt.addListener(() => setState(() {}));
   }
@@ -1512,7 +1642,7 @@ class _RaceDialogState extends ConsumerState<_RaceDialog> {
     final theme = EveryTheme.of(context);
     final labels = {for (final l in ref.watch(plannerLeadsProvider)) l.id: l.label};
     final projects = ref.watch(codeProjectsProvider);
-    final ready = _prompt.text.trim().isNotEmpty && _picked.length >= 2 && _picked.length <= 4;
+    final ready = _prompt.text.trim().isNotEmpty && _picked.length >= 2;
     return SizedBox(
       width: 520,
       child: Padding(
@@ -1524,7 +1654,7 @@ class _RaceDialogState extends ConsumerState<_RaceDialog> {
             Text('Race', style: theme.type.title.semibold.tint(theme.text)),
             const SizedBox(height: 4),
             Text(
-              'One prompt on 2 to 4 agents, each on its own branch. Compare what they did and keep one.',
+              'One prompt on two or more agents, each on its own branch. Compare what they did and keep one.',
               style: theme.type.caption.tint(theme.textMuted),
             ),
             const SizedBox(height: 12),
@@ -1556,28 +1686,32 @@ class _RaceDialogState extends ConsumerState<_RaceDialog> {
               ],
             ),
             const SizedBox(height: 10),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final l in _offered)
-                  KitChip(
-                    key: ValueKey('board.race.lead.${l.harness}.${l.model}'),
-                    label: _leadText(labels[l.harness] ?? l.harness, l.model),
-                    leading: HarnessLogo(l.harness, size: 13),
-                    on: _picked.contains(l),
-                    onTap: () => setState(() {
-                      if (_picked.contains(l)) {
-                        _picked = [..._picked]..remove(l);
-                      } else if (_picked.length < 4) {
-                        _picked = [..._picked, l];
-                      }
-                    }),
-                  ),
-              ],
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: SingleChildScrollView(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final l in _offered)
+                      KitChip(
+                        key: ValueKey('board.race.lead.${l.harness}.${l.model}'),
+                        label: _leadText(labels[l.harness] ?? l.harness, l.model),
+                        leading: HarnessLogo(l.harness, size: 13),
+                        on: _picked.contains(l),
+                        onTap: () => setState(() {
+                          _picked = _picked.contains(l) ? ([..._picked]..remove(l)) : [..._picked, l];
+                        }),
+                      ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 6),
-            Text('${_picked.length} of 2 to 4 picked', style: theme.type.caption.tint(theme.textSubtle)),
+            Text(
+              _picked.length < 2 ? '${_picked.length} picked; pick at least two' : '${_picked.length} picked',
+              style: theme.type.caption.tint(theme.textSubtle),
+            ),
             const SizedBox(height: 14),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,

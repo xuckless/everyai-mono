@@ -74,10 +74,14 @@ final class _Planner implements BoardPlanner {
   }
 }
 
-/// A starter that records each start and returns `s-<n>`; [fail] names prompts that fail to start; [gate] holds
-/// starts; [handoffs] are the commits of sessions' work (none: it ran in the project folder).
+/// A starter whose session ids are `s-<n>` in the order they are picked; it records each start (and the session as
+/// existing); [fail] names prompts that fail to start; [gate] holds starts; [handoffs] are the commits of sessions'
+/// work (none: it ran in the project folder); [landedSessions] have merged.
 final class _Starter implements BoardStarter {
-  final started = <({String prompt, LeadPick lead, bool worktree, AgentMode mode, String? from})>[];
+  final started = <({String id, String prompt, LeadPick lead, bool worktree, AgentMode mode, String? from})>[];
+  final existing = <String>{};
+  final landedSessions = <String>{};
+  var _ids = 0;
   final fail = <String>{};
   Completer<void>? gate;
   final handoffs = <String, String>{};
@@ -89,7 +93,17 @@ final class _Starter implements BoardStarter {
   var _running = 0;
 
   @override
-  Future<String> start({
+  String newSessionId() => 's-${++_ids}';
+
+  @override
+  bool exists(String sessionId) => existing.contains(sessionId);
+
+  @override
+  Future<bool> landed(String sessionId) async => landedSessions.contains(sessionId);
+
+  @override
+  Future<void> start({
+    required String sessionId,
     required CodeProject project,
     required String prompt,
     required LeadPick lead,
@@ -103,8 +117,8 @@ final class _Starter implements BoardStarter {
       await gate?.future;
       await Future<void>.delayed(Duration.zero);
       if (fail.any(prompt.startsWith)) throw const HarnessError('No room.');
-      started.add((prompt: prompt, lead: lead, worktree: worktree, mode: mode, from: fromCommit));
-      return 's-${started.length}';
+      started.add((id: sessionId, prompt: prompt, lead: lead, worktree: worktree, mode: mode, from: fromCommit));
+      existing.add(sessionId);
     } finally {
       _running--;
     }
@@ -122,7 +136,7 @@ final class _Starter implements BoardStarter {
 
 void main() {
   group('the split', () {
-    test('takes the last object with a tasks list, skipping other objects; long briefs are cut', () {
+    test('takes the last object with a tasks list, skipping other objects; long briefs are kept whole', () {
       final long = 'x' * 5000;
       final split = _parse(
         'I read {"name":"shop","version":"1.0"} and "quotes" here.\n'
@@ -130,7 +144,7 @@ void main() {
       );
       final tasks = (split as SplitTasks).tasks;
       expect([for (final t in tasks) t.title], ['A', 'B']);
-      expect(tasks.first.brief.length, maxBriefChars);
+      expect(tasks.first.brief, long);
     });
 
     test('reads the first JSON object, maps "after" numbers to ids, and checks harnesses and models', () {
@@ -166,18 +180,17 @@ Here is the plan:
       expect(tasks.every((t) => t.worktree && t.run is TaskDraft), isTrue);
     });
 
-    test('refuses replies without tasks, with too few or too many, bad dependencies or a loop', () {
+    test('takes any number of tasks; refuses replies without tasks, bad dependencies or a loop', () {
       String why(String reply) => (_parse(reply) as SplitRefused).why;
       expect(why('Sorry, I cannot help.'), contains('no tasks'));
-      expect(why('{"tasks":[{"title":"Only one"}]}'), contains('one task'));
-      expect(
-        why(
-          jsonEncode({
-            'tasks': List.generate(9, (i) => {'title': 'T$i'}),
-          }),
-        ),
-        contains('more than 8'),
+      // No count cap either way (owner).
+      expect((_parse('{"tasks":[{"title":"Only one"}]}') as SplitTasks).tasks, hasLength(1));
+      final many = _parse(
+        jsonEncode({
+          'tasks': List.generate(40, (i) => {'title': 'T$i'}),
+        }),
       );
+      expect((many as SplitTasks).tasks, hasLength(40));
       expect(why('{"tasks":[{"title":"A","after":[2]},{"title":"B","after":[1]}]}'), contains('loop'));
       expect(why('{"tasks":[{"title":"A","after":[1]},{"title":"B"}]}'), contains('itself'));
       expect(why('{"tasks":[{"title":"A","after":[5]},{"title":"B"}]}'), contains("isn't there"));
@@ -190,6 +203,7 @@ Here is the plan:
       expect(prompt, contains('"beta" (Beta)'));
       expect(prompt, contains('{"tasks":[{"title"'));
       expect(prompt, endsWith('Ship billing v2'));
+      expect(prompt, isNot(contains('2 to 8')));
     });
 
     test("each CLI plans headless and read-only; Claude's JSON reply is unwrapped", () {
@@ -292,11 +306,14 @@ Here is the plan:
           base: (title: 'Task b', commit: 'bbb'),
           merges: [(title: 'Task a', commit: 'aaa')],
           inPlace: ['Task c'],
+          missing: ['Task e'],
         ),
       );
       expect(prompt, contains('Your branch already holds the work of "Task b"'));
       expect(prompt, contains('`git merge --no-edit aaa` ("Task a")'));
       expect(prompt, contains('"Task c" ran in the project folder itself'));
+      // A task on its own branch whose work is gone isn't called "ran in the project folder".
+      expect(prompt, contains('The work of "Task e" couldn\'t be found'));
       expect(planTaskPrompt(g, g.tasks[0]), isNot(contains('merge')));
     });
 
@@ -313,7 +330,8 @@ Here is the plan:
       );
       expect(sessionOutcome(info: null, own: null, childrenWorking: false), SessionOutcome.gone);
       expect(sessionOutcome(info: info, own: SessionStatus.done, childrenWorking: false), SessionOutcome.done);
-      expect(sessionOutcome(info: info, own: SessionStatus.done, childrenWorking: true), SessionOutcome.running);
+      expect(sessionOutcome(info: info, own: SessionStatus.done, childrenWorking: true), SessionOutcome.working);
+      expect(sessionOutcome(info: info, own: SessionStatus.running, childrenWorking: false), SessionOutcome.working);
       // Idle reads before a first turn: not done.
       expect(sessionOutcome(info: info, own: SessionStatus.idle, childrenWorking: false), SessionOutcome.running);
       expect(sessionOutcome(info: info, own: SessionStatus.failed, childrenWorking: false), SessionOutcome.failed);
@@ -381,16 +399,24 @@ Here is the plan:
       expect([for (final t in left) '${t.id}<-${t.after.join(',')}'], ['b<-', 'c<-b']);
     });
 
-    test('a start the app quit during comes back failed, a split comes back a draft', () {
+    test('a start the app quit during keeps its session id; recovered by whether that session exists', () {
       final goal = _g([
-        _t('a', run: const TaskStarting()),
+        _t('a', run: const TaskStarting('s1')),
         _t('b', run: const TaskStarted('s2')),
+        _t('c', run: const TaskStopping('s3')),
       ], stage: GoalStage.splitting);
       final back = PlanGoal.fromJson(jsonDecode(jsonEncode(goal.toJson())))!;
       expect(back.stage, GoalStage.draft);
-      expect(back.tasks[0].run, isA<TaskFailed>());
+      expect((back.tasks[0].run as TaskStarting).sessionId, 's1');
       expect((back.tasks[1].run as TaskStarted).sessionId, 's2');
+      expect((back.tasks[2].run as TaskStopping).sessionId, 's3');
       expect(back.tasks[1].lead, _fallback);
+      bool yes(String _) => true;
+      bool no(String _) => false;
+      expect(recoverTask(const TaskStarting('s1'), exists: yes, cancelled: false), isA<TaskStarted>());
+      expect(recoverTask(const TaskStarting('s1'), exists: no, cancelled: false), isA<TaskFailed>());
+      expect((recoverTask(const TaskStarting('s1'), exists: yes, cancelled: true) as TaskCancelled).sessionId, 's1');
+      expect((recoverTask(const TaskStopping('s3'), exists: no, cancelled: true) as TaskCancelled).sessionId, isNull);
     });
   });
 
@@ -434,7 +460,7 @@ Here is the plan:
     });
 
     test('the race follows its runners; Compare now and Keep move it on', () {
-      BoardRace race(List<RunnerRun> runs, {RaceStage stage = RaceStage.running}) => BoardRace(
+      BoardRace race(List<RunnerRun> runs, {RaceStage stage = const RaceRunning()}) => BoardRace(
         id: 'r',
         projectId: 'p1',
         prompt: 'x',
@@ -442,11 +468,17 @@ Here is the plan:
         stage: stage,
         runners: [for (final r in runs) RaceRunner(lead: _fallback, run: r)],
       );
-      expect(settleRace(race([const RunnerStarting(), const RunnerRunning('a')])), RaceStage.starting);
-      expect(settleRace(race([const RunnerRunning('a'), RunnerDone('b', DateTime(2026))])), RaceStage.running);
-      expect(settleRace(race([const RunnerFailed('x'), RunnerDone('b', DateTime(2026))])), RaceStage.comparing);
-      expect(settleRace(race([const RunnerRunning('a')], stage: RaceStage.comparing)), RaceStage.comparing);
-      expect(settleRace(race([const RunnerRunning('a')], stage: RaceStage.kept)), RaceStage.kept);
+      expect(settleRace(race([const RunnerStarting('x'), const RunnerRunning('a')])), isA<RaceStarting>());
+      expect(settleRace(race([const RunnerQueued('x'), const RunnerRunning('a')])), isA<RaceStarting>());
+      expect(settleRace(race([const RunnerRunning('a'), RunnerDone('b', DateTime(2026))])), isA<RaceRunning>());
+      expect(settleRace(race([const RunnerFailed('x'), RunnerDone('b', DateTime(2026))])), isA<RaceComparing>());
+      expect(settleRace(race([const RunnerRunning('a')], stage: const RaceComparing())), isA<RaceComparing>());
+      expect(settleRace(race([const RunnerRunning('a')], stage: const RaceKept('a'))), isA<RaceKept>());
+      // The keep and its winner round-trip with the stage.
+      final keeping = race([RunnerDone('a', DateTime(2026))], stage: const RaceKeeping('a', KeepStep.removingLosers));
+      final back = BoardRace.fromJson(jsonDecode(jsonEncode(keeping.toJson())))!;
+      expect(back.stage, isA<RaceKeeping>());
+      expect(((back.stage as RaceKeeping).winner, (back.stage as RaceKeeping).step), ('a', KeepStep.removingLosers));
     });
 
     test("a runner's numbers: its diff, its last test command and its wall time", () {
@@ -569,7 +601,7 @@ Here is the plan:
         text: 'x',
         stage: GoalStage.running,
         tasks: [
-          _t('a', run: const TaskStarting()),
+          _t('a', run: const TaskStarting('s-lost')),
           _t('b', run: const TaskDone('s-0')),
           _t('c', after: ['b'], run: const TaskQueued()),
         ],
@@ -585,7 +617,8 @@ Here is the plan:
         ],
       );
       final plans = c.read(boardPlansProvider.notifier);
-      // The start the app quit during came back failed; c had been waiting on b and starts now.
+      // The start the app quit during never saved its session, so it came back failed; c had been waiting on b and
+      // starts now.
       expect(plans.goal('g')!.tasks[0].run, isA<TaskFailed>());
       await pumpEventQueue();
       expect(starter.started.single.prompt, startsWith('Task c'));
@@ -602,7 +635,7 @@ Here is the plan:
       final id = plans.add(projectId: 'p1', planner: _fallback);
       plans
         ..setText(id, 'x')
-        ..setMode(id, AgentMode.ask);
+        ..setMode(id, AgentMode.ask.name);
       planner.reply = reply;
       await plans.split(id);
       plans.delegate(id);
@@ -625,7 +658,9 @@ Here is the plan:
       plans.retry(id, plans.goal(id)!.tasks[0].id);
       await pumpEventQueue();
       expect(starter.started.single.prompt, startsWith('API'));
-      plans.observe({'s-1': SessionOutcome.done});
+      // The failed start used s-1; the retry is a new session.
+      expect(starter.started.single.id, 's-2');
+      plans.observe({'s-2': SessionOutcome.done});
       await pumpEventQueue();
       expect(starter.started.last.prompt, startsWith('UI'));
     });
@@ -793,21 +828,29 @@ Here is the plan:
         prompt: 'Make it faster',
         leads: const [(harness: 'alpha', model: 'a1'), (harness: 'beta', model: '')],
       );
-      expect(races.race(id)!.stage, RaceStage.starting);
+      expect(races.race(id)!.stage, isA<RaceStarting>());
       await pumpEventQueue();
-      expect(races.race(id)!.stage, RaceStage.running);
+      expect(races.race(id)!.stage, isA<RaceRunning>());
       expect(starter.started.every((s) => s.worktree && s.prompt == 'Make it faster'), isTrue);
       races.observe({'s-1': SessionOutcome.done}, now: DateTime(2030));
       expect(races.race(id)!.runners[0].run, isA<RunnerDone>());
-      expect(races.race(id)!.stage, RaceStage.running);
+      expect(races.race(id)!.stage, isA<RaceRunning>());
       races.observe({'s-2': SessionOutcome.failed});
-      expect(races.race(id)!.stage, RaceStage.comparing);
+      expect(races.race(id)!.stage, isA<RaceComparing>());
       expect(races.keepBlocked(id), isNull);
-      races.keep(id, 's-1');
+      // Only a finished runner can be kept.
+      expect(races.beginKeep(id, 's-2'), contains("isn't finished"));
+      expect(races.beginKeep(id, 's-1'), isNull);
+      expect(races.race(id)!.stage, isA<RaceKeeping>());
+      expect(races.beginKeep(id, 's-1'), contains('already'));
+      await races.settleKeep(id, merged: true);
       final kept = races.race(id)!;
-      expect((kept.stage, kept.keptSession), (RaceStage.kept, 's-1'));
+      expect(winnerOf(kept.stage), 's-1');
+      expect(kept.stage, isA<RaceKept>());
       expect(kept.runners[1].run, isA<RunnerDiscarded>());
-      expect(BoardRace.fromJson((jsonDecode(prefs[BoardRaces.key]!) as List<Object?>)[0])!.keptSession, 's-1');
+      // The loser's worktree goes (its branch stays: BoardStarter.discard keeps it).
+      expect(starter.discarded, ['s-2']);
+      expect(winnerOf(BoardRace.fromJson((jsonDecode(prefs[BoardRaces.key]!) as List<Object?>)[0])!.stage), 's-1');
     });
 
     test('Keep waits for runners still starting; Cancel with Stop removes runners, even ones starting', () async {
@@ -837,16 +880,180 @@ Here is the plan:
         projectId: 'p1',
         prompt: 'x',
         createdAt: DateTime(2026),
-        stage: RaceStage.running,
+        stage: const RaceRunning(),
         runners: [
-          RaceRunner(lead: _fallback, run: const RunnerStarting()),
+          RaceRunner(lead: _fallback, run: const RunnerStarting('s-lost')),
           RaceRunner(lead: _fallback, run: RunnerDone('s', DateTime(2026))),
         ],
       );
       prefs[BoardRaces.key] = jsonEncode([race.toJson()]);
       c.dispose();
       c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
-      expect(c.read(boardRacesProvider).single.stage, RaceStage.comparing);
+      expect(c.read(boardRacesProvider).single.stage, isA<RaceComparing>());
     });
+
+    ProviderContainer restart() {
+      c.dispose();
+      return c = ProviderContainer(
+        overrides: [
+          preferencesProvider.overrideWithValue(prefs),
+          boardPlannerProvider.overrideWithValue(planner),
+          boardStarterProvider.overrideWithValue(starter),
+          plannerLeadsProvider.overrideWithValue(_leads),
+        ],
+      );
+    }
+
+    test('a quit while a task or runner starts finds its session again by id; nothing starts twice', () async {
+      final goal = PlanGoal(
+        id: 'g',
+        projectId: 'p1',
+        planner: _fallback,
+        createdAt: DateTime(2026),
+        text: 'x',
+        stage: GoalStage.running,
+        tasks: [
+          _t('a', run: const TaskStarting('s-made')),
+          _t('b', after: ['a'], run: const TaskQueued()),
+        ],
+      );
+      final race = BoardRace(
+        id: 'r',
+        projectId: 'p1',
+        prompt: 'x',
+        createdAt: DateTime(2026),
+        stage: const RaceStarting(),
+        runners: [
+          RaceRunner(lead: _fallback, run: const RunnerStarting('s-ran')),
+          RaceRunner(lead: _fallback, run: const RunnerQueued('s-next')),
+        ],
+      );
+      prefs[BoardPlans.key] = jsonEncode([goal.toJson()]);
+      prefs[BoardRaces.key] = jsonEncode([race.toJson()]);
+      // Both starts had saved their sessions before the quit.
+      starter.existing.addAll({'s-made', 's-ran'});
+      restart();
+      expect(c.read(boardPlansProvider).single.tasks[0].run, isA<TaskStarted>());
+      expect((c.read(boardRacesProvider).single.runners[0].run as RunnerRunning).sessionId, 's-ran');
+      await pumpEventQueue();
+      // Only the runner still queued started (with the id it was given); b waits for a to finish.
+      expect([for (final s in starter.started) s.id], ['s-next']);
+    });
+
+    test('Cancel with Keep them running, then × while a runner starts: the runner keeps running', () async {
+      final races = c.read(boardRacesProvider.notifier);
+      final project = c.read(codeProjectsProvider).single;
+      starter.gate = Completer();
+      final id = races.start(project: project, prompt: 'Go', leads: const [_fallback, (harness: 'beta', model: '')]);
+      await pumpEventQueue();
+      races.cancel(id);
+      expect(races.race(id)!.stage, isA<RaceCancelled>());
+      races.remove(id);
+      // Hidden, but kept until the runner's session exists.
+      expect(shownRaces(c.read(boardRacesProvider)), isEmpty);
+      expect(c.read(boardRacesProvider).single.stage, isA<RaceRemoving>());
+      // The choice is on the runner itself, so it survives a reload.
+      expect(
+        BoardRace.fromJson((jsonDecode(prefs[BoardRaces.key]!) as List<Object?>)[0])!.runners[0].run,
+        isA<RunnerStarting>(),
+      );
+      starter.gate!.complete();
+      await pumpEventQueue();
+      expect(starter.stopped, isEmpty);
+      expect(starter.discarded, isEmpty);
+      expect(c.read(boardRacesProvider), isEmpty);
+      // The second runner never started (it was waiting for its turn when the race was cancelled).
+      expect(starter.started, hasLength(1));
+    });
+
+    test('a Keep lives in the race: resumed after a quit mid-merge (landed or not)', () async {
+      BoardRace keeping(String id) => BoardRace(
+        id: id,
+        projectId: 'p1',
+        prompt: 'x',
+        createdAt: DateTime(2026),
+        stage: const RaceKeeping('w', KeepStep.merging),
+        runners: [
+          RaceRunner(lead: _fallback, run: RunnerDone('w', DateTime(2026))),
+          RaceRunner(lead: _fallback, run: RunnerDone('l-$id', DateTime(2026))),
+        ],
+      );
+      prefs[BoardRaces.key] = jsonEncode([keeping('a').toJson()]);
+      starter.landedSessions.add('w');
+      restart();
+      c.read(boardRacesProvider);
+      await pumpEventQueue();
+      // The winner's work was on its base: the Keep finished, the loser's worktree removed.
+      expect(c.read(boardRacesProvider).single.stage, isA<RaceKept>());
+      expect(starter.discarded, ['l-a']);
+      starter.landedSessions.clear();
+      prefs[BoardRaces.key] = jsonEncode([keeping('b').toJson()]);
+      restart();
+      c.read(boardRacesProvider);
+      await pumpEventQueue();
+      // Nothing merged: back to comparing, the loser untouched.
+      expect(c.read(boardRacesProvider).single.stage, isA<RaceComparing>());
+      expect(starter.discarded, ['l-a']);
+    });
+
+    test(
+      'a done runner is followed: working again it runs (Keep waits); deleted it is gone and not keepable',
+      () async {
+        final races = c.read(boardRacesProvider.notifier);
+        final project = c.read(codeProjectsProvider).single;
+        final id = races.start(project: project, prompt: 'Go', leads: const [_fallback, (harness: 'beta', model: '')]);
+        await pumpEventQueue();
+        races.observe({'s-1': SessionOutcome.done, 's-2': SessionOutcome.done});
+        expect(races.race(id)!.stage, isA<RaceComparing>());
+        races.observe({'s-1': SessionOutcome.working});
+        expect(races.race(id)!.runners[0].run, isA<RunnerRunning>());
+        expect(races.keepBlocked(id, winner: 's-1'), contains("isn't finished"));
+        // Idle, not done: still running (an idle session isn't finished).
+        races.observe({'s-1': SessionOutcome.running});
+        expect(races.race(id)!.runners[0].run, isA<RunnerRunning>());
+        races.observe({'s-2': SessionOutcome.gone});
+        expect(races.race(id)!.runners[1].run, isA<RunnerGone>());
+        expect(races.beginKeep(id, 's-2'), isNotNull);
+        // Stop the rest: the one still working is stopped; the race stays to compare.
+        expect(races.working(id), isTrue);
+        races.stopWorking(id);
+        await pumpEventQueue();
+        expect(starter.stopped, ['s-1']);
+        expect(races.race(id)!.stage, isA<RaceComparing>());
+        expect(races.working(id), isFalse);
+      },
+    );
+
+    test('no runner cap: every lead picked starts', () async {
+      final races = c.read(boardRacesProvider.notifier);
+      final project = c.read(codeProjectsProvider).single;
+      final id = races.start(
+        project: project,
+        prompt: 'Go',
+        leads: [for (var i = 0; i < 7; i++) (harness: 'alpha', model: 'm$i')],
+      );
+      await pumpEventQueue();
+      expect(races.race(id)!.runners, hasLength(7));
+      expect(starter.started, hasLength(7));
+    });
+  });
+
+  test('Board work starts as autonomously as the lead allows, without asking', () {
+    bool none(String _) => false;
+    bool all(String _) => true;
+    expect(boardStartMode(autonomousMode, 'everyai', skipAllowed: none), AgentMode.fullAuto);
+    expect(boardStartMode(autonomousMode, 'claude-code', skipAllowed: all), AgentMode.fullAuto);
+    // An outside lead's skip-permissions mode needs the consent already given; else Auto-edit.
+    expect(boardStartMode(autonomousMode, 'claude-code', skipAllowed: none), AgentMode.autoEdit);
+    expect(boardStartMode(AgentMode.fullAuto.name, 'codex', skipAllowed: none), AgentMode.autoEdit);
+    expect(boardStartMode(AgentMode.ask.name, 'codex', skipAllowed: none), AgentMode.ask);
+    expect(PlanGoal(id: 'g', projectId: 'p', planner: _fallback, createdAt: DateTime(2026)).mode, autonomousMode);
+  });
+
+  test("the planner's read-only claim is made only where it holds", () {
+    expect(PlannerCli.claude.guard, contains("settings, hooks and MCP servers aren't loaded"));
+    for (final cli in [PlannerCli.codex, PlannerCli.opencode, PlannerCli.gemini]) {
+      expect(cli.guard, contains('still load'));
+    }
   });
 }

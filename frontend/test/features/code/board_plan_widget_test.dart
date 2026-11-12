@@ -71,9 +71,20 @@ final class _Starter implements BoardStarter {
   _Starter(this.c);
   final ProviderContainer c;
   final started = <({String title, bool worktree, LeadPick lead})>[];
+  var _ids = 0;
 
   @override
-  Future<String> start({
+  String newSessionId() => 's-${++_ids}';
+
+  @override
+  bool exists(String sessionId) => c.read(codeSessionsProvider).any((s) => s.id == sessionId);
+
+  @override
+  Future<bool> landed(String sessionId) async => false;
+
+  @override
+  Future<void> start({
+    required String sessionId,
     required CodeProject project,
     required String prompt,
     required LeadPick lead,
@@ -82,13 +93,11 @@ final class _Starter implements BoardStarter {
     String? fromCommit,
   }) async {
     started.add((title: prompt.split('\n').first, worktree: worktree, lead: lead));
-    final id = 's-${started.length}';
     // ignore: invalid_use_of_protected_member
     c.read(codeSessionsProvider.notifier).state = [
-      _s(id, harness: lead.harness, model: lead.model),
+      _s(sessionId, harness: lead.harness, model: lead.model),
       ...c.read(codeSessionsProvider),
     ];
-    return id;
   }
 
   @override
@@ -113,9 +122,41 @@ final class _Actions implements RaceActions {
     log.add('merge ${winner.id}${merges ? '' : ' (not merged)'}');
     return merges;
   }
+}
+
+/// The race's own starter, logging into [log] (the losers' removal is the race's, not the merge's).
+final class _LogStarter implements BoardStarter {
+  _LogStarter(this.log);
+  final List<String> log;
 
   @override
-  Future<void> discard(WidgetRef ref, CodeSessionInfo loser) async => log.add('discard ${loser.id}');
+  String newSessionId() => 'x';
+
+  @override
+  bool exists(String sessionId) => true;
+
+  @override
+  Future<bool> landed(String sessionId) async => false;
+
+  @override
+  Future<void> start({
+    required String sessionId,
+    required CodeProject project,
+    required String prompt,
+    required LeadPick lead,
+    required bool worktree,
+    required AgentMode mode,
+    String? fromCommit,
+  }) async {}
+
+  @override
+  Future<String?> handoff(String sessionId) async => null;
+
+  @override
+  Future<void> stop(String sessionId) async => log.add('stop $sessionId');
+
+  @override
+  Future<void> discard(String sessionId) async => log.add('discard $sessionId');
 }
 
 Future<(ProviderContainer, Preferences)> _board(
@@ -241,7 +282,7 @@ void main() {
       projectId: 'p1',
       prompt: 'Make checkout faster',
       createdAt: DateTime(2026, 11, 11),
-      stage: RaceStage.running,
+      stage: const RaceRunning(),
       runners: [
         RaceRunner(lead: (harness: 'alpha', model: 'a1'), run: const RunnerRunning('w1'), startedAt: DateTime(2026)),
         RaceRunner(lead: (harness: 'beta', model: ''), run: const RunnerRunning('w2'), startedAt: DateTime(2026)),
@@ -256,7 +297,10 @@ void main() {
       more: {
         BoardRaces.key: jsonEncode([race.toJson()]),
       },
-      overrides: [boardRaceActionsProvider.overrideWithValue(actions)],
+      overrides: [
+        boardRaceActionsProvider.overrideWithValue(actions),
+        boardStarterProvider.overrideWithValue(_LogStarter(actions.log)),
+      ],
     );
     expect(find.byKey(_k('board.race.r')), findsOneWidget);
     // Nothing finished yet: no comparing.
@@ -266,7 +310,7 @@ void main() {
     // ignore: invalid_use_of_protected_member
     c.read(codeStatusesProvider.notifier).state = {'w1': SessionStatus.done, 'w2': SessionStatus.done};
     await tester.pumpAndSettle();
-    expect(c.read(boardRacesProvider).single.stage, RaceStage.comparing);
+    expect(c.read(boardRacesProvider).single.stage, isA<RaceComparing>());
     await tester.tap(compare);
     await tester.pumpAndSettle();
     expect(find.text('Compare'), findsWidgets);
@@ -279,11 +323,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Keep this one?'), findsOneWidget);
     expect(find.textContaining('Beta'), findsWidgets);
+    expect(find.textContaining('branches are kept'), findsOneWidget);
     expect(actions.log, isEmpty);
     await tester.tap(find.text('Keep'));
     await tester.pumpAndSettle();
     expect(actions.log, ['merge w1 (not merged)']);
-    expect(c.read(boardRacesProvider).single.stage, RaceStage.comparing);
+    expect(c.read(boardRacesProvider).single.stage, isA<RaceComparing>());
 
     actions.merges = true;
     await tester.tap(compare);
@@ -294,8 +339,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(actions.log, ['merge w1 (not merged)', 'merge w1', 'discard w2']);
     final kept = c.read(boardRacesProvider).single;
-    expect((kept.stage, kept.keptSession), (RaceStage.kept, 'w1'));
-    expect(prefs[BoardRaces.key], contains('"kept":"w1"'));
+    expect(kept.stage, isA<RaceKept>());
+    expect(winnerOf(kept.stage), 'w1');
+    expect(prefs[BoardRaces.key], contains('"winner":"w1"'));
     await _done(tester, c);
   });
 }

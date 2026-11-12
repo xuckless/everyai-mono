@@ -1072,9 +1072,9 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     - `GoalStage` and `TaskRun` are diagrammed state machines.
     - New goal: free text, a project, a planner chip (default: the user's default Code lead and model,
       `defaultLeadProvider`).
-    - Split runs only when pressed. It asks `BoardPlanner` (`board_planner.dart`) for strict JSON with 2–8 tasks
-      (`planSplitPrompt`, `parsePlanSplit`: first JSON object, deps by 1-based number, loops refused, unknown
-      harness/model → default lead). Outside CLIs run headless and read-only on the user's plan (`plannerArgs`: Claude
+    - Split runs only when pressed. It asks `BoardPlanner` (`board_planner.dart`) for strict JSON with as many tasks
+      as the goal needs (`planSplitPrompt`, `parsePlanSplit`: deps by 1-based number, loops refused, unknown
+      harness/model → default lead). Outside CLIs run headless on the user's plan (`plannerArgs`: Claude
       `-p --permission-mode plan --no-session-persistence`, `codex exec --sandbox read-only`, `opencode run`,
       `gemini -p`; `board_planner_io.dart`, a stub on the web). An EveryAI planner goes through the gateway
       (`gatewaySummarizer`). Other harnesses are greyed out with the reason. A bad reply keeps the goal as a draft
@@ -1082,21 +1082,20 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
     - Tasks: title, brief, "after" (refused if it would loop), lead chip, "Own branch" (worktree, on by default);
       reorder, remove, add.
     - Delegate (one task, plus the drafts it waits on) and Delegate all queue tasks. Queued tasks start through
-      `BoardStarter` → `codeSessionsProvider.start` once their deps are Done (`tasksToStart`), in the project's last
-      mode (else Auto-edit), with `planTaskPrompt` (goal, brief, finished deps). A failed dep blocks its dependents.
+      `BoardStarter` → `codeSessionsProvider.start` once their deps are Done (`tasksToStart`), with `planTaskPrompt`
+      (goal, brief, finished deps). A failed dep blocks its dependents.
     - Cancel cancels unstarted tasks and asks whether to stop started ones.
     - Goal chip on session cards, a progress bar and glow on the goal card, curved dependency lines in the task
       list's gutter, and a delegated task's session card flies out of its task card (`_Glide.launchFrom`).
   - Race (`board/board_race.dart`, notifier `BoardRaces`, Preferences `code.board.races`):
-    - Started from the Board header or a goal card: one prompt, 2–4 leads (default: the two (harness, model) pairs
-      used most, `defaultRunners`), each in its own worktree. The prompt is sent as typed.
+    - Started from the Board header or a goal card: one prompt, two or more leads (default selection: the two
+      (harness, model) pairs used most, `defaultRunners`), each in its own worktree. The prompt is sent as typed.
     - `RaceStage` and `RunnerRun` are diagrammed state machines. The card shows the runners side by side, shimmering
       while they run.
     - Compare (`CompareView`) shows, per runner: files and lines from its worktree diff, tests (`testsOf`: the last
       test-looking command in an open transcript, else "not run"), cost, wall time, and the first hunk.
-    - "Keep this one" is offered on done runners only. After a confirm naming the others, it removes their worktrees
-      and branches (`codeGitProvider.discard`), then runs the session's own `mergeLocally`; `RaceActions` stands in
-      for both in tests.
+    - "Keep this one" is offered on done runners only. After a confirm naming the others, the session's own
+      `mergeLocally` runs (`RaceActions` stands in for it in tests), then the others' worktrees are removed.
   - Progress is driven from the Board's build (`SessionOutcome`: done needs the session's own status Done, not idle),
     so dependents start only while the Board is open. Not run live: no CLI or gateway planning, no real race or merge.
   - Review fixes and owner decisions (2026-11-11, same branch):
@@ -1109,19 +1108,60 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
       (`sessionOutcome`; removed harness counts as failed). The notifiers settle on load and start whatever is ready.
     - Starts run one at a time, with at most one in-place task per project. Own-branch tasks and race runners pass
       `requireWorktree` and are refused where the project can't have a worktree.
-    - Goals pick the mode their tasks start in (default Auto-edit; the "In …" chip beside Delegate all). Failed
-      tasks have Retry.
-    - Cancel and Remove ask "Keep them running" or "Stop them" (`StartedChoice`). Stop goes through
-      `BoardStarter.stop`, which opens the controller if needed. A task still starting is stopped once its session
-      exists. Remove cancels a split in flight.
-    - Planners are sandboxed: Claude gets `--strict-mcp-config --setting-sources user`, OpenCode `--agent plan`,
-      Codex `-c mcp_servers={}`, and Gemini `--approval-mode plan --allowed-mcp-server-names none`. They run through
+    - Goals pick the mode their tasks start in (the "In …" chip beside Delegate all). Failed tasks have Retry.
+    - Cancel and Remove ask "Keep them running" or "Stop them" (`StartedChoice`). Remove cancels a split in flight.
+    - Planners: Claude gets `--strict-mcp-config --setting-sources user`, OpenCode `--agent plan`, Codex
+      `-c mcp_servers={}`, and Gemini `--approval-mode plan --allowed-mcp-server-names none`. They run through
       `spawnDriver` (registered, so their tree is killed on timeout, cancel and quit). The gateway planner has the
       same 4-minute timeout.
-    - The split parser takes the last object with a `tasks` list. Briefs are capped at 2,000 characters.
+    - The split parser takes the last object with a `tasks` list.
     - Race Keep (owner): the winner merges first (`mergeLocally` now returns whether it merged). Only after that are
       the losers stopped and removed. Keep is refused while a runner is starting. Race × asks "Keep them running" or
-      "Stop and remove"; a runner that starts after Stop is stopped and removed. Races settle on load.
+      "Stop and remove". Races settle on load.
+  - Review fixes, round 2 (2026-11-12; `review/phase4`). Owner: Board agents are as autonomous as possible; **there are
+    no count caps and no spend gates**: no estimate, confirm or budget step between the Board and a started session,
+    race or delegated task, no cap on goals, tasks (the split takes 1 or more; "2–8" is gone), replans, races, runners
+    (two or more, no upper limit; many runners scroll sideways on the card and in Compare) or concurrent sessions, no
+    default budget, and briefs aren't cut. Pickers offer every model a harness offers (`plannerLeadsProvider`:
+    EveryAI's tool-calling library and local models, not only the default one; the race dialog lists every
+    (harness, model) pair; the split prompt lists them all). What stays: starts run one at a time (worktrees on one
+    repo), one in-place task per project at a time, harness-level rules from main (per-CLI consent, an EveryAI lead
+    with no model), and a race needs two runners.
+    - Modes (`boardStartMode`): goals and races default to `autonomousMode` ("Most autonomous" on the goal chip):
+      Full auto on the EveryAI lead; on an outside lead its skip-permissions mode only when `SkipPermissionsConsent`
+      was already given for that harness, else Auto-edit. A picked Full auto/Bypass follows the same rule; nothing asks
+      from the Board.
+    - Session ids up front: `BoardStarter.newSessionId` → `codeSessionsProvider.start(sessionId:)`. `TaskStarting`,
+      `RunnerQueued`/`RunnerStarting` carry the id, persisted; on load `recoverTask`/`recoverRunner` make a start the
+      app quit during started/running when its session was saved, else failed (Retry starts one, never two). Starts are
+      serialized by state (`taskPending`/`runnerPending`), not in-memory flags; queued runners resume on load.
+    - Cancel/remove choice is state: `TaskStopping(session)` / `RunnerStopping(session)` (Stop while starting:
+      stopped and removed once the session exists). `GoalStage.removing` / `RaceRemoving` hide a removed goal or race
+      until its pending starts land, then drop it. "Keep them running" then × leaves a starting runner running.
+    - `RaceStage` is sealed: starting, running, comparing, `RaceKeeping(winner, KeepStep.merging|removingLosers)`,
+      `RaceKept(winner)` (the old `keptSession` folded in), cancelled, removing. `beginKeep` / `settleKeep` /
+      `_removeLosers` are the provider's, so a lane rebuild mid-merge finishes the Keep; on load a merging Keep checks
+      `BoardStarter.landed` (nothing ahead of base, head ≠ base commit) and goes on or back to comparing.
+    - Keep and "Stop and remove" remove losers' worktrees but **keep their branches** (`CodeGit.discard(keepBranch:)`);
+      the confirm says so.
+    - Runners are followed live (`SessionOutcome.working` vs idle `running`): a done or failed runner whose session
+      works again is Running (Keep waits: `keepBlocked(winner:)` needs Done); a deleted one is `RunnerGone` ("Session
+      deleted"), never kept. After Compare now, "Stop the rest" (`stopWorking`) stops runners still at work; × asks
+      whenever runners work.
+    - `BoardStarter.stop` → `CodeSessions.stopWithoutOpening`: the open controller's Stop all, else this run's live
+      harness session is interrupted and its tagged processes killed; nothing is opened or connected.
+    - Planner claims are per harness (`PlannerCli.guard`, shown under Split): only Claude Code is read-only without the
+      repo's settings, hooks and MCP; Codex is OS read-only but loads project config; OpenCode's plan agent and
+      Gemini's plan mode load the project's config. Split, Delegate and Race go through the one-time repo-config note
+      (`confirmBoardRepoConfigs` → `confirmRepoConfigs`; Gemini/Qwen/Kiro/Cursor).
+    - Handoff: a dependency on its own branch whose work can't be read is "couldn't be found" (`TaskHandoff.missing`),
+      not "ran in the project folder".
+    - Left open: an in-place dependent is told to `git merge` its deps' commits into the user's checkout; a stacked
+      dependent's diff is against its handoff commit (so it hides the dep's work that a merge would bring in, and
+      `mergeLocally` wants one commit ahead of the base branch); the handoff commit snapshots uncommitted work, so a
+      dep that commits later can conflict with it.
+    - Tests: `board_plan_test.dart` (recovery by id, cancel-keep then ×, Keep resumed after a quit, follow-live, Stop
+      the rest, no runner cap, modes, planner guard), `board_plan_widget_test.dart`. Not run live.
 - **Board v2, phase 4: merged phase 3 + main, demo fixes (2026-11-11; `board-v2/phase4`).** Phase 3 (with main)
   merged in; one conflict (the ambient clock runs while a shown card is active or a goal/race runs). From the owner's
   live demo:

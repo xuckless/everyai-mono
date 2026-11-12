@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../agent_models.dart' show codeAgentProvider;
 import '../code_providers.dart';
@@ -16,10 +17,14 @@ import '../drivers/driver_registry.dart';
 import '../harness/harness.dart' show HarnessError;
 import '../harness/summarizer.dart' show gatewaySummarizer;
 import '../git/git_service.dart';
+import '../../local_models/local_model_bridge.dart' show localModelSpecsProvider;
+import '../../models/domain/model_catalog.dart' show ModelSpec;
+import '../../models/models_providers.dart' show libraryProvider;
 import 'board_plan.dart';
 import 'board_planner_stub.dart' if (dart.library.io) 'board_planner_io.dart' as cli;
 
-/// The outside CLIs that can plan headless, read-only and without keeping a session.
+/// The outside CLIs that can plan headless and without keeping a session. How far each is held to reading differs:
+/// see [plannerArgs] and [PlannerCli.guard].
 enum PlannerCli {
   claude('claude-code', 'claude', 'Claude Code'),
   codex('codex', 'codex', 'Codex'),
@@ -36,11 +41,22 @@ enum PlannerCli {
   final String label;
 
   static PlannerCli? of(String harness) => values.where((c) => c.harness == harness).firstOrNull;
+
+  /// What holds the planner to reading, as far as it is true for this CLI (shown in the planner menu). Only Claude
+  /// Code is both read-only and free of the repository's own settings; the others load the project's config.
+  String get guard => switch (this) {
+    claude => "Plans read-only; the repository's own settings, hooks and MCP servers aren't loaded",
+    codex => "Plans in Codex's read-only sandbox; the project's Codex config can still load",
+    opencode => "Plans with OpenCode's plan agent; the project's opencode config still loads and can change it",
+    gemini => "Plans in Gemini's plan mode; the project's .gemini settings still load",
+  };
 }
 
-/// The CLI's arguments for one headless, read-only planning run ([lastMessage]: where Codex writes its reply).
-/// The planner runs in the project folder so it can read the code; each CLI is held to reading there: no edits, no
-/// MCP servers (the user's or the repository's), and no hooks or settings from the repository.
+/// The CLI's arguments for one headless planning run ([lastMessage]: where Codex writes its reply). The planner runs
+/// in the project folder so it can read the code, in each CLI's own planning or read-only mode and without the user's
+/// MCP servers. Only Claude Code also skips the repository's own settings and hooks; Codex, OpenCode and Gemini load
+/// the project's config, which can widen what they may do ([PlannerCli.guard]; Gemini's goes through the one-time
+/// repo-config note before it plans).
 List<String> plannerArgs(PlannerCli cli, {required String model, required String prompt, String? lastMessage}) =>
     switch (cli) {
       // Plan mode reads but never edits; no MCP servers; only the user's own settings (a cloned repo's hooks don't
@@ -58,7 +74,7 @@ List<String> plannerArgs(PlannerCli cli, {required String model, required String
         '--no-session-persistence',
         if (claudeModelArg(model) case final m?) ...['--model', m],
       ],
-      // A read-only sandbox and no MCP servers; the last message alone goes to the file.
+      // A read-only sandbox (the OS holds it to reading) and no MCP servers; the last message alone goes to the file.
       PlannerCli.codex => [
         'exec',
         '--skip-git-repo-check',
@@ -71,7 +87,7 @@ List<String> plannerArgs(PlannerCli cli, {required String model, required String
         '--',
         prompt,
       ],
-      // OpenCode's own plan agent: it may read but not edit or run commands.
+      // OpenCode's own plan agent. The project's opencode config still loads and may change what that agent can do.
       PlannerCli.opencode => [
         'run',
         '--agent',
@@ -80,7 +96,8 @@ List<String> plannerArgs(PlannerCli cli, {required String model, required String
         '--',
         prompt,
       ],
-      // Gemini's read-only plan mode, with only an MCP server named `none` allowed (so none of the user's).
+      // Gemini's plan mode, with only an MCP server named `none` allowed (so none of the user's). The project's
+      // .gemini settings still load.
       PlannerCli.gemini => [
         '-p',
         prompt,
@@ -178,9 +195,16 @@ final class _AppPlanner implements BoardPlanner {
 
 /// Starts, stops and hands on the sessions of tasks and race runners. Tests replace it.
 abstract interface class BoardStarter {
-  /// Starts a session in [mode]; its id. With [worktree], it gets its own (branched from [fromCommit] when given)
-  /// or fails: it never falls back to the project folder.
-  Future<String> start({
+  /// A new session id, picked before the start so a start the app quit during can be found again.
+  String newSessionId();
+
+  /// Whether the session [sessionId] exists (its start saved it).
+  bool exists(String sessionId);
+
+  /// Starts the session [sessionId] in [mode]. With [worktree], it gets its own (branched from [fromCommit] when
+  /// given) or fails: it never falls back to the project folder.
+  Future<void> start({
+    required String sessionId,
     required CodeProject project,
     required String prompt,
     required LeadPick lead,
@@ -193,11 +217,14 @@ abstract interface class BoardStarter {
   /// (or is gone).
   Future<String?> handoff(String sessionId);
 
-  /// Stops [sessionId] and everything it runs (its controller is opened for it when it isn't).
+  /// Stops [sessionId] and everything it runs, without opening it when it isn't open.
   Future<void> stop(String sessionId);
 
-  /// Removes [sessionId] with its worktree and branch (or the session alone when it has none).
+  /// Removes [sessionId] with its worktree (or the session alone when it has none). Its branch is kept.
   Future<void> discard(String sessionId);
+
+  /// Whether [sessionId]'s work has landed on its base branch (a merge the app quit during, checked again).
+  Future<bool> landed(String sessionId);
 }
 
 final boardStarterProvider = Provider<BoardStarter>(_AppStarter.new);
@@ -207,7 +234,14 @@ final class _AppStarter implements BoardStarter {
   final Ref ref;
 
   @override
-  Future<String> start({
+  String newSessionId() => const Uuid().v7();
+
+  @override
+  bool exists(String sessionId) => ref.read(codeSessionsProvider.notifier).byId(sessionId) != null;
+
+  @override
+  Future<void> start({
+    required String sessionId,
     required CodeProject project,
     required String prompt,
     required LeadPick lead,
@@ -223,9 +257,10 @@ final class _AppStarter implements BoardStarter {
         : lead.harness == everyaiHarnessName
         ? ref.read(codeAgentProvider).model
         : ref.read(codeLeadProvider).of(lead.harness).model;
-    final info = await ref
+    await ref
         .read(codeSessionsProvider.notifier)
         .start(
+          sessionId: sessionId,
           project: project,
           prompt: prompt,
           model: model,
@@ -237,7 +272,6 @@ final class _AppStarter implements BoardStarter {
           fromCommit: fromCommit,
           requireWorktree: worktree,
         );
-    return info.id;
   }
 
   @override
@@ -247,32 +281,50 @@ final class _AppStarter implements BoardStarter {
   }
 
   @override
-  Future<void> stop(String sessionId) async {
-    if (ref.read(codeSessionsProvider.notifier).byId(sessionId) == null) return;
-    await ref.read(codeSessionProvider(sessionId).notifier).stopAll();
-  }
+  Future<void> stop(String sessionId) => ref.read(codeSessionsProvider.notifier).stopWithoutOpening(sessionId);
 
   @override
   Future<void> discard(String sessionId) async {
     final info = ref.read(codeSessionsProvider.notifier).byId(sessionId);
     if (info == null) return;
     await (info.worktree != null
-        ? ref.read(codeGitProvider(sessionId).notifier).discard()
+        ? ref.read(codeGitProvider(sessionId).notifier).discard(keepBranch: true)
         : ref.read(codeSessionsProvider.notifier).remove(sessionId));
+  }
+
+  @override
+  Future<bool> landed(String sessionId) async {
+    final w = ref.read(codeSessionsProvider.notifier).byId(sessionId)?.worktree;
+    if (w == null) return false;
+    try {
+      final (counts, head) = await (GitService.aheadBehind(w), GitService.headCommit(w)).wait;
+      // Nothing left ahead of the base, and something was committed: the base took it.
+      return counts.ahead == 0 && head != w.baseCommit;
+    } on Object {
+      return false;
+    }
   }
 }
 
 /// The leads a planner may hand tasks to (and a race may run): EveryAI and every outside harness ready to lead here,
-/// with the models each lists. [plannerLeadsProvider] keeps it current.
+/// with every model each offers (EveryAI: the user's models that call tools, local ones included, as its own model
+/// menu lists them; an outside CLI: its own list). [plannerLeadsProvider] keeps it current.
 final plannerLeadsProvider = Provider<List<PlannerLead>>((ref) {
   final registry = ref.watch(driverRegistryProvider);
   final statuses = ref.watch(driverStatusesProvider).value ?? const {};
   final own = ref.watch(codeSettingsProvider.select((s) => s.ownClis));
   final agent = ref.watch(codeAgentProvider).model;
+  final library = ref.watch(libraryProvider).value ?? const <ModelSpec>[];
+  final local = ref.watch(localModelSpecsProvider);
+  final everyai = {
+    if (agent.isNotEmpty) agent,
+    for (final s in [...library, ...local])
+      if (s.tools) s.id.value,
+  }.toList();
   return [
     for (final d in registry.listed)
       if (d.info.id == everyaiHarnessName)
-        (id: d.info.id, label: 'EveryAI', models: [if (agent.isNotEmpty) agent])
+        (id: d.info.id, label: 'EveryAI', models: everyai)
       else if (leadBlocked(d.info, statuses[d.info.id], consented: own.contains(d.info.consentId)) == null)
         (
           id: d.info.id,

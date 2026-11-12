@@ -40,7 +40,7 @@ final class _SlowDiscard extends CodeGit {
   Future<GitSnapshot> build() async => const GitSnapshot();
 
   @override
-  Future<void> discard() async {
+  Future<void> discard({bool keepBranch = false}) async {
     await ref.read(codeSessionsProvider.notifier).remove(sessionId);
     await gate.future;
   }

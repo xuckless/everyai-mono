@@ -746,8 +746,11 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   CodeSessionInfo? byId(String id) => state.where((s) => s.id == id).firstOrNull;
 
-  /// Starts a session on [project] with [prompt] as the first message.
+  /// Starts a session on [project] with [prompt] as the first message. [sessionId] is the id it gets (picked by the
+  /// caller when it must find the session again after a quit, as the Board's tasks and race runners do), else a new
+  /// one.
   Future<CodeSessionInfo> start({
+    String? sessionId,
     required CodeProject project,
     required String prompt,
     required String model,
@@ -761,7 +764,8 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
     String? fromCommit,
     bool requireWorktree = false,
   }) async {
-    final id = const Uuid().v7();
+    final id = sessionId ?? const Uuid().v7();
+    if (byId(id) != null) throw HarnessError('A session with the id $id exists already.');
     final title = titleFor(prompt.isEmpty ? files.first.name : prompt);
     // Sessions work in the project folder itself, in a real shell, unless asked
     // to be isolated (then a worktree on its own branch). A remote host's
@@ -1832,6 +1836,25 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
 
   /// Removes session [id] and the subagents it started; an outside agent's
   /// host token ends and its briefing is deleted (done when this completes).
+  /// Stops [id] and what it runs without opening (connecting) it: through its controller when one is open; else its
+  /// harness session, live in this run, is interrupted and the processes it left are ended. A session with neither
+  /// has nothing running here (after a relaunch nothing runs until it is opened).
+  Future<void> stopWithoutOpening(String id) async {
+    if (ref.exists(codeSessionProvider(id))) return ref.read(codeSessionProvider(id).notifier).stopAll();
+    final live = ref.read(_liveProvider)[id];
+    final info = byId(id);
+    if (live == null || info == null) return;
+    await Future.wait([
+      live.interrupt(),
+      if (killsOwnProcesses(info))
+        CodeSessionController.killProcesses(
+          tag: info.id,
+          workingDir: info.workingDir,
+          ownsDir: ownsWorkingDir(info, parent: byId(info.parentId ?? '')),
+        ),
+    ]);
+  }
+
   Future<void> remove(String id) async {
     final gone = {
       id,
@@ -7889,12 +7912,13 @@ base class CodeGit extends AsyncNotifier<GitSnapshot> {
     await refresh();
   }
 
-  /// Removes the session, its worktree, branch and checkpoints.
-  Future<void> discard() async {
+  /// Removes the session, its worktree, branch and checkpoints; with [keepBranch] the branch stays (a race's runners
+  /// that weren't kept: their work and any pull request from it stay reachable).
+  Future<void> discard({bool keepBranch = false}) async {
     final w = _w;
     final data = await gitDataDirInside(w.repoRoot) ?? await GitService.dataDir();
     await ref.read(codeSessionsProvider.notifier).remove(sessionId);
-    await GitService.removeWorktree(w, hooksDir: '$data/git-hooks');
+    await GitService.removeWorktree(w, hooksDir: '$data/git-hooks', deleteBranch: !keepBranch);
   }
 }
 

@@ -37,7 +37,7 @@ import 'board_plan.dart';
 import 'board_plan_providers.dart';
 import 'board_plan_view.dart';
 import 'board_pr.dart';
-import 'board_race.dart' show BoardRace, RaceStage;
+import 'board_race.dart' show BoardRace, shownRaces;
 import 'board_snooze.dart';
 import 'board_providers.dart';
 import 'board_state.dart';
@@ -633,8 +633,8 @@ class _BoardScreenState extends ConsumerState<BoardScreen> {
     }
 
     // Plans and races follow their sessions app-wide (boardPlanWatchProvider); the Board only shows them.
-    final goals = ref.watch(boardPlansProvider);
-    final races = ref.watch(boardRacesProvider);
+    final goals = shownGoals(ref.watch(boardPlansProvider));
+    final races = shownRaces(ref.watch(boardRacesProvider));
     final boardIds = {for (final s in all) s.id};
     final goalOf = ref.read(boardPlansProvider.notifier).bySession;
     final raceOf = ref.read(boardRacesProvider.notifier).bySession;
@@ -2224,8 +2224,4 @@ bool boardBreathing({
   required bool laneShown,
   required List<PlanGoal> goals,
   required List<BoardRace> races,
-}) =>
-    cards ||
-    laneShown &&
-        (goals.any((g) => g.stage == GoalStage.running) ||
-            races.any((r) => r.stage == RaceStage.running || r.stage == RaceStage.starting));
+}) => cards || laneShown && (goals.any((g) => g.stage == GoalStage.running) || races.any((r) => r.stage.live));

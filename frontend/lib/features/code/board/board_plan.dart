@@ -13,8 +13,10 @@ typedef LeadPick = ({String harness, String model});
 /// What a task's session is doing, as far as the plan is concerned:
 ///
 /// ```text
-///   draft ──Delegate──► queued ──every task it waits for is done──► starting ──started──► started(session)
-///     │                   │                                            └──couldn't start──► failed(why)
+///   draft ──Delegate──► queued ──every task it waits for is done──► starting(session) ──started──► started(session)
+///     │                   │                                            ├──couldn't start──► failed(why)
+///     │                   │                                            └──Cancel with Stop──► stopping(session)
+///     │                   │                                         ──its session exists, stopped──► cancelled
 ///     │                   └── a task it waits for failed or was cancelled: stays queued, shown as blocked
 ///     │                                                     started ──its session finished──► done(session, at)
 ///     │                                                            └──its session failed──► failed(why, session)
@@ -22,8 +24,9 @@ typedef LeadPick = ({String harness, String model});
 ///   failed ──Retry──► queued (a new session; the tasks waiting on it start once it is done)
 /// ```
 ///
-/// Only [BoardPlans] moves a task; [starting] never outlives the app (a start the app quit during is a failure on
-/// the next load, so nothing is started twice).
+/// Only [BoardPlans] moves a task. The session id is picked before the start, so a start the app quit during is
+/// found again on the next load ([recoverTask]): started when its session was saved, else failed (nothing ran, and
+/// Retry starts nothing twice).
 sealed class TaskRun {
   const TaskRun();
 
@@ -40,7 +43,16 @@ final class TaskQueued extends TaskRun {
 }
 
 final class TaskStarting extends TaskRun {
-  const TaskStarting();
+  const TaskStarting(this.sessionId);
+
+  /// The id its session gets.
+  final String sessionId;
+}
+
+/// Cancelled with Stop while its session was being made: stopped once it exists, then cancelled.
+final class TaskStopping extends TaskRun {
+  const TaskStopping(this.sessionId);
+  final String sessionId;
 }
 
 final class TaskStarted extends TaskRun {
@@ -71,8 +83,23 @@ final class TaskCancelled extends TaskRun {
 String? sessionOfRun(TaskRun run) => switch (run) {
   TaskStarted(:final sessionId) || TaskDone(:final sessionId) => sessionId,
   TaskFailed(:final sessionId) || TaskCancelled(:final sessionId) => sessionId,
-  TaskDraft() || TaskQueued() || TaskStarting() => null,
+  TaskDraft() || TaskQueued() || TaskStarting() || TaskStopping() => null,
 };
+
+/// Whether [run]'s session is still being made (its start is in flight).
+bool taskPending(TaskRun run) => run is TaskStarting || run is TaskStopping;
+
+/// What a task the app quit during comes back as, given whether its chosen session exists ([exists]) and whether
+/// its goal was cancelled or removed meanwhile ([cancelled]).
+TaskRun recoverTask(TaskRun run, {required bool Function(String sessionId) exists, required bool cancelled}) =>
+    switch (run) {
+      TaskStarting(:final sessionId) when exists(sessionId) =>
+        cancelled ? TaskCancelled(sessionId: sessionId) : TaskStarted(sessionId),
+      TaskStarting() when cancelled => const TaskCancelled(),
+      TaskStarting() => const TaskFailed("EveryAI closed before this task's session was made. Retry starts it."),
+      TaskStopping(:final sessionId) => TaskCancelled(sessionId: exists(sessionId) ? sessionId : null),
+      _ => run,
+    };
 
 /// One task of a goal. [after] holds the ids of the tasks it waits for (ids, so reordering keeps them).
 @immutable
@@ -145,8 +172,8 @@ final class GoalTask {
 Map<String, Object?> _runToJson(TaskRun run) => switch (run) {
   TaskDraft() => {'s': 'draft'},
   TaskQueued() => {'s': 'queued'},
-  // Never kept as starting: see [_runFromJson].
-  TaskStarting() => {'s': 'starting'},
+  TaskStarting(:final sessionId) => {'s': 'starting', 'session': sessionId},
+  TaskStopping(:final sessionId) => {'s': 'stopping', 'session': sessionId},
   TaskStarted(:final sessionId) => {'s': 'started', 'session': sessionId},
   TaskDone(:final sessionId, :final at) => {'s': 'done', 'session': sessionId, 'at': ?at?.millisecondsSinceEpoch},
   TaskFailed(:final why, :final sessionId) => {'s': 'failed', 'why': why, 'session': ?sessionId},
@@ -158,7 +185,10 @@ TaskRun _runFromJson(Object? json) {
   final session = json['session'] as String?;
   return switch (json['s']) {
     'queued' => const TaskQueued(),
-    // The app quit while it was starting: maybe it started, maybe not. Failing it starts nothing twice.
+    // Recovered by [BoardPlans] on load ([recoverTask]).
+    'starting' when session != null => TaskStarting(session),
+    'stopping' when session != null => TaskStopping(session),
+    // Saved before session ids were picked up front: maybe it started, maybe not.
     'starting' => const TaskFailed(
       'EveryAI closed while this task was starting. Check for its session, then retry it.',
     ),
@@ -183,15 +213,25 @@ TaskRun _runFromJson(Object? json) {
 ///     ▲                  └──error or a bad reply──► draft (with why)              └──a task failed, none run──► failed
 ///     └──────────── Split again (nothing delegated yet) ───────────┘
 ///   any ──Cancel plan──► cancelled
+///   any ──Remove──► removing (hidden while a task's session is still being made) ──► gone from the list
 /// ```
 ///
-/// [draft], [splitting] and [cancelled] are set by [BoardPlans]; the others follow the tasks ([settleGoal]).
-/// [splitting] doesn't outlive the app (back to draft on the next load).
-enum GoalStage { draft, splitting, ready, running, done, failed, cancelled }
+/// [draft], [splitting], [cancelled] and [removing] are set by [BoardPlans]; the others follow the tasks
+/// ([settleGoal]). [splitting] doesn't outlive the app (back to draft on the next load).
+enum GoalStage { draft, splitting, ready, running, done, failed, cancelled, removing }
+
+/// The goals the lane shows: a removed one still waiting on a start is hidden.
+List<PlanGoal> shownGoals(List<PlanGoal> goals) => [
+  for (final g in goals)
+    if (g.stage != GoalStage.removing) g,
+];
 
 /// What the Plan lane's count counts: goals with something in them (a blank draft is just the open form) and races.
 int planCount(Iterable<PlanGoal> goals, int races) =>
-    goals.where((g) => g.stage != GoalStage.draft || g.text.trim().isNotEmpty).length + races;
+    goals
+        .where((g) => g.stage != GoalStage.removing && (g.stage != GoalStage.draft || g.text.trim().isNotEmpty))
+        .length +
+    races;
 
 @immutable
 final class PlanGoal {
@@ -204,14 +244,14 @@ final class PlanGoal {
     this.tasks = const [],
     this.stage = GoalStage.draft,
     this.error,
-    this.mode = defaultDelegateMode,
+    this.mode = autonomousMode,
   });
 
   final String id;
   final String projectId;
   final String text;
 
-  /// The mode its tasks' sessions start in (an AgentMode name): Auto-edit unless the user picked another.
+  /// The mode its tasks' sessions start in: an AgentMode name the user picked, or [autonomousMode] (the default).
   final String mode;
   final LeadPick planner;
   final List<GoalTask> tasks;
@@ -277,27 +317,28 @@ final class PlanGoal {
       stage: stage == GoalStage.splitting ? GoalStage.draft : stage,
       error: json['error'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch((json['created'] as num?)?.toInt() ?? 0),
-      mode: json['mode'] as String? ?? defaultDelegateMode,
+      mode: json['mode'] as String? ?? autonomousMode,
     );
   }
 }
 
-/// Delegated tasks run unattended, so Auto-edit by default: edits go ahead, commands still ask.
-const defaultDelegateMode = 'autoEdit';
+/// The mode Board work starts in unless the user picks one: the most autonomous each lead allows (owner: Board agents
+/// run as autonomously as possible). See `boardStartMode` in board_plan_providers.dart.
+const autonomousMode = 'autonomous';
 
 /// The stage [goal]'s tasks put it in: drafts only → ready; any queued, starting or started → running; every
 /// remaining task done → done; else (a task failed or the rest were cancelled) → failed. Draft, splitting and
 /// cancelled goals keep theirs.
 GoalStage settleGoal(PlanGoal goal) {
   switch (goal.stage) {
-    case GoalStage.draft || GoalStage.splitting || GoalStage.cancelled:
+    case GoalStage.draft || GoalStage.splitting || GoalStage.cancelled || GoalStage.removing:
       return goal.stage;
     case GoalStage.ready || GoalStage.running || GoalStage.done || GoalStage.failed:
   }
   final runs = [for (final t in goal.tasks) t.run];
   if (runs.isEmpty) return GoalStage.ready;
   if (goal.tasks.any((t) => t.run is TaskQueued && !taskBlocked(goal, t)) ||
-      runs.any((r) => r is TaskStarting || r is TaskStarted)) {
+      runs.any((r) => taskPending(r) || r is TaskStarted)) {
     return GoalStage.running;
   }
   if (runs.every((r) => r is TaskDraft)) return GoalStage.ready;
@@ -316,7 +357,7 @@ bool taskBlocked(PlanGoal goal, GoalTask task) => task.after.any((id) {
 
 /// The queued tasks of [goal] to start now: every task they wait for is done.
 List<GoalTask> tasksToStart(PlanGoal goal) => [
-  if (goal.stage != GoalStage.cancelled)
+  if (goal.stage != GoalStage.cancelled && goal.stage != GoalStage.removing)
     for (final t in goal.tasks)
       if (t.run is TaskQueued && t.after.every((id) => goal.task(id)?.run is TaskDone)) t,
 ];
@@ -375,16 +416,17 @@ typedef PlannerLead = ({String id, String label, List<String> models});
 
 /// What the planner is asked to split [goal] into.
 /// Prompt reason: the reply is parsed by [parsePlanSplit], so the shape is spelled out exactly; tasks must be small
-/// enough to run unattended in parallel worktrees, and the leads listed are the only ones the app can start.
+/// enough to run unattended in parallel worktrees, and the leads listed are the only ones the app can start. No task
+/// count is asked for (owner: no caps on Board work); the planner sizes the split to the goal.
 String planSplitPrompt(String goal, {required String project, required List<PlannerLead> leads}) {
   final list = [
     for (final l in leads)
-      '- "${l.id}" (${l.label})${l.models.isEmpty ? '' : ', models: ${l.models.take(12).map((m) => '"$m"').join(', ')}'}',
+      '- "${l.id}" (${l.label})${l.models.isEmpty ? '' : ', models: ${l.models.map((m) => '"$m"').join(', ')}'}',
   ].join('\n');
   return '''
-You are planning work for coding agents in the project "$project". Split the goal below into 2 to 8 tasks that
-separate agents can each finish on their own, every one on its own git branch. Read the code if that helps you plan,
-but don't change anything.
+You are planning work for coding agents in the project "$project". Split the goal below into as many tasks as it
+needs, each one something a separate agent can finish on its own, every one on its own git branch. Read the code if
+that helps you plan, but don't change anything.
 
 Rules:
 - Each task is a self-contained piece of work with a clear finish line (tests pass, the feature works, the doc exists).
@@ -418,12 +460,10 @@ final class SplitRefused extends PlanSplit {
   final String why;
 }
 
-/// The longest brief kept from a planner (they are stored with the goal).
-const maxBriefChars = 2000;
-
-/// Reads the planner's [reply] into 2–8 tasks: the last JSON object in it with a "tasks" list (code fences, words
-/// and other objects around it, such as a file the planner printed, are skipped), each task with a title, a brief, earlier tasks to wait for (1-based), and a harness from [leads] (else
-/// [fallback]) with one of its models (else its default). New ids come from [newId].
+/// Reads the planner's [reply] into tasks (any number, one or more): the last JSON object in it with a "tasks" list
+/// (code fences, words and other objects around it, such as a file the planner printed, are skipped), each task with
+/// a title, a brief, earlier tasks to wait for (1-based), and a harness from [leads] (else [fallback]) with one of its
+/// models (else its default). New ids come from [newId].
 PlanSplit parsePlanSplit(
   String reply, {
   required List<PlannerLead> leads,
@@ -434,8 +474,6 @@ PlanSplit parsePlanSplit(
   if (json == null) return const SplitRefused("The planner's reply had no tasks in it.");
   final raw = json['tasks'];
   if (raw is! List || raw.isEmpty) return const SplitRefused("The planner's reply had no tasks in it.");
-  if (raw.length < 2) return const SplitRefused('The planner gave one task; try Split again or add tasks yourself.');
-  if (raw.length > 8) return const SplitRefused('The planner gave more than 8 tasks; make the goal smaller.');
   final byId = {for (final l in leads) l.id: l};
   final ids = [for (var i = 0; i < raw.length; i++) newId()];
   final tasks = <GoalTask>[];
@@ -443,8 +481,7 @@ PlanSplit parsePlanSplit(
     if (t is! Map<String, Object?>) return SplitRefused('Task ${i + 1} in the reply isn\'t an object.');
     final title = '${t['title']}'.trim();
     if (t['title'] is! String || title.isEmpty) return SplitRefused('Task ${i + 1} has no title.');
-    var brief = t['brief'] is String ? (t['brief']! as String).trim() : '';
-    if (brief.length > maxBriefChars) brief = '${brief.substring(0, maxBriefChars - 1)}…';
+    final brief = t['brief'] is String ? (t['brief']! as String).trim() : '';
     final after = <String>[];
     for (final a in t['after'] is List ? t['after']! as List : const []) {
       final n = a is num ? a.toInt() : int.tryParse('$a');
@@ -526,6 +563,9 @@ String planTaskPrompt(PlanGoal goal, GoalTask task, {TaskHandoff handoff = noHan
     if (handoff.inPlace.isNotEmpty)
       '${handoff.inPlace.map((t) => '"$t"').join(', ')} ran in the project folder itself, so '
           '${handoff.inPlace.length == 1 ? 'its changes are' : 'their changes are'} not on your branch.',
+    if (handoff.missing.isNotEmpty)
+      'The work of ${handoff.missing.map((t) => '"$t"').join(', ')} couldn\'t be found (its session or worktree is '
+          'gone), so it is not on your branch.',
   ];
   return [
     task.title,
@@ -549,14 +589,16 @@ String planId([math.Random? random]) {
 
 /// What a task's worktree starts from, worked out when it starts: the work of the task it waits on that finished last
 /// ([base]: a commit holding that task's work, committed or not), the other finished tasks' work to merge first
-/// ([merges]), and tasks that ran in the project folder itself ([inPlace]; their work isn't on any branch).
+/// ([merges]), tasks that ran in the project folder itself ([inPlace]; their work isn't on any branch), and tasks on
+/// their own branch whose work couldn't be read ([missing]: the session or its worktree is gone).
 typedef TaskHandoff = ({
   ({String title, String commit})? base,
   List<({String title, String commit})> merges,
   List<String> inPlace,
+  List<String> missing,
 });
 
-const TaskHandoff noHandoff = (base: null, merges: [], inPlace: []);
+const TaskHandoff noHandoff = (base: null, merges: [], inPlace: [], missing: []);
 
 /// The tasks [task] waits on, the one that finished last first (unknown finish times last).
 List<GoalTask> depsByFinish(PlanGoal goal, GoalTask task) {
