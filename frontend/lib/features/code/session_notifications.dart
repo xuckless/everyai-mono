@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/process/supervisor.dart';
+import 'drivers/short_run.dart';
+
 import 'domain/code_session.dart';
 import 'domain/transcript.dart' show AlertSeverity, SecurityAlert;
 
@@ -32,21 +35,38 @@ final class CommandNotifier implements SystemNotifier {
 
   @override
   Future<void> show(String title, String body) async {
-    try {
-      if (Platform.isMacOS) {
-        String q(String s) => '"${s.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
-        await Process.run('osascript', [
-          '-e',
-          'display notification ${q(body)} with title ${q('EveryAI')} subtitle ${q(title)}',
-        ]);
-      } else if (Platform.isLinux) {
-        // Notification servers may read the body (not the title) as markup: quoted page text must not become a link.
-        await Process.run('notify-send', ['--app-name=EveryAI', title, notifyPlain(body)]);
-      }
-    } on Object {
-      // No notification service; the status dot still shows it.
+    final RunResult r;
+    if (Platform.isMacOS) {
+      String q(String s) => '"${s.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}"';
+      r = await runShort(
+        'osascript',
+        ['-e', 'display notification ${q(body)} with title ${q('EveryAI')} subtitle ${q(title)}'],
+        timeout: notifyTimeout,
+        owner: const ProbeOwner('notify'),
+      );
+    } else if (Platform.isLinux) {
+      // Notification servers may read the body (not the title) as markup: quoted page text must not become a link.
+      r = await runShort(
+        'notify-send',
+        ['--app-name=EveryAI', title, notifyPlain(body)],
+        timeout: notifyTimeout,
+        owner: const ProbeOwner('notify'),
+      );
+    } else {
+      return;
+    }
+    // No notification service (the status dot still shows it), or one that hung (stopped, verified): in the log.
+    switch (r) {
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        logStop('notification', kill);
+        debugPrint('EveryAI notifications: ${runProblem('notification', r)}');
+      case Finished() || StartFailed() || Refused():
+        break;
     }
   }
+
+  /// How long a notification command may take (osascript asks for permission the first time).
+  static const notifyTimeout = Duration(seconds: 15);
 }
 
 /// [s] with the characters notification markup reads escaped, so it shows as written.

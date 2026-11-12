@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/floor_advice.dart';
 import 'package:every_ai/features/code/domain/permissions.dart';
@@ -1950,8 +1951,9 @@ final class _Live implements LineChannel {
   String get lastError => '';
 
   @override
-  Future<void> close() async {
+  Future<KillOutcome> close() async {
     if (!_lines.isClosed) await _lines.close();
+    return const Ended([]);
   }
 }
 
@@ -1966,5 +1968,5 @@ final class _NoTty implements LineChannel {
   String get lastError => 'Error: Device not configured (os error 6)';
 
   @override
-  Future<void> close() async {}
+  Future<KillOutcome> close() async => const Ended([]);
 }

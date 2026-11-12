@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../../core/process/supervisor.dart';
+import '../drivers/short_run.dart';
 import 'git_env.dart';
 import 'git_guard.dart';
 import 'git_models.dart';
@@ -29,35 +31,125 @@ Future<String> _devNull(String dir) async => Platform.isWindows && await _inside
 /// The one place EveryAI starts git (and the few programs next to it) for [dir] (`-C`'s, unless given): on this
 /// computer, or for a folder inside an environment through its bridge, with the host paths among [args] and [env]'s
 /// values (`GIT_INDEX_FILE`) as it sees them.
+///
+/// Through the supervisor, bounded ([gitTimeout]): a git that hangs (a credential prompt, a lock, a dead network) is
+/// stopped, verified, with what it started, and the call throws a [GitError] saying so. A git that can't start throws
+/// a [ProcessException], as before. [stdin] is written to it; [stdoutEncoding] null gives stdout as bytes.
 Future<ProcessResult> _proc(
   List<String> args, {
   String exe = 'git',
   String? dir,
   Map<String, String>? env,
   Encoding? stdoutEncoding = systemEncoding,
+  String? stdin,
 }) async {
   final cmd = await _command(exe, args, dir: dir, env: env);
-  return Process.run(cmd.exe, cmd.args, environment: cmd.env, stdoutEncoding: stdoutEncoding);
+  final r = await runShort(
+    cmd.exe,
+    cmd.args,
+    timeout: exe == 'git' ? gitTimeout(args) : const Duration(minutes: 1),
+    env: cmd.env ?? const {},
+    owner: const ProbeOwner('git'),
+    stdin: stdin,
+    encoding: stdoutEncoding ?? systemEncoding,
+    stderrEncoding: systemEncoding,
+    label: '$exe ${gitSubcommand(args) ?? ''}'.trim(),
+  );
+  return _result(
+    exe == 'git' ? 'git ${gitSubcommand(args) ?? ''}'.trim() : exe,
+    exe,
+    args,
+    r,
+    bytes: stdoutEncoding == null,
+  );
 }
 
-/// [_proc] for a process the caller feeds on stdin; [env] (`GIT_INDEX_FILE`, the author) is mapped like [_proc]'s.
-Future<Process> _start(List<String> args, {Map<String, String>? env}) async {
-  final cmd = await _command('git', args, env: env);
-  return Process.start(cmd.exe, cmd.args, environment: cmd.env);
+/// [r] as `Process.run` gave it; a run that was stopped (time out, cancel) throws a [GitError], one that couldn't
+/// start a [ProcessException] (callers read that as "not installed").
+ProcessResult _result(String what, String exe, List<String> args, RunResult r, {bool bytes = false}) {
+  switch (r) {
+    case Finished(:final code):
+      return ProcessResult(0, code, bytes ? r.stdoutBytes : r.stdout, r.stderr);
+    case TimedOut(:final kill) || Cancelled(:final kill):
+      logStop(what, kill);
+      throw GitError(runProblem(what, r)!);
+    case StartFailed(:final error) || Refused(reason: final error):
+      throw ProcessException(exe, args, error);
+  }
+}
+
+/// The git subcommand in [args] (past `-C dir`, `-c k=v` and other options before it), or null.
+String? gitSubcommand(List<String> args) {
+  for (var i = 0; i < args.length; i++) {
+    final a = args[i];
+    if (const {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'}.contains(a)) {
+      i++;
+      continue;
+    }
+    if (a.startsWith('-')) continue;
+    return a;
+  }
+  return null;
+}
+
+/// How long a git call may run before it is stopped: what talks to a remote 10 minutes, what walks or writes the
+/// working tree (a worktree's checkout of a big repository) 3, the rest (refs, config, rev-parse) 1.
+Duration gitTimeout(List<String> args) => switch (gitSubcommand(args)) {
+  'fetch' || 'pull' || 'push' || 'clone' || 'ls-remote' || 'submodule' || 'lfs' => const Duration(minutes: 10),
+  'worktree' ||
+  'add' ||
+  'diff' ||
+  'show' ||
+  'status' ||
+  'clean' ||
+  'restore' ||
+  'read-tree' ||
+  'write-tree' ||
+  'apply' ||
+  'merge' ||
+  'merge-tree' ||
+  'merge-file' ||
+  'rebase' ||
+  'checkout' ||
+  'switch' ||
+  'commit' ||
+  'commit-tree' ||
+  'log' ||
+  'stash' ||
+  'reset' ||
+  'check-ignore' ||
+  'init' => const Duration(minutes: 3),
+  _ => const Duration(minutes: 1),
+};
+
+/// How long a `gh` call may run (it talks to GitHub).
+const ghTimeout = Duration(minutes: 3);
+
+/// `gh` [args] in [dir], bounded ([ghTimeout]); see [_result].
+Future<ProcessResult> _gh(List<String> args, {String? dir, Map<String, String>? env}) async {
+  final r = await runShort(
+    'gh',
+    args,
+    timeout: ghTimeout,
+    cwd: dir,
+    env: env ?? const {},
+    owner: const ProbeOwner('gh'),
+    encoding: systemEncoding,
+    label: 'gh ${args.take(2).join(' ')}',
+  );
+  return _result('gh ${args.take(2).join(' ')}', 'gh', args, r);
 }
 
 /// Runs guarded git [args] in [dir] with [input] on stdin; throws a [GitError] when it fails.
 Future<String> _piped(String dir, List<String> args, String input, {Map<String, String>? env}) async {
-  final p = await _start(await guardedArgs(dir, args, env: env), env: env);
-  p.stdin.write(input);
-  await p.stdin.close();
-  final (out, err, code) = await (
-    p.stdout.transform(utf8.decoder).join(),
-    p.stderr.transform(utf8.decoder).join(),
-    p.exitCode,
-  ).wait;
-  if (code != 0) throw GitError('git ${args.first}: ${err.trim()}');
-  return out;
+  final res = await _proc(
+    await guardedArgs(dir, args, env: env),
+    env: env,
+    stdin: input,
+    stdoutEncoding: utf8,
+  );
+  if (res.exitCode != 0) throw GitError('git ${args.first}: ${'${res.stderr}'.trim()}');
+  return '${res.stdout}';
 }
 
 /// What [_proc] starts for [exe] [args] (tests).
@@ -385,11 +477,10 @@ Future<String> headCommit(SessionWorktree w) => _out(w.path, ['rev-parse', 'HEAD
 
 Future<BranchPr?> prFor(SessionWorktree w) async {
   try {
-    final res = await Process.run(
-      'gh',
+    final res = await _gh(
       ['pr', 'view', w.branch, '--json', 'number,url,state,headRefOid'],
-      workingDirectory: w.path,
-      environment: await guardedEnv(w.path),
+      dir: w.path,
+      env: await guardedEnv(w.path),
     );
     // Non-zero: no pull request for the branch, no remote, or gh isn't signed in.
     return res.exitCode == 0 ? parsePrView('${res.stdout}') : null;
@@ -403,12 +494,7 @@ Future<PrStatus?> prStatus(String dir, String target) async {
   if (!Directory(dir).existsSync()) throw GitError("The session's folder is gone: $dir");
   final ProcessResult res;
   try {
-    res = await Process.run(
-      'gh',
-      ['pr', 'view', target, '--json', prStatusFields],
-      workingDirectory: dir,
-      environment: await guardedEnv(dir),
-    );
+    res = await _gh(['pr', 'view', target, '--json', prStatusFields], dir: dir, env: await guardedEnv(dir));
   } on ProcessException catch (e) {
     throw GitError("Couldn't run gh: ${e.message}");
   }
@@ -423,8 +509,7 @@ Future<PrStatus?> prStatus(String dir, String target) async {
 
 Future<PrMergeMethod> prMergeMethod(String dir, PrStatus pr) async {
   try {
-    final repo = await Process.run(
-      'gh',
+    final repo = await _gh(
       [
         'repo',
         'view',
@@ -432,11 +517,15 @@ Future<PrMergeMethod> prMergeMethod(String dir, PrStatus pr) async {
         '--json',
         'mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed',
       ],
-      workingDirectory: Directory(dir).existsSync() ? dir : null,
-      environment: await guardedEnv(dir),
+      dir: Directory(dir).existsSync() ? dir : null,
+      env: await guardedEnv(dir),
     );
     return prMergeMethodOf(repo.exitCode == 0 ? '${repo.stdout}' : '');
   } on ProcessException {
+    return PrMergeMethod.squash;
+  } on GitError catch (e) {
+    // gh didn't answer in time (stopped): squash, the default, as when it can't be asked.
+    debugPrint('EveryAI git: ${e.message}; merging with squash.');
     return PrMergeMethod.squash;
   }
 }
@@ -462,8 +551,7 @@ Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) async {
   if (!Directory(dir).existsSync()) throw GitError("The session's folder is gone: $dir");
   final ProcessResult res;
   try {
-    res = await Process.run(
-      'gh',
+    res = await _gh(
       [
         'pr',
         'merge',
@@ -473,8 +561,8 @@ Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) async {
         if (pr.head.isNotEmpty) ...['--match-head-commit', pr.head],
         if (pr.repo.isNotEmpty) ...['--repo', pr.repo],
       ],
-      workingDirectory: dir,
-      environment: await guardedEnv(dir),
+      dir: dir,
+      env: await guardedEnv(dir),
     );
   } on ProcessException {
     throw const GitError('Merging needs the GitHub CLI: install gh and run `gh auth login`.');
@@ -484,9 +572,12 @@ Future<void> mergePr(String dir, PrStatus pr, PrMergeMethod method) async {
 
 Future<bool> ghReady(String dir) async {
   try {
-    final res = await Process.run('gh', ['auth', 'status', '--hostname', 'github.com'], workingDirectory: dir);
+    final res = await _gh(['auth', 'status', '--hostname', 'github.com'], dir: dir);
     return res.exitCode == 0;
   } on ProcessException {
+    return false;
+  } on GitError catch (e) {
+    debugPrint('EveryAI git: ${e.message}; counted as not signed in.');
     return false;
   }
 }
@@ -494,27 +585,31 @@ Future<bool> ghReady(String dir) async {
 Future<Set<String>> ignoredAmong(String dir, List<String> paths) async {
   if (paths.isEmpty) return const {};
   try {
-    final p = await _start(await guardedArgs(dir, ['check-ignore', '--stdin', '-z']));
-    p.stdin.write('${paths.join('\x00')}\x00');
-    await p.stdin.close();
-    final (out, _, code) = await (p.stdout.transform(utf8.decoder).join(), p.stderr.drain<void>(), p.exitCode).wait;
+    final res = await _proc(
+      await guardedArgs(dir, ['check-ignore', '--stdin', '-z']),
+      stdin: '${paths.join('\x00')}\x00',
+      stdoutEncoding: utf8,
+    );
     // 1: none ignored; 128: not a repository.
-    if (code != 0) return const {};
+    if (res.exitCode != 0) return const {};
     return {
-      for (final path in out.split('\x00'))
+      for (final path in '${res.stdout}'.split('\x00'))
         if (path.isNotEmpty) path,
     };
-  } on Object {
+  } on Object catch (e) {
+    // Shown as not ignored; the log says why.
+    debugPrint('EveryAI git: check-ignore in $dir failed: $e');
     return const {};
   }
 }
 
 Future<void> revertHunk(SessionWorktree w, FileDiff file, int hunk) async {
-  final p = await _start(await guardedArgs(w.path, ['apply', '-R', '--whitespace=nowarn', '-']));
-  p.stdin.write(file.patchFor(hunk));
-  await p.stdin.close();
-  final err = await p.stderr.transform(utf8.decoder).join();
-  if (await p.exitCode != 0) throw GitError("Couldn't revert that change: ${err.trim()}");
+  final res = await _proc(
+    await guardedArgs(w.path, ['apply', '-R', '--whitespace=nowarn', '-']),
+    stdin: file.patchFor(hunk),
+    stdoutEncoding: utf8,
+  );
+  if (res.exitCode != 0) throw GitError("Couldn't revert that change: ${'${res.stderr}'.trim()}");
 }
 
 /// Stages [paths] (everything when null).
@@ -696,8 +791,7 @@ Future<void> push(SessionWorktree w) async {
 Future<String> createPr(SessionWorktree w, {required String title, required String body}) async {
   final ProcessResult res;
   try {
-    res = await Process.run(
-      'gh',
+    res = await _gh(
       [
         'pr',
         'create',
@@ -711,8 +805,8 @@ Future<String> createPr(SessionWorktree w, {required String title, required Stri
         body,
         // gh runs git itself (status, remotes): the same guard reaches it through the environment.
       ],
-      workingDirectory: w.path,
-      environment: await guardedEnv(w.path),
+      dir: w.path,
+      env: await guardedEnv(w.path),
     );
   } on ProcessException {
     throw const GitError('Creating a pull request needs the GitHub CLI: install gh and run `gh auth login`.');

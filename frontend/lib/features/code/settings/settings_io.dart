@@ -2,7 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
+
+import '../../../core/process/supervisor.dart';
+import '../drivers/short_run.dart';
 
 import '../git/git_service_io.dart' show runGit;
 
@@ -94,21 +98,19 @@ Future<CommitStyle> resolveCommitStyle(String projectDir, CommitStyle style) asy
 }
 
 Future<void> excludeFromGit(String workingDir, List<String> anchored) async {
-  final ProcessResult res;
-  try {
-    res = await Process.run('git', [
-      '-C',
-      workingDir,
-      'rev-parse',
-      '--path-format=absolute',
-      '--git-common-dir',
-      '--show-prefix',
-    ]);
-  } on Object {
+  final r = await runShort(
+    'git',
+    ['-C', workingDir, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-prefix'],
+    timeout: const Duration(seconds: 30),
+    owner: const ProbeOwner('git'),
+    encoding: systemEncoding,
+  );
+  // Not a repository, no git, or it hung (stopped, verified): nothing to exclude from.
+  if (runProblem('git rev-parse', r) case final why?) {
+    if (r is TimedOut || r is Cancelled) debugPrint('EveryAI settings: $why');
     return;
   }
-  if (res.exitCode != 0) return;
-  final out = const LineSplitter().convert(res.stdout as String);
+  final out = const LineSplitter().convert((r as Finished).stdout);
   if (out.isEmpty) return;
   // info/exclude patterns are anchored at the repository's top: a session in
   // a subfolder of the repository gets its folder in front.

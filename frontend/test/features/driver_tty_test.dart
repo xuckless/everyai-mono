@@ -4,8 +4,8 @@ library;
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/drivers/driver_process_io.dart';
-import 'package:every_ai/features/code/harness/everyai/shell_io.dart' show killTree;
 import 'package:flutter_test/flutter_test.dart';
 
 /// Plain pipes stand in for the pty (flutter_pty's library isn't loaded
@@ -23,8 +23,35 @@ Future<TtyProgram> _piped(String executable, List<String> args, String cwd, Map<
 
 void main() {
   late Directory tmp;
-  setUp(() async => tmp = await Directory.systemTemp.createTemp('driver-tty'));
-  tearDown(() => tmp.delete(recursive: true));
+  late ProcessSupervisor sup;
+  final original = ProcessSupervisor.instance;
+
+  /// Every signal the supervisor sent, by pid (negative: a group).
+  late List<int> signalled;
+
+  setUp(() async {
+    tmp = await Directory.systemTemp.createTemp('driver-tty');
+    signalled = [];
+    sup = ProcessSupervisor.instance = ProcessSupervisor.create(
+      ledgerDir: '${tmp.path}/ledger',
+      hooks: SupervisorHooks(
+        signal: (p, s) {
+          signalled.add(p);
+          return Process.killPid(p, s);
+        },
+      ),
+    );
+  });
+  tearDown(() async {
+    // Nothing these tests started is left running.
+    expect([
+      for (final c in sup.children)
+        if (c.state.live) c.spec.label,
+    ], isEmpty);
+    await sup.stopAll();
+    ProcessSupervisor.instance = original;
+    await tmp.delete(recursive: true);
+  });
 
   test('JSON lines go over the named pipes both ways; closing removes them', () async {
     final agent = File('${tmp.path}/agent.sh')
@@ -89,13 +116,6 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
   });
 
   group('close after the CLI exited leaves its pid alone (it may be reused)', () {
-    late List<int> killed;
-    setUp(() {
-      killed = [];
-      killDriverTree = (pid) async => killed.add(pid);
-    });
-    tearDown(() => killDriverTree = killTree);
-
     test('piped driver', () async {
       final p = await spawnDriver(
         executable: '/bin/sh',
@@ -105,8 +125,8 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
         logPath: '${tmp.path}/s/driver.log',
       );
       await p.exitCode;
-      await p.close();
-      expect(killed, isEmpty);
+      expect(await p.close(), isA<Ended>());
+      expect(signalled, isEmpty);
     });
 
     test('tty driver', () async {
@@ -119,22 +139,48 @@ while IFS= read -r line; do printf '%s\n' "$line"; done
         start: (exe, args, cwd, env) => _piped('/bin/sh', ['-c', 'exit 0'], cwd, env),
       );
       await p.exitCode;
-      await p.close();
-      expect(killed, isEmpty);
+      expect(await p.close(), isA<Ended>());
+      expect(signalled, isEmpty);
     });
 
-    test('a running driver is still ended', () async {
+    test('a running driver is ended, verified, with what it started', () async {
       final p = await spawnDriver(
         executable: '/bin/sh',
-        args: ['-c', 'read x'],
+        args: ['-c', 'sleep 30 & read x; wait'],
         cwd: tmp.path,
         sessionTag: 'running-pipe',
         logPath: '${tmp.path}/s/driver.log',
+        // Input closing would end it by itself: the stop must end it (and its sleep) by signal.
+        closeInputFirst: false,
       );
-      await p.close();
-      expect(killed, [p.pid]);
-      await killTree(p.pid);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await p.close(), isA<Ended>());
+      expect(signalled, isNotEmpty);
       await p.exitCode;
     });
+
+    test('a running tty driver is stopped through the supervisor, then its pipes go', () async {
+      final p = await spawnDriverTty(
+        executable: '/bin/sh',
+        args: ['-c', 'sleep 30'],
+        cwd: tmp.path,
+        sessionTag: 'running-tty',
+        logPath: '${tmp.path}/s/stderr.log',
+        start: _piped,
+      );
+      expect(sup.children.where((c) => c.pid == p.pid), hasLength(1));
+      expect(await p.close(), isA<Ended>());
+      expect(File('${tmp.path}/s/acp.in').existsSync(), isFalse);
+    });
   });
+
+  test('the version check stops a CLI that hangs and says so', () async {
+    final cli = File('${tmp.path}/hangs')
+      ..writeAsStringSync('#!/bin/sh\nsleep 30\n')
+      ..createSync();
+    await Process.run('chmod', ['+x', cli.path]);
+    final status = await detectCli('hangs', which: (_) async => cli.path);
+    expect(status.installed, isTrue);
+    expect(status.problem, contains("didn't say its version"));
+  }, timeout: const Timeout(Duration(seconds: 20)));
 }

@@ -4,11 +4,13 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../../../../core/net/sse.dart';
+import '../../../../core/process/supervisor.dart' show Ended, KillOutcome;
 import '../../domain/agent_mode.dart';
 import '../../harness/events.dart';
 import '../../harness/harness.dart';
 import '../driver.dart';
 import '../driver_policy.dart';
+import '../short_run.dart' show logStop;
 import 'opencode_events.dart';
 import 'opencode_server.dart';
 
@@ -78,7 +80,14 @@ List<NativeMode> openCodeModes(Object? data) => [
 /// (only this session's), history from its message list, answers through
 /// its permission replies.
 final class OpenCodeSession
-    implements HarnessSession, SteersRuns, PerCallApprovals, AllowsRemembered, HasNativeCommands, NativeModes {
+    implements
+        HarnessSession,
+        SteersRuns,
+        PerCallApprovals,
+        AllowsRemembered,
+        HasNativeCommands,
+        NativeModes,
+        ClosesVerified {
   OpenCodeSession(
     this._server, {
     required String workingDir,
@@ -310,18 +319,25 @@ final class OpenCodeSession
   Future<void> rewindTo(String? head) async => throw HarnessError(rewindRefusal(_info, const {})!);
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
+  Future<void> close() => closeVerified();
+
+  /// [close], with what the stop of the session's server proved.
+  @override
+  Future<KillOutcome> closeVerified() => _closing ??= _closeNow();
+  Future<KillOutcome>? _closing;
+
+  Future<KillOutcome> _closeNow() async {
     _closed = true;
     // An event stream waiting for its next frame may never finish cancelling.
     unawaited(_sub?.cancel());
-    await _server.close();
+    final outcome = logStop("OpenCode's server", await _server.close());
     for (final l in _listeners.toList()) {
       await l.close();
     }
     _commands.close();
     _modes.close();
     onClose?.call();
+    return outcome;
   }
 
   void _onSse(SseEvent e) {
@@ -481,7 +497,14 @@ final class OpenCodeSession
     unawaited(_sub?.cancel());
     _sub = null;
     _early.clear();
-    _emit(_failure("The app lost touch with OpenCode's server."));
+    // A server the app can't reach any more isn't left running: it is stopped (verified), and the session says so.
+    final outcome = logStop("OpenCode's server (out of touch)", await _server.close());
+    _emit(
+      _failure(switch (outcome) {
+        Ended() => "The app lost touch with OpenCode's server, so it was stopped. Start a new session to go on.",
+        _ => "The app lost touch with OpenCode's server and couldn't prove it stopped ($outcome).",
+      }),
+    );
   }
 
   HarnessEvent _failure(String message) =>

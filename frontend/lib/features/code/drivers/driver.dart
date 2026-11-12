@@ -2,6 +2,8 @@
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/process/supervisor.dart' show KillOutcome;
+
 import '../domain/agent_mode.dart';
 import '../harness/harness.dart';
 
@@ -154,6 +156,12 @@ final class DriverModel {
 /// - what a model call cost is a `UsageReport`.
 /// A driver whose model list can change after it was read (it learns the list from a running agent): the model
 /// menu reads it again on [modelsChanged].
+/// A session whose close says what stopping its process proved (the supervisor's verified stop): `close()` is
+/// this without the outcome. For the callers that wire it to the UI (phase 3 of the process work).
+abstract interface class ClosesVerified {
+  Future<KillOutcome> closeVerified();
+}
+
 abstract interface class OffersModels {
   Stream<void> get modelsChanged;
 

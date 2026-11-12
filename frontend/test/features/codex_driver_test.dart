@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show KillOutcome;
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/domain/permissions.dart' show floorReason;
 import 'package:every_ai/features/code/drivers/codex/codex_driver.dart';
@@ -85,7 +86,7 @@ final class _Burst implements LineChannel {
   @override
   String get lastError => inner.lastError;
   @override
-  Future<void> close() => inner.close();
+  Future<KillOutcome> close() => inner.close();
 }
 
 typedef _Spawned = ({List<String> args, String cwd, Map<String, String> env, String sessionTag});

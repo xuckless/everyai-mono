@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/drivers/claude/claude_driver.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:every_ai/features/code/handoff/native/claude_import.dart';
@@ -21,7 +22,10 @@ final class _Quiet implements LineChannel {
   @override
   void send(String line) => sent.add(line);
   @override
-  Future<void> close() => _lines.close();
+  Future<KillOutcome> close() async {
+    await _lines.close();
+    return const Ended([]);
+  }
 }
 
 List<Map<String, Object?>> _records(String text) => [

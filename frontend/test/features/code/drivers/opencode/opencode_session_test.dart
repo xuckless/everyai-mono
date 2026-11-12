@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart';
@@ -43,7 +44,10 @@ final class _Process implements DriverProcess {
   @override
   void send(String line) {}
   @override
-  Future<void> close() async => closed = true;
+  Future<KillOutcome> close() async {
+    closed = true;
+    return const Ended([]);
+  }
 }
 
 /// A driver whose server is [http] playing a recording, run by [process].

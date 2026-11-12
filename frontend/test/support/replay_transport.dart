@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -76,8 +77,9 @@ final class ReplayChannel implements LineChannel {
   }
 
   @override
-  Future<void> close() async {
+  Future<KillOutcome> close() async {
     if (!_lines.isClosed) await _lines.close();
+    return const Ended([]);
   }
 
   Never _fail(String why) {

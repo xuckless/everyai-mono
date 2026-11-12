@@ -4,7 +4,9 @@ import 'dart:io';
 
 import 'package:sqlite3/sqlite3.dart';
 
+import '../../../core/process/supervisor.dart';
 import '../drivers/detection/cli_scan.dart' show findCli;
+import '../drivers/short_run.dart';
 import '../harness/everyai/shell_io.dart' show ShellEnv;
 
 Future<Map<String, String>> resumeEnv() async {
@@ -69,18 +71,21 @@ Future<void> deletePath(String path) async {
 Future<int?> runCli(String command, List<String> args, {required Duration timeout}) async {
   final path = await findCli(command);
   if (path == null) return null;
+  final Map<String, String> env;
   try {
-    final p = await Process.start(path, args, environment: await resumeEnv());
-    p.stdout.drain<void>().ignore();
-    p.stderr.drain<void>().ignore();
-    return await p.exitCode.timeout(
-      timeout,
-      onTimeout: () {
-        p.kill();
-        return -1;
-      },
-    );
+    env = await resumeEnv();
   } on Object {
     return null;
+  }
+  final r = await runShort(path, args, timeout: timeout, env: env, owner: const ProbeOwner('resume'));
+  switch (r) {
+    case Finished(:final code):
+      return code;
+    // Ran out of time (stopped, verified): -1, as before.
+    case TimedOut(:final kill) || Cancelled(:final kill):
+      logStop('$command ${args.join(' ')}', kill);
+      return -1;
+    case StartFailed() || Refused():
+      return null;
   }
 }

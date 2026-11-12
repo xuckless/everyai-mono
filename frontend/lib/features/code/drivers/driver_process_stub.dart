@@ -1,5 +1,6 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../core/process/supervisor.dart' show Ended, KillOutcome;
 import '../harness/harness.dart';
 import 'driver.dart';
 import 'driver_process.dart';
@@ -11,6 +12,7 @@ Future<DriverProcess> spawnDriver({
   required String sessionTag,
   required String logPath,
   Map<String, String> env = const {},
+  bool closeInputFirst = true,
 }) async => throw const HarnessError('Outside agents run on the desktop app.');
 
 Future<DriverProcess> spawnDriverTty({
@@ -28,7 +30,7 @@ Future<DriverStatus> detectCli(
   Future<String?> Function(String command)? which,
 }) async => const DriverStatus(problem: 'Needs the desktop app.');
 
-Future<void> closeAllDriverProcesses() async {}
+Future<KillOutcome> closeAllDriverProcesses() async => const Ended([]);
 
 Future<void> reloadShellEnv() async {}
 

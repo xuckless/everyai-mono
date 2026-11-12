@@ -15,6 +15,7 @@ import '../driver_env.dart';
 import '../driver_process.dart';
 import '../event_journal.dart';
 import '../json_rpc.dart';
+import '../short_run.dart';
 import 'codex_files.dart';
 import 'codex_session.dart';
 
@@ -71,6 +72,14 @@ final class CodexDriver
 
   final _live = <String, CodexSession>{};
 
+  /// Opens under way, by thread id: two at once would start two app servers for one thread.
+  final _attaching = SingleFlight<String, HarnessSession>();
+  final _detecting = SingleFlight<int, DriverStatus>();
+  final _listing = SingleFlight<int, List<DriverModel>>();
+
+  /// The last probe app server's turn: probes run one at a time.
+  Future<void> _probeTurn = Future.value();
+
   @override
   DriverInfo get info => const DriverInfo(id: 'codex', label: 'Codex', installHint: 'npm install -g @openai/codex');
 
@@ -107,7 +116,9 @@ final class CodexDriver
   /// Installed, and signed in when it has an account or needs none (a
   /// provider of its own in its config), asked without a model call.
   @override
-  Future<DriverStatus> detect() async {
+  Future<DriverStatus> detect() => _detecting.run(0, _detect);
+
+  Future<DriverStatus> _detect() async {
     final found = await _found();
     if (!found.installed || found.path == null || found.problem != null) return found;
     try {
@@ -125,7 +136,9 @@ final class CodexDriver
 
   /// Its own model list (`model/list`), without the hidden ones.
   @override
-  Future<List<DriverModel>> models() async {
+  Future<List<DriverModel>> models() => _listing.run(0, _models);
+
+  Future<List<DriverModel>> _models() async {
     final found = await _found();
     if (!found.installed || found.path == null) return const [];
     return _probe(found.path!, (peer, _) async {
@@ -276,6 +289,11 @@ final class CodexDriver
 
   Future<HarnessSession> _attach(String conversationId, DriverBriefing? briefing) async {
     if (_live[conversationId] case final s?) return s;
+    return _attaching.run(conversationId, () => _attachNow(conversationId, briefing));
+  }
+
+  Future<HarnessSession> _attachNow(String conversationId, DriverBriefing? briefing) async {
+    if (_live[conversationId] case final s?) return s;
     final data = await _data();
     final saved = await readText(_metaPath(data, conversationId));
     if (saved == null) throw const HarnessError("This Codex session can't be reopened: its details are gone.");
@@ -391,8 +409,14 @@ final class CodexDriver
     );
   }
 
-  /// A short-lived app server for [body] (detect, models).
-  Future<T> _probe<T>(String path, Future<T> Function(JsonRpcPeer peer, Map<String, Object?> account) body) async {
+  /// A short-lived app server for [body] (detect, models), one at a time.
+  Future<T> _probe<T>(String path, Future<T> Function(JsonRpcPeer peer, Map<String, Object?> account) body) {
+    final run = _probeTurn.then((_) => _probeNow(path, body));
+    _probeTurn = run.then<void>((_) {}, onError: (Object _) {});
+    return run;
+  }
+
+  Future<T> _probeNow<T>(String path, Future<T> Function(JsonRpcPeer peer, Map<String, Object?> account) body) async {
     final channel = await _spawn(
       path,
       args: const [],
@@ -404,7 +428,7 @@ final class CodexDriver
     try {
       return await body(peer, await codexHandshake(peer));
     } finally {
-      await peer.close();
+      logStop('Codex probe', await peer.close());
     }
   }
 

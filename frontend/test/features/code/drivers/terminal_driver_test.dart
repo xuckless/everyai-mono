@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'dart:io' show Directory, ProcessSignal, pid;
+
+import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart' show closeAllDriverProcesses;
 import 'package:every_ai/features/code/drivers/driver_registry.dart';
@@ -13,11 +16,53 @@ import 'package:every_ai/features/code/harness/session_processes.dart';
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Now, as `ps -o lstart=` says it (the adoption checks the pty's process started just now).
+var _started = '';
+
+String _lstartNow() {
+  final t = DateTime.now();
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${days[t.weekday - 1]}_${months[t.month - 1]}_${t.day}_${two(t.hour)}:${two(t.minute)}:${two(t.second)}_${t.year}';
+}
+
+/// What the fake supervisor's process table holds, and the signals it was asked to send.
+final _alive = <int>{};
+final _signals = <(int, ProcessSignal)>[];
+
+/// A supervisor over a fake table: a signal ends the pid at once.
+ProcessSupervisor _fakeSupervisor() => ProcessSupervisor.create(
+  hooks: SupervisorHooks(
+    scan: ({required bool env}) async => Listed(
+      ProcessList([for (final p in _alive) ScanRow(pid: p, ppid: pid, pgid: pid, start: _started, command: 'aider')]),
+      at: DateTime.now(),
+    ),
+    signal: (p, sig) {
+      _signals.add((p, sig));
+      _alive.remove(p.abs());
+      return true;
+    },
+    timings: const StopTimings(
+      termGrace: Duration(milliseconds: 100),
+      killWait: Duration(milliseconds: 100),
+      poll: Duration(milliseconds: 10),
+    ),
+  ),
+  ledgerDir: Directory.systemTemp.createTempSync('terminal-driver-sup').path,
+);
+
 final class FakePty implements ShellPty {
+  FakePty() {
+    _started = _lstartNow();
+    _alive.add(pid);
+  }
   final _out = StreamController<Uint8List>();
   final _exit = Completer<int>();
   final writes = <List<int>>[];
-  var kills = 0;
+
+  /// Signals the supervisor sent to it (the session's close goes through the supervisor, never [kill]).
+  int get kills => _signals.where((s) => s.$1.abs() == pid).length;
 
   @override
   int get pid => 4242;
@@ -30,10 +75,14 @@ final class FakePty implements ShellPty {
   @override
   void resize(int rows, int columns) {}
   @override
-  void kill() => kills++;
+  void kill() => fail('closed by signal to the pty instead of through the supervisor');
 
   void emit(String s) => _out.add(Uint8List.fromList(utf8.encode(s)));
-  void exit(int code) => _exit.complete(code);
+  void exit(int code) {
+    _alive.remove(pid);
+    _exit.complete(code);
+  }
+
   List<String> get texts => [for (final w in writes) utf8.decode(w)];
 }
 
@@ -59,10 +108,14 @@ TerminalDriver _driver(
   command: 'aider',
   args: const ['--no-auto-commits'],
   which: (c) async => c == 'aider' ? '/bin/aider' : null,
-  startPty: ({required executable, required args, required workingDir, required sessionTag}) async {
+  startPty: ({required executable, required args, required workingDir, required sessionTag, env = const {}}) async {
     started?.add({'exe': executable, 'args': args, 'cwd': workingDir, 'tag': sessionTag});
+    // The supervisor's tags, so the adopted process is found as the session's.
+    expect(env['EVERYAI_SESSION'], sessionTag);
+    expect(env['EVERYAI_OWNER'], 'session:$sessionTag');
     return pty;
   },
+  supervisor: _sup,
   readText: read ?? (_) async => null,
   settle: settle ?? () async {},
 );
@@ -75,7 +128,16 @@ Future<(TerminalSession, FakePty)> _open({DriverBriefing? briefing, Future<Strin
   return (s, pty);
 }
 
+late ProcessSupervisor _sup;
+
 void main() {
+  setUp(() {
+    _alive.clear();
+    _signals.clear();
+    _sup = _fakeSupervisor();
+  });
+  tearDown(() => _sup.stopAll());
+
   group('driver', () {
     test('detects through the lookup; no caps, models or statuses', () async {
       expect((await _driver(null).detect()).installed, isTrue);

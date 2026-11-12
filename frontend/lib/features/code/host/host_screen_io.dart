@@ -2,6 +2,10 @@
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../../../core/process/supervisor.dart' show Listed, ProcessSupervisor, ScanFailed;
+
 import '../drivers/driver_process.dart';
 import '../harness/everyai/browser_io.dart';
 import '../live/agent_logins.dart';
@@ -25,10 +29,15 @@ ScreenAccess screenAccess() => ScreenAccess(
     ...?(await findSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir))?.$2,
   },
   processTree: (pid) async {
-    final res = await Process.run('ps', ['-A', '-o', 'pid=,ppid=,comm=']);
-    if (res.exitCode != 0) return {pid};
-    final table = ProcessTable.parsePs('${res.stdout}', '${res.stdout}');
-    return {pid, ...table.descendants(pid)};
+    // The supervisor's shared scan of the process table.
+    switch (await ProcessSupervisor.instance.scan()) {
+      case Listed(:final table):
+        return {pid, ...table.descendants(pid)};
+      case ScanFailed(:final why):
+        // Only [pid] itself is known to be its: windows of its children are left out, said in the log.
+        debugPrint("EveryAI host: the process table couldn't be read ($why); only $pid's own windows count.");
+        return {pid};
+    }
   },
   spawn: ({required command, required cwd, required sessionTag, required logPath}) => spawnDriver(
     executable: '/bin/sh',

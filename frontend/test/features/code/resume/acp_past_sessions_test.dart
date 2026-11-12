@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:crypto/crypto.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
 import 'package:every_ai/features/code/harness/events.dart';
@@ -239,8 +240,9 @@ final class _FakeAgent implements LineChannel {
   }
 
   @override
-  Future<void> close() async {
+  Future<KillOutcome> close() async {
     closed = true;
     await _out.close();
+    return const Ended([]);
   }
 }
