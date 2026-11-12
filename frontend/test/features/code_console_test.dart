@@ -263,8 +263,11 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('console.title.delete')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Delete').last);
-      await tester.pump();
-      await tester.pump();
+      // Deleting stops the session's processes first (a real scan through the supervisor), so it takes real time.
+      for (var i = 0; i < 100 && find.text('gone').evaluate().isEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump();
+      }
       expect(find.text('gone'), findsOneWidget);
       gate.complete();
       await tester.pumpAndSettle();
