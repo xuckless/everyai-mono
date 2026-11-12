@@ -384,10 +384,11 @@ void main() {
 
   test("the lead's Stop ends what a fork that reported left running (it has its own process tag)", () async {
     final killed = <String>[];
-    CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async {
-      killed.add(tag);
-      return const Ended([]);
-    };
+    CodeSessionController.killProcesses =
+        ({required tag, required workingDir, required ownsDir, workflows = false}) async {
+          killed.add(tag);
+          return const Ended([]);
+        };
     addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
     final l = await lead();
     final done = await fork(l.info.id);

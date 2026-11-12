@@ -10,6 +10,7 @@ import 'package:every_ai/app/app_quit.dart';
 import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/code_providers.dart';
 import 'package:every_ai/features/code/harness/session_processes.dart' show registerDriverRoot, unregisterDriverRoot;
+import 'package:every_ai/features/code/harness/session_processes_io.dart' show sweepSpares;
 import 'package:every_ai/features/code/workflows/workflow_bridge.dart' show workflowScriptLabel;
 import 'package:flutter_test/flutter_test.dart';
 
@@ -48,6 +49,9 @@ void main() {
       await c.landed;
     }
     registerDriverRoot(tag, pty.pid!);
+    // The tag sweep spares the workflow script on a plain Stop (it carries the session's tag), not on Stop all.
+    expect(sweepSpares([shell, script, mcp], workflows: false), {script.pid, mcp.pid});
+    expect(sweepSpares([shell, script, mcp], workflows: true), {mcp.pid});
     final outcome = await stopSessionChildren(tag);
     expect(outcome, isA<Ended>());
     expect(shell.state.live, isFalse);

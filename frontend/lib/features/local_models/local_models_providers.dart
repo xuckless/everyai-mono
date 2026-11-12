@@ -242,6 +242,9 @@ final class LocalServers extends AsyncNotifier<List<LocalServer>> {
   }
 }
 
+/// How long `lms server start` may take (it may launch LM Studio's daemon first).
+const lmsStartTimeout = Duration(seconds: 90);
+
 /// Each server's phase ([ServerPhase], one state machine per server id; see [nextPhase]), and the Start / Stop
 /// actions. Scans feed it `seenUp` / `seenDown`; an action runs one at a time per server and ends in its own event.
 final serverLifecyclesProvider = NotifierProvider<ServerLifecycles, Map<String, ServerPhase>>(ServerLifecycles.new);
@@ -250,8 +253,8 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   /// Apple's server starts by itself (it's the default chat model) unless the user stopped it (prefs).
   static const fmAutostartKey = 'models.fm.autostart';
 
-  /// '1' while LM Studio's server runs because EveryAI asked `lms server start` (it isn't our child process, so the
-  /// process ledger can't hold it; a relaunch still knows, and quit stops it).
+  /// Earlier builds kept LM Studio's ownership here across runs; it went stale (a crash, or the user quitting LM
+  /// Studio and starting it again, made the user's server look like EveryAI's and quit stopped it). Only removed now.
   static const lmsOursKey = 'models.lmstudio.started_by_everyai';
 
   LocalSystem get _system => ref.read(localSystemProvider);
@@ -262,9 +265,18 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   /// The start a stop called off (the stop waits for it, to say what became of what it launched).
   final _actionsBefore = <String, Future<String?>>{};
 
-  /// Whether EveryAI started LM Studio's server with `lms server start` ([lmsOursKey]).
-  bool get _lmsOurs => ref.read(preferencesProvider)[lmsOursKey] == '1';
-  set _lmsOurs(bool v) => ref.read(preferencesProvider)[lmsOursKey] = v ? '1' : null;
+  /// Whether LM Studio's server is EveryAI's: this run started it with `lms server start` and every scan since has
+  /// seen it up. It isn't our child process (the process ledger can't hold it), so it is kept in memory only: a scan
+  /// that sees it down drops it, and a new run never inherits it.
+  var _lmsOurs = false;
+
+  /// When this run's `lms server start` succeeded: scans that started before then may still say it is down.
+  DateTime? _lmsStartedAt;
+
+  void _setLmsOurs(bool v) {
+    _lmsOurs = v;
+    _lmsStartedAt = v ? DateTime.now() : null;
+  }
 
   /// Apple's server was started (or tried) by itself once this run.
   var _fmTried = false;
@@ -273,6 +285,12 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   Map<String, ServerPhase> build() {
     // Desktops only, and tests that opt in: nothing here probes this computer otherwise.
     if (!ref.watch(localDetectionProvider)) return const {};
+    // A previous build's persisted LM Studio ownership is never trusted (see [lmsOursKey]).
+    Future.microtask(() {
+      if (ref.mounted && ref.read(preferencesProvider)[lmsOursKey] != null) {
+        ref.read(preferencesProvider)[lmsOursKey] = null;
+      }
+    });
     ref.listen(localServersProvider, (_, next) {
       // A rescan in flight still carries the old list: only a finished scan counts.
       if (next case AsyncData(:final value)) _observe(value);
@@ -296,6 +314,13 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       _system.owns(id) || (id == 'lmstudio' && _lmsOurs) ? ServerOwner.everyai : ServerOwner.outside;
 
   void _observe(List<LocalServer> servers) {
+    // LM Studio's server seen down (or not found) breaks EveryAI's continuous watch of the one it started: whatever
+    // runs there later is someone else's. A scan begun before this run's start finished gets a short grace.
+    if (_lmsOurs && state['lmstudio'] is! ServerStarting) {
+      final lms = servers.where((s) => s.id == 'lmstudio').firstOrNull;
+      final settled = _lmsStartedAt == null || DateTime.now().difference(_lmsStartedAt!) > const Duration(seconds: 5);
+      if ((lms == null || !lms.running) && settled) _setLmsOurs(false);
+    }
     for (final s in servers) {
       _apply(s.id, s.running ? SeenUp(_ownerOf(s.id)) : const SeenDown());
       // A server not closed whose process the supervisor no longer lists has ended after all.
@@ -421,13 +446,20 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
         if (lms == null) return "LM Studio's `lms` command isn't installed.";
         if (_calledOff(server.id)) return null;
         final port = Uri.parse(server.baseUrl).port;
-        final r = await _system.run(lms, ['server', 'start', '--port', '$port']);
-        if (r == null || r.code != 0) return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
-        _lmsOurs = true;
+        // `lms server start` may first launch LM Studio's daemon, which takes a while on a cold start.
+        final r = await _system.run(lms, ['server', 'start', '--port', '$port'], timeout: lmsStartTimeout);
+        if (r == null || r.code != 0) {
+          // A timeout (or an odd exit) doesn't prove it didn't start: the port decides. It wasn't running before
+          // (Start is offered only then), so a server that answers now is the one this start brought up.
+          if (r == null || !await _answers(server, port)) {
+            return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
+          }
+        }
+        _setLmsOurs(true);
         if (_calledOff(server.id)) {
           final stopped = await _system.run(lms, const ['server', 'stop'], duringQuit: true);
           if (stopped != null && stopped.code == 0) {
-            _lmsOurs = false;
+            _setLmsOurs(false);
           } else {
             debugPrint('NOT CLOSED: LM Studio server (a start called off): ${stopped?.out.trim() ?? 'lms failed'}');
           }
@@ -526,7 +558,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       result = r == null || r.code != 0
           ? ServerStopRefused("LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}")
           : const ServerStopEnded();
-      if (result is ServerStopEnded) _lmsOurs = false;
+      if (result is ServerStopEnded) _setLmsOurs(false);
     } else {
       final port = server.kind == LocalServerKind.fm ? ref.read(fmPortProvider) ?? 0 : Uri.parse(server.baseUrl).port;
       result = await _system.stopListener(server, port: port);
@@ -569,7 +601,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       final lms = await ref.read(lmsPathProvider.future);
       final r = lms == null ? null : await _system.run(lms, const ['server', 'stop'], duringQuit: true);
       if (r != null && r.code == 0) {
-        _lmsOurs = false;
+        _setLmsOurs(false);
       } else {
         outcomes.add(ScanFailed("LM Studio's server (started by EveryAI) didn't stop: ${r?.out.trim() ?? 'no lms'}"));
       }

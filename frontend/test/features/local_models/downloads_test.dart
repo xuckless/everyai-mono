@@ -30,4 +30,24 @@ void main() {
     expect(states.last.error, startsWith('stalled'));
     expect(http.pulls['q']!.hasListener, isFalse);
   });
+
+  test('Ollama verifying a big layer in silence is not a stall', () async {
+    final http = FakeLocalHttp();
+    final states = <DownloadState>[];
+    final done = Completer<void>();
+    pullModel(
+      http,
+      defaultOllamaRoot,
+      'v',
+      stallAfter: const Duration(milliseconds: 60),
+      quietStallAfter: const Duration(milliseconds: 600),
+    ).listen(states.add, onDone: done.complete);
+    await pumpEventQueue();
+    http.pulls['v']!.add('{"status":"verifying sha256 digest"}');
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(done.isCompleted, isFalse);
+    http.pulls['v']!.add('{"status":"success"}');
+    await done.future.timeout(const Duration(seconds: 2));
+    expect(states.last.phase, DownloadPhase.done);
+  });
 }

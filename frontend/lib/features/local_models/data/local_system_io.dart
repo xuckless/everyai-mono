@@ -39,8 +39,14 @@ final class IoLocalSystem implements LocalSystem {
 
   /// A test's stand-in for [runProgram].
   final LocalRun? _given;
-  Future<({int code, String out})?> _run(String exe, List<String> args, {bool duringQuit = false}) =>
-      _given?.call(exe, args) ?? runProgram(exe, args, supervisor: _supervisor, duringQuit: duringQuit);
+  Future<({int code, String out})?> _run(
+    String exe,
+    List<String> args, {
+    bool duringQuit = false,
+    Duration timeout = const Duration(seconds: 10),
+  }) =>
+      _given?.call(exe, args) ??
+      runProgram(exe, args, supervisor: _supervisor, duringQuit: duringQuit, timeout: timeout);
   final ProcessSupervisor? _supervisor;
   ProcessSupervisor get _sup => _supervisor ?? ProcessSupervisor.instance;
   String? _launchProblem;
@@ -121,8 +127,12 @@ final class IoLocalSystem implements LocalSystem {
   }
 
   @override
-  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false}) =>
-      _run(exe, args, duringQuit: duringQuit);
+  Future<({int code, String out})?> run(
+    String exe,
+    List<String> args, {
+    bool duringQuit = false,
+    Duration timeout = const Duration(seconds: 10),
+  }) => _run(exe, args, duringQuit: duringQuit, timeout: timeout);
 
   @override
   String? get launchProblem => _launchProblem;
@@ -240,10 +250,14 @@ final class IoLocalSystem implements LocalSystem {
     if (row.pid == io.pid || command.contains('everyai-backend')) {
       return ServerStopRefused("That's EveryAI's own server.", owner: command);
     }
-    // One of ours (the server, or something below it): stopped as the supervisor's child.
+    // EveryAI's own launch of THIS server (the listener, or something below it): stopped as the supervisor's child.
+    // Any other supervised ancestor (a terminal tab, an agent's shell or CLI that happens to run the server) is never
+    // stopped for it: only the listener is, below, by the same checks as a server the user started.
     for (final p in table.ancestry(row.pid)) {
       final c = _sup.byPid(p);
-      if (c != null) return _settled(c.spec.label, await c.stop());
+      if (c != null && c.spec.kind == ProcessKind.localServer && parseLocalServerLabel(c.spec.label) == server.id) {
+        return _settled(c.spec.label, await c.stop());
+      }
     }
     if (!listenerMatches(server, command)) {
       return ServerStopRefused(

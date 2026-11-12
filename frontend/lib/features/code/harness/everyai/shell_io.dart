@@ -333,22 +333,32 @@ final class SessionShell {
   /// background shells, and everything under them. When the table can't be
   /// read, only the commands themselves (logged): fewer, never a guess.
   Future<Set<int>> processes() async {
-    final roots = {
-      for (final p in _running) p.pid,
+    // Each root as its record knows it (pid and start time where read): a pid alone may be another program's by now.
+    final roots = [
+      for (final p in _running) ..._identities(p.child),
       for (final b in _background.values)
-        if (b.running) b.pid,
-    };
+        if (b.running) ..._identities(b._proc.child),
+    ];
     switch (await _sup.scan()) {
       case Listed(:final table):
         return {
           for (final r in roots)
-            if (table.rows.containsKey(r)) ...[r, ...table.descendants(r)],
+            if (table.alive(r)) ...[r.pid, ...table.descendants(r.pid)],
         };
       case ScanFailed(:final why):
         debugPrint('SessionShell($sessionTag): the process table could not be read ($why); only the commands.');
-        return roots;
+        return {for (final r in roots) r.pid};
     }
   }
+
+  /// What [c] may still run as: its identity while it is live (an unread start matches its pid alone), the
+  /// survivors of a stop that didn't close it, nothing once it is gone.
+  static List<ProcessIdentity> _identities(SupervisedChild c) => switch (c.state) {
+    ChildRunning(:final id) || ChildTerming(:final id) || ChildKilling(:final id) => [id],
+    ChildNotClosed(:final survivors) => survivors,
+    ChildLaunched(:final pid) || ChildUnverified(:final pid) => [ProcessIdentity(pid: pid, start: unknownStart)],
+    ChildStarting() || ChildExited() || ChildStartFailed() || ChildDisowned() => const [],
+  };
 
   BackgroundShell? backgroundShell(String id) => _background[id];
 
@@ -500,8 +510,9 @@ final class SessionShell {
           _running.remove(proc);
           code = await proc.endCode();
         } else {
-          // Not closed: it stays listed (the entry says so) and in killAll's reach.
+          // Not closed: it stays listed (the entry says so) and in killAll's reach until it is seen to end.
           debugPrint('NOT CLOSED: $command (${proc.pid}): ${killOutcomeText(stop)}');
+          _dropWhenGone(proc);
           code = -1;
         }
     }
@@ -584,16 +595,34 @@ final class SessionShell {
     return Restarted(await _startAs(id, old.command, old.description, restarted: true, at: old.entry.cwd));
   }
 
+  /// Takes [proc] out of [_running] once its child is no longer live (its pid may then be reused).
+  void _dropWhenGone(_Proc proc) {
+    if (!proc.child.state.live) {
+      _running.remove(proc);
+      return;
+    }
+    unawaited(
+      proc.child.states
+          .firstWhere((s) => !s.live)
+          .then(
+            (_) => _running.remove(proc),
+            onError: (Object e) => debugPrint('SessionShell($sessionTag): ${proc.pid} was not seen to end ($e).'),
+          ),
+    );
+  }
+
   /// Ends every command still running (foreground and background, each verified with its group and tree), then
   /// whatever carries this shell's tag ([shellEnvVar]) but left their trees (a `nohup … &` whose shell ended).
   /// The merged outcome: [Ended] only when everything is proven gone.
   Future<KillOutcome> killAll() async {
+    // One snapshot: the outcomes are matched to it by index (a run may leave [_running] meanwhile).
+    final running = [..._running];
     final outcomes = await Future.wait([
-      for (final p in [..._running]) p.stop(),
+      for (final p in running) p.stop(),
       // Ended ones too: their stop ends what their group or tree left running.
       for (final b in [..._background.values]) b.kill(),
     ]);
-    for (final (i, p) in [..._running].indexed) {
+    for (final (i, p) in running.indexed) {
       if (outcomes[i] is Ended) _running.remove(p);
     }
     return KillOutcome.merge([...outcomes, await _strays()]);

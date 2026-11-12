@@ -441,7 +441,15 @@ bool _looksLikeDaemon(String command) {
 // ------------------------------------------------------------------ records
 
 class _Record implements SupervisedChild {
-  _Record(this._sup, this.id, this.spec, {required this.waitsOnExit, this.expectedStart, this.startedWithin});
+  _Record(
+    this._sup,
+    this.id,
+    this.spec, {
+    required this.waitsOnExit,
+    this.expectedStart,
+    this.startedWithin,
+    this.adoptedAt,
+  });
 
   final _Supervisor _sup;
   @override
@@ -455,6 +463,10 @@ class _Record implements SupervisedChild {
   /// What an adoption expects of the process at its pid (not met: [ChildDisowned]).
   final String? expectedStart;
   final Duration? startedWithin;
+
+  /// When it was adopted: [startedWithin] counts back from here, not from whenever a scan gets to look (a slow
+  /// first scan must not disown the process just started).
+  final DateTime? adoptedAt;
   bool get expects => expectedStart != null || startedWithin != null;
 
   @override
@@ -1045,6 +1057,7 @@ final class _Supervisor extends ProcessSupervisor {
         waitsOnExit: exitCode != null,
         expectedStart: expectedStart,
         startedWithin: startedWithin,
+        adoptedAt: DateTime.now(),
       );
       _list[r.id] = r;
       unawaited(ledgerDirectory);
@@ -1222,8 +1235,14 @@ final class _Supervisor extends ProcessSupervisor {
     if (r.startedWithin case final within?) {
       final started = _startedAt(row);
       if (started == null) return 'its start time is unknown';
-      if (started.isBefore(now.subtract(within).subtract(const Duration(seconds: 1)))) {
-        return 'started at $started, longer ago than $within';
+      // Measured from the adoption (the scan may come much later); a second of slack for whole-second start times.
+      final adopted = r.adoptedAt ?? now;
+      if (started.isBefore(adopted.subtract(within).subtract(const Duration(seconds: 1)))) {
+        return 'started at $started, more than $within before it was adopted at $adopted';
+      }
+      // A process that started after the adoption has reused the pid of ours.
+      if (started.isAfter(adopted.add(const Duration(seconds: 2)))) {
+        return 'started at $started, after it was adopted at $adopted';
       }
     }
     return null;

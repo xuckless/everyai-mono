@@ -6,6 +6,7 @@ Future<KillOutcome> killSessionProcesses({
   required String workingDir,
   required bool ownsDir,
   Set<int> roots = const {},
+  bool workflows = false,
 }) async => const ScanFailed('processes are not listed on this platform');
 
 Future<SessionScan> findSessionProcesses({

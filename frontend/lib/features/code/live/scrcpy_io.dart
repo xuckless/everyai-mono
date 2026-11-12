@@ -47,6 +47,7 @@ final class ScrcpyConnection {
       await AndroidSdk.run(['forward', '--remove', 'tcp:$port'], serial: serial, timeout: const Duration(seconds: 10));
       forwards.remove(key);
       forwardProblems.remove(key);
+      await _record(serial, port, null);
       return true;
     } on Object catch (e) {
       forwardProblems[key] = '$e';
@@ -55,8 +56,51 @@ final class ScrcpyConnection {
     }
   }
 
-  /// Forwards to scrcpy sockets on [serial] that no session of this run holds: left by a run that crashed.
+  /// App data `scrcpy-forwards.json`: every forward EveryAI set up (`serial|port|socket name`) until it is removed,
+  /// so a later run can tell the ones a crashed run left from the user's own scrcpy (whose forwards look the same).
+  static Future<File> _recordFile() async => File('${await GitService.dataDir()}/scrcpy-forwards.json');
+
+  static Future<void> _recordQueue = Future.value();
+
+  /// Adds (with [name]) or removes (null) the record of [serial]'s forward of [port]; writes run one at a time.
+  static Future<void> _record(String serial, int port, String? name) {
+    final next = _recordQueue.then((_) async {
+      final now = await _recorded();
+      now.removeWhere((r) => r.startsWith('$serial|$port|'));
+      if (name != null) now.add('$serial|$port|$name');
+      try {
+        final f = await _recordFile();
+        await f.parent.create(recursive: true);
+        await f.writeAsString(jsonEncode([...now]));
+      } on Object catch (e) {
+        debugPrint('scrcpy: the record of its adb forwards could not be written: $e');
+      }
+    });
+    return _recordQueue = next;
+  }
+
+  static Future<Set<String>> _recorded() async {
+    try {
+      final f = await _recordFile();
+      if (!f.existsSync()) return {};
+      final j = jsonDecode(await f.readAsString());
+      return {
+        if (j is List)
+          for (final x in j)
+            if (x is String) x,
+      };
+    } on Object catch (e) {
+      debugPrint('scrcpy: the record of its adb forwards could not be read: $e');
+      return {};
+    }
+  }
+
+  /// Forwards on [serial] that EveryAI recorded setting up (same port and socket name) and no session of this run
+  /// holds: left by a run that crashed. A forward EveryAI has no record of (the user's own scrcpy, another tool) is
+  /// never removed, whatever its name.
   static Future<void> _removeStaleForwards(String serial) async {
+    final recorded = await _recorded();
+    if (!recorded.any((r) => r.startsWith('$serial|'))) return;
     final String list;
     try {
       list = await AndroidSdk.run(['forward', '--list'], timeout: const Duration(seconds: 10));
@@ -64,11 +108,24 @@ final class ScrcpyConnection {
       debugPrint('scrcpy: the adb forwards could not be listed ($e); stale ones may remain.');
       return;
     }
+    final present = <String>{};
     for (final line in list.split('\n')) {
-      final m = RegExp(r'^(\S+)\s+tcp:(\d+)\s+localabstract:scrcpy_').firstMatch(line.trim());
+      final m = RegExp(r'^(\S+)\s+tcp:(\d+)\s+localabstract:(scrcpy_\S+)$').firstMatch(line.trim());
       if (m == null || m.group(1) != serial) continue;
       final port = int.parse(m.group(2)!);
-      if (!forwards.contains('$serial|$port')) await _unforward(serial, port);
+      final key = '$serial|$port|${m.group(3)}';
+      present.add(key);
+      if (recorded.contains(key) && !forwards.contains('$serial|$port')) await _unforward(serial, port);
+    }
+    // Records of forwards adb no longer has (it restarted, the device went): dropped.
+    for (final r in recorded) {
+      final parts = r.split('|');
+      if (parts.length == 3 &&
+          parts[0] == serial &&
+          !present.contains(r) &&
+          !forwards.contains('${parts[0]}|${parts[1]}')) {
+        await _record(serial, int.parse(parts[1]), null);
+      }
     }
   }
 
@@ -109,6 +166,7 @@ final class ScrcpyConnection {
     await probe.close();
     await AndroidSdk.run(['forward', 'tcp:$port', 'localabstract:$name'], serial: serial);
     forwards.add('$serial|$port');
+    await _record(serial, port, name);
     final args = [
       'CLASSPATH=$remote',
       'app_process',

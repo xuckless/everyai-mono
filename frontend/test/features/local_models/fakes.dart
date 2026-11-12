@@ -109,7 +109,12 @@ final class FakeLocalSystem implements LocalSystem {
   @override
   Future<FmStatus> fmStatus() async => fm;
   @override
-  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false}) async {
+  Future<({int code, String out})?> run(
+    String exe,
+    List<String> args, {
+    bool duringQuit = false,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
     ran.add([exe, ...args].join(' '));
     return (code: 0, out: '');
   }

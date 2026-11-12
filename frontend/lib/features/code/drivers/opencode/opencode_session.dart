@@ -331,13 +331,18 @@ final class OpenCodeSession
     // An event stream waiting for its next frame may never finish cancelling.
     unawaited(_sub?.cancel());
     final outcome = logStop("OpenCode's server", await _server.close());
+    await _release();
+    return outcome;
+  }
+
+  /// Lets go of the listeners and feeds, and tells the driver this session is done (it is then forgotten).
+  Future<void> _release() async {
     for (final l in _listeners.toList()) {
       await l.close();
     }
     _commands.close();
     _modes.close();
     onClose?.call();
-    return outcome;
   }
 
   void _onSse(SseEvent e) {
@@ -501,10 +506,19 @@ final class OpenCodeSession
     final outcome = logStop("OpenCode's server (out of touch)", await _server.close());
     _emit(
       _failure(switch (outcome) {
-        Ended() => "The app lost touch with OpenCode's server, so it was stopped. Start a new session to go on.",
+        Ended() =>
+          "The app lost touch with OpenCode's server, so it was stopped. Open the session again to start a new "
+              'server on the same conversation.',
         _ => "The app lost touch with OpenCode's server and couldn't prove it stopped ($outcome).",
       }),
     );
+    // Proven stopped: this session is done, so the driver forgets it and a reopen starts a fresh `opencode serve`
+    // on the conversation. A server not proven stopped stays this session's (a second one would race it).
+    if (outcome is Ended && _closing == null) {
+      _closed = true;
+      _closing = Future.value(outcome);
+      await _release();
+    }
   }
 
   HarnessEvent _failure(String message) =>

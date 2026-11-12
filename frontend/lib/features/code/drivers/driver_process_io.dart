@@ -194,6 +194,7 @@ final class _TtyProcess implements DriverProcess {
     trackDriverClose(close);
     unawaited(
       _program.exitCode.then((_) async {
+        _exitSeen = true;
         unregisterDriverRoot(_tag, pid);
         await _unblock();
         await _release();
@@ -220,8 +221,12 @@ final class _TtyProcess implements DriverProcess {
   /// The close, once asked (a second close joins it).
   Future<KillOutcome>? _closing;
 
-  /// Lines may still be sent: not closed, and its process hasn't been seen to end.
-  bool get _open => _closing == null && _child.state.live;
+  /// The pty reaped the program (its exit code came).
+  var _exitSeen = false;
+
+  /// Lines may still be sent: not closed, and the pty hasn't seen its program end (not the supervisor's view: a
+  /// child its check disowned is still ours while the pty holds it).
+  bool get _open => _closing == null && !_exitSeen;
 
   @override
   late final Stream<String> lines = _read()

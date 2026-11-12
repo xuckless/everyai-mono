@@ -1757,7 +1757,10 @@ final class ToolRunner {
     if (run.code > 1) return ToolOutput('Error: ${run.stderr.trim()}', isError: true);
     if (out.isEmpty) return const ToolOutput('No matches.');
     final lines = out.split('\n');
-    final shown = lines.length > 250 ? [...lines.take(250), '[${lines.length - 250} more not shown]'] : lines;
+    final shown = [
+      ...lines.length > 250 ? [...lines.take(250), '[${lines.length - 250} more not shown]'] : lines,
+      if (run.out.truncated) _cutNote,
+    ];
     // Matching lines are file text: hidden characters out, as read does, and lines from files outside the project
     // (see outsideProject) in an untrusted block. Path lists are left alone; scripts parse them.
     final text = shown.map(_relative).join('\n');
@@ -1774,6 +1777,9 @@ final class ToolRunner {
           : _fit(stripHiddenNoted(text, what: 'the matching lines'), name),
     );
   }
+
+  /// The last line of a grep or glob whose output passed the run's byte cap (the rest was dropped unread).
+  static const _cutNote = '[Output passed 32 MB and was cut: results are incomplete; narrow the path or pattern.]';
 
   /// The file of a content-mode match line (`path:12:text`).
   static final _grepFile = RegExp(r'^([^\n]+?):\d+:');
@@ -1797,6 +1803,7 @@ final class ToolRunner {
     final dated = [for (final p in paths) (p, FileStat.statSync(p).modified)]..sort((a, b) => b.$2.compareTo(a.$2));
     final names = [for (final (p, _) in dated.take(200)) _relative(p)];
     if (dated.length > 200) names.add('[${dated.length - 200} more not shown]');
+    if (run.out.truncated) names.add(_cutNote);
     return ToolOutput(names.join('\n'));
   }
 

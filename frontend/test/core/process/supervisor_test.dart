@@ -669,6 +669,31 @@ void main() {
       expect(await right.stop(), isA<Ended>());
       expect(running(raw.pid), isFalse);
     });
+
+    test('startedWithin counts from the adoption, not from a slow first scan', () async {
+      final real = ProcessSupervisor.create();
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: fast,
+          // A loaded machine: every scan answers 2.5 s late.
+          scan: ({required env}) async {
+            await Future<void>.delayed(const Duration(milliseconds: 2500));
+            return real.scan(env: env);
+          },
+        ),
+      );
+      final older = await Process.start('sleep', [nap]);
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      final fresh = await Process.start('sleep', [nap]);
+      final ours = s.adopt(fresh.pid, napSpec(), exitCode: fresh.exitCode, startedWithin: const Duration(seconds: 1));
+      final stale = s.adopt(older.pid, napSpec(), startedWithin: const Duration(milliseconds: 100));
+      await ours.landed.timeout(const Duration(seconds: 10));
+      // Both are judged by the same (late) scan.
+      expect(stale.state, isA<ChildDisowned>());
+      expect(await ours.stop(), isA<Ended>());
+      expect(running(fresh.pid), isFalse);
+      older.kill(ProcessSignal.sigkill);
+    });
   });
 
   group('quitting', () {

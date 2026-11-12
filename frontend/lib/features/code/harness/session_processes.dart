@@ -24,9 +24,21 @@ const sessionEnvVar = sessionTagEnvVar;
 /// directory is inside [workingDir] and [ownsDir] says no other session
 /// works there (a per-session worktree). Each is ended with the supervisor's
 /// verified kill of its tree: the merged outcome ([KillOutcome]); a table
-/// that can't be read is a failure, never "nothing".
-Future<KillOutcome> killSessionProcesses({required String tag, required String workingDir, required bool ownsDir}) =>
-    impl.killSessionProcesses(tag: tag, workingDir: workingDir, ownsDir: ownsDir, roots: driverRootsOf(tag));
+/// that can't be read is a failure, never "nothing". A running workflow's
+/// script (and its tree) is spared unless [workflows] (Stop all, a delete, a
+/// budget breach, quit).
+Future<KillOutcome> killSessionProcesses({
+  required String tag,
+  required String workingDir,
+  required bool ownsDir,
+  bool workflows = false,
+}) => impl.killSessionProcesses(
+  tag: tag,
+  workingDir: workingDir,
+  ownsDir: ownsDir,
+  roots: driverRootsOf(tag),
+  workflows: workflows,
+);
 
 /// The process table and the pids [killSessionProcesses] would signal, for
 /// the Processes pane, or why the table couldn't be read.

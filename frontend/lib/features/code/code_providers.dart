@@ -1895,6 +1895,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
           tag: info.id,
           workingDir: info.workingDir,
           ownsDir: ownsWorkingDir(info, parent: byId(info.parentId ?? '')),
+          workflows: true,
         ),
     ]);
   }
@@ -2012,6 +2013,7 @@ final class CodeSessions extends Notifier<List<CodeSessionInfo>> {
             tag: i.id,
             workingDir: i.workingDir,
             ownsDir: ownsWorkingDir(i, parent: byId(i.parentId ?? '')),
+            workflows: true,
           ),
         );
       }
@@ -2650,7 +2652,12 @@ final class CodeSessionController extends Notifier<CodeSessionState>
 
   /// What Stop ends a session's leftover processes with (a test sees the tags).
   @visibleForTesting
-  static Future<KillOutcome> Function({required String tag, required String workingDir, required bool ownsDir})
+  static Future<KillOutcome> Function({
+    required String tag,
+    required String workingDir,
+    required bool ownsDir,
+    bool workflows,
+  })
   killProcesses = killSessionProcesses;
 
   /// What Stop ends a session's supervised children with (a test swaps it).
@@ -5653,7 +5660,8 @@ final class CodeSessionController extends Notifier<CodeSessionState>
   /// The runaway guard ended everything the session started ([ProcessBudgetWatch]): stop the turn and fail loudly.
   Future<void> processBudgetBreached(String why) async {
     state = state.copyWith(notice: ProcessBudgetExceeded(why));
-    await stop();
+    // Its workflow scripts too: they count against the same budget.
+    await _stop(workflows: true);
   }
 
   /// Ends the turn and every process the session started (see [stopOwned]): the merged outcome, also kept as
@@ -5721,6 +5729,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
           tag: info.id,
           workingDir: info.workingDir,
           ownsDir: ownsWorkingDir(info, parent: sessions.byId(info.parentId ?? '')),
+          workflows: workflows,
         ),
       );
       // Its browser page (the jar is kept), display and the simulators it booted: started again on next use.
@@ -5737,6 +5746,7 @@ final class CodeSessionController extends Notifier<CodeSessionState>
                 tag: child.id,
                 workingDir: child.workingDir,
                 ownsDir: ownsWorkingDir(child, parent: info),
+                workflows: workflows,
               ),
             );
           }

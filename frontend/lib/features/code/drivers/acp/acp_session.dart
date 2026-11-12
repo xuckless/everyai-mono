@@ -224,6 +224,10 @@ final class AcpSession
   late final _link = DriverLink<JsonRpcPeer>('$_label session $id', (p) => p.close());
   JsonRpcPeer? get _peer => _link.live;
 
+  /// The peer the link last made live: still set after a [DriverLink.drop] (which clears [_peer]), so that peer's
+  /// end still runs [_gone]'s cleanup.
+  JsonRpcPeer? _lastPeer;
+
   /// The connect under way (start and handshake), one at a time.
   final _connecting = SingleFlight<int, void>();
   Map<String, Object?> _agentCaps = const {};
@@ -371,18 +375,24 @@ final class AcpSession
     final delivery = await _delivery();
     final cmd = _launcher.command;
     // A close while it starts stops what starts (the link never makes it live); nothing starts after a close.
-    final peer = await _link.ensure(() async {
-      final exe = await _launcher.resolve();
-      final channel = await _launcher.connect(
-        executable: exe,
-        args: addArgs(cmd.args, delivery?.args ?? const []),
-        cwd: cwd,
-        sessionTag: sessionTag,
-        logPath: '$dir/stderr.log',
-        env: _profile.env(delivery),
-      );
-      return JsonRpcPeer(channel, onRequest: _onRequest, onNotify: _onNotify);
-    }, onLive: (peer) => unawaited(peer.done.then((_) => _gone(peer))));
+    final peer = await _link.ensure(
+      () async {
+        final exe = await _launcher.resolve();
+        final channel = await _launcher.connect(
+          executable: exe,
+          args: addArgs(cmd.args, delivery?.args ?? const []),
+          cwd: cwd,
+          sessionTag: sessionTag,
+          logPath: '$dir/stderr.log',
+          env: _profile.env(delivery),
+        );
+        return JsonRpcPeer(channel, onRequest: _onRequest, onNotify: _onNotify);
+      },
+      onLive: (peer) {
+        _lastPeer = peer;
+        unawaited(peer.done.then((_) => _gone(peer)));
+      },
+    );
     final channel = peer.channel;
     try {
       final init = _map(
@@ -507,10 +517,11 @@ final class AcpSession
 
   /// The agent went away: nothing it asked about can be answered now.
   void _gone(JsonRpcPeer peer) {
-    if (!identical(_peer, peer)) return;
+    // A newer peer is live: this one's end was handled when it was replaced.
+    if (!identical(_lastPeer, peer)) return;
     // Its output ended: the process is stopped (verified) before another starts (the link logs a stop that isn't
-    // proven, and the next connect waits for it).
-    unawaited(_link.gone(peer));
+    // proven, and the next connect waits for it). After a drop the link stops it already.
+    if (identical(_peer, peer)) unawaited(_link.gone(peer));
     for (final a in _asking.values) {
       if (!a.reply.isCompleted) a.reply.complete(_cancelledOutcome);
       _cancelledResult(a.callId);

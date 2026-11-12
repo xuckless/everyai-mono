@@ -92,25 +92,32 @@ String? gitSubcommand(List<String> args) {
   return null;
 }
 
-/// How long a git call may run before it is stopped: what talks to a remote 10 minutes, what walks or writes the
-/// working tree (a worktree's checkout of a big repository) 3, the rest (refs, config, rev-parse) 1.
+/// How long a git call may run before it is stopped: what talks to a remote or checks out a whole tree (a worktree
+/// of a big repository, a checkout, a merge) 10 minutes, what walks or writes the working tree 3, the rest (refs,
+/// config, rev-parse) 1.
 Duration gitTimeout(List<String> args) => switch (gitSubcommand(args)) {
-  'fetch' || 'pull' || 'push' || 'clone' || 'ls-remote' || 'submodule' || 'lfs' => const Duration(minutes: 10),
+  'fetch' ||
+  'pull' ||
+  'push' ||
+  'clone' ||
+  'ls-remote' ||
+  'submodule' ||
+  'lfs' ||
   'worktree' ||
+  'checkout' ||
+  'read-tree' ||
+  'merge' => const Duration(minutes: 10),
   'add' ||
   'diff' ||
   'show' ||
   'status' ||
   'clean' ||
   'restore' ||
-  'read-tree' ||
   'write-tree' ||
   'apply' ||
-  'merge' ||
   'merge-tree' ||
   'merge-file' ||
   'rebase' ||
-  'checkout' ||
   'switch' ||
   'commit' ||
   'commit-tree' ||
@@ -309,6 +316,31 @@ Future<bool> hasCommits(String repoRoot) async {
   }
 }
 
+/// `git worktree add -q [args]` making [path] (and [branch] when given). When it fails (stopped by its time limit or
+/// a cancel, or refused) and left a half-made worktree at a [path] that wasn't there before, that worktree goes
+/// again (and [branch], when this call made it), best effort and logged, so a retry doesn't hit "already exists".
+Future<void> _worktreeAdd(String repo, String path, List<String> args, {String? branch}) async {
+  final pathWasFree = FileSystemEntity.typeSync(path, followLinks: false) == FileSystemEntityType.notFound;
+  final branchWasFree =
+      branch != null &&
+      (await _git(repo, ['rev-parse', '--verify', '--quiet', 'refs/heads/$branch'], check: false)).exitCode != 0;
+  try {
+    await _git(repo, ['worktree', 'add', '-q', ...args]);
+  } on Object catch (e) {
+    if (!pathWasFree) rethrow;
+    debugPrint('git worktree add $path failed ($e); removing what it left.');
+    try {
+      final removed = await _git(repo, ['worktree', 'remove', '--force', path], check: false);
+      if (removed.exitCode != 0 && Directory(path).existsSync()) await Directory(path).delete(recursive: true);
+      await _git(repo, ['worktree', 'prune'], check: false);
+      if (branchWasFree) await _git(repo, ['branch', '-D', branch], check: false);
+    } on Object catch (c) {
+      debugPrint('git worktree add $path: the half-made worktree could not be removed ($c).');
+    }
+    rethrow;
+  }
+}
+
 Future<SessionWorktree> createWorktree({
   required String repoRoot,
   required String slug,
@@ -321,7 +353,7 @@ Future<SessionWorktree> createWorktree({
   final path = '$worktreesDir/$slug';
   final branch = 'everyai/$slug';
   await Directory(worktreesDir).create(recursive: true);
-  await _git(repoRoot, ['worktree', 'add', '-q', '-b', branch, path, baseCommit]);
+  await _worktreeAdd(repoRoot, path, ['-b', branch, path, baseCommit], branch: branch);
   final w = SessionWorktree(
     repoRoot: repoRoot,
     path: path,
@@ -845,7 +877,7 @@ Future<ForkCopy?> forkCopy(String dir, {required String worktreesDir, required S
   ])).trim();
   final wt = '$worktreesDir/$slug';
   await Directory(worktreesDir).create(recursive: true);
-  await _git(root, ['worktree', 'add', '-q', '--detach', wt, base]);
+  await _worktreeAdd(root, wt, ['--detach', wt, base]);
   // Asked of git: [dir] may reach the repository through a symlink.
   var rel = (await _out(dir, ['rev-parse', '--show-prefix'])).trim();
   if (rel.endsWith('/')) rel = rel.substring(0, rel.length - 1);

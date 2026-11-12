@@ -500,8 +500,12 @@ void main() {
     CodeSessionController.liveAfter = Duration.zero;
     // Not about the processes a Stop ends: the real table walk (ps + lsof, seconds on a loaded machine) only made the
     // test slow enough for the usage read below to land while EveryAI still led.
-    CodeSessionController.killProcesses = ({required tag, required workingDir, required ownsDir}) async =>
-        const Ended(<int>[]);
+    CodeSessionController.killProcesses = ({
+      required tag,
+      required workingDir,
+      required ownsDir,
+      workflows = false,
+    }) async => const Ended(<int>[]);
     addTearDown(() => CodeSessionController.killProcesses = killSessionProcesses);
     final everyai = d(everyaiHarnessName);
     // The lead left a fork working in the background; its turn has ended.

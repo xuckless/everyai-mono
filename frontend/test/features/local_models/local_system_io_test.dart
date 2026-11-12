@@ -78,6 +78,55 @@ void main() {
     expect(await Future.any([other.exitCode, Future<int?>.delayed(const Duration(milliseconds: 300))]), isNull);
   }, skip: Process.runSync('which', ['python3']).exitCode != 0);
 
+  test('listeners match on the program name only', () {
+    final ollama = server(LocalServerKind.ollama);
+    expect(listenerMatches(ollama, '/Applications/Ollama.app/Contents/Resources/ollama serve'), isTrue);
+    expect(listenerMatches(ollama, 'ssh -N -L 11434:localhost:11434 ollama-box'), isFalse);
+    expect(listenerMatches(server(LocalServerKind.jan), '/Users/janet/bin/llama-server --port 1337'), isFalse);
+    expect(
+      listenerMatches(server(LocalServerKind.lmstudio), '/Applications/LM Studio.app/Contents/MacOS/LM Studio --x'),
+      isTrue,
+    );
+    expect(listenerMatches(server(LocalServerKind.vllm), 'python3 -m vllm.entrypoints.openai.api_server'), isTrue);
+  });
+
+  test(
+    "a supervised non-server ancestor (a terminal tab, an agent's shell) is never stopped for its listener",
+    () async {
+      final sup = _made.add(
+        ProcessSupervisor.create(
+          ledgerDir: '${dir.path}/l',
+          hooks: const SupervisorHooks(timings: fast),
+        ),
+      );
+      final tab = await sup.spawn(
+        SpawnSpec(
+          owner: const AppOwner(),
+          kind: ProcessKind.shell,
+          exe: '/bin/sh',
+          args: ['-c', 'sleep $nap & while :; do sleep 0.2; done'],
+          label: 'terminal tab',
+        ),
+      );
+      int? listener;
+      for (var i = 0; i < 100 && listener == null; i++) {
+        final r = Process.runSync('pgrep', ['-P', '${tab.pid}', '-f', 'sleep $nap']);
+        listener = int.tryParse('${r.stdout}'.trim().split('\n').first);
+        if (listener == null) await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      expect(listener, isNotNull);
+      final system = IoLocalSystem(
+        supervisor: sup,
+        run: (exe, args) async => exe.endsWith('lsof') ? (code: 0, out: '$listener\n') : null,
+      );
+      // A manual server whose program is `sleep`: only the listener ends, never the tab it runs in.
+      final r = await system.stopListener(server(LocalServerKind.custom, start: 'sleep 1'), port: 11434);
+      expect(r, isA<ServerStopEnded>());
+      expect(Process.runSync('kill', ['-0', '$listener']).exitCode, isNot(0));
+      expect(sup.byPid(tab.pid!)?.state.live, isTrue);
+    },
+  );
+
   test('a listener whose start time changed (its pid reused) is never signalled', () async {
     final signals = <int>[];
     var scans = 0;

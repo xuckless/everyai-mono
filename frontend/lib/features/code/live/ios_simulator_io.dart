@@ -78,6 +78,22 @@ abstract final class IosSimulators {
     return _booted;
   }
 
+  /// Drops the simulators EveryAI booted that [all] (a full listing) shows not booted: EveryAI's watch of each ended
+  /// there, so a later boot of that udid (by the user) is never EveryAI's to shut down.
+  static void _watch(List<SimDevice> all) {
+    if (_ours.isEmpty || all.isEmpty) return;
+    final up = {
+      for (final d in all)
+        if (d.booted) d.udid,
+    };
+    final gone = _ours.where((u) => !up.contains(u)).toList();
+    for (final u in gone) {
+      _ours.remove(u);
+      debugPrint('Simulator $u, booted by EveryAI, was shut down elsewhere: no longer EveryAI\'s.');
+    }
+    if (gone.isNotEmpty) unawaited(_save());
+  }
+
   /// Every available iPhone and iPad simulator.
   static Future<List<SimDevice>> list() async {
     if (!Platform.isMacOS) return const [];
@@ -89,7 +105,9 @@ abstract final class IosSimulators {
       return const [];
     }
     if (r.code != 0) return const [];
-    return parseSimctlDevices(r.stdout);
+    final all = parseSimctlDevices(r.stdout);
+    _watch(all);
+    return all;
   }
 
   /// The simulator [device] names among [all]: a udid, or a name, with its runtime ("iPhone 16e (iOS 18.6)") when
@@ -119,8 +137,8 @@ abstract final class IosSimulators {
   }
 
   /// Boots [device] (a name or udid) without opening Simulator.app, and waits until it is up. A simulator EveryAI
-  /// boots is recorded (app data `simulators-booted.json`) for [shutdownBooted]; one not up within 3 minutes is shut
-  /// down again.
+  /// boots is EveryAI's for [shutdownBooted] while every listing since shows it booted; one not up within 3 minutes
+  /// is shut down again.
   static Future<SimDevice> boot(String device) async {
     final d = pickSimulator(await list(), device);
     if (!d.booted) {
@@ -129,6 +147,7 @@ abstract final class IosSimulators {
         throw AppError("Couldn't boot ${d.name}: ${r.stderr.trim()}");
       }
       if (r.code == 0) await _remember(d.udid, add: true);
+      _readAt = DateTime.fromMillisecondsSinceEpoch(0);
       try {
         await _simctl(['bootstatus', d.udid, '-b'], timeout: const Duration(minutes: 3));
       } on AppError catch (e) {
@@ -141,34 +160,60 @@ abstract final class IosSimulators {
     return SimDevice(udid: d.udid, name: d.name, runtime: d.runtime, booted: true);
   }
 
-  /// The simulators EveryAI booted that aren't shut down yet (kept across runs: a crashed run's are still listed).
-  static Future<Set<String>> bootedByEveryAI() async => {...await _read()};
+  /// The simulators this run booted and has seen booted in every listing since ([_watch]). In memory: a new run
+  /// never inherits them.
+  static final _ours = <String>{};
 
+  /// Whether [_forgetLastRun] ran this run.
+  static var _lastRunForgotten = false;
+
+  /// The simulators EveryAI booted in this run and still owns.
+  static Future<Set<String>> bootedByEveryAI() async {
+    await _forgetLastRun();
+    return {..._ours};
+  }
+
+  /// App data `simulators-booted.json`: this run's [_ours], written so a crash leaves a record of what it booted.
   static Future<File> _file() async => File('${await GitService.dataDir()}/simulators-booted.json');
 
-  static Future<List<String>> _read() async {
+  /// Entries a previous run left (it crashed, or a shutdown at its quit failed). A dead run's watch can't vouch that
+  /// the simulator still is the one it booted (the user may have shut it down and booted it again), so they are
+  /// dropped without shutting anything down: the user's simulators are never touched. Once per run, at first use.
+  static Future<void> _forgetLastRun() async {
+    if (_lastRunForgotten) return;
+    _lastRunForgotten = true;
     try {
       final f = await _file();
-      if (!f.existsSync()) return const [];
+      if (!f.existsSync()) return;
       final j = jsonDecode(await f.readAsString());
-      return [
+      final left = [
         if (j is List)
           for (final x in j)
-            if (x is String) x,
+            if (x is String && !_ours.contains(x)) x,
       ];
+      if (left.isNotEmpty) {
+        debugPrint(
+          'Simulators a previous run booted (${left.join(', ')}) are left as they are: '
+          "that run ended without shutting them down, and EveryAI can't tell they are still its own.",
+        );
+      }
+      await _save();
     } on Object catch (e) {
-      debugPrint('The list of simulators EveryAI booted could not be read: $e');
-      return const [];
+      debugPrint('The list of simulators a previous run booted could not be read: $e');
     }
   }
 
   static Future<void> _remember(String udid, {required bool add}) async {
-    final now = {...await _read()};
-    if (add ? !now.add(udid) : !now.remove(udid)) return;
+    await _forgetLastRun();
+    if (add ? !_ours.add(udid) : !_ours.remove(udid)) return;
+    await _save();
+  }
+
+  static Future<void> _save() async {
     try {
       final f = await _file();
       await f.parent.create(recursive: true);
-      await f.writeAsString(jsonEncode([...now]));
+      await f.writeAsString(jsonEncode([..._ours]));
     } on Object catch (e) {
       debugPrint('The list of simulators EveryAI booted could not be written: $e');
     }
@@ -201,7 +246,21 @@ abstract final class IosSimulators {
   /// calls this at session delete and quit. The user's own simulators are never touched. [Ended] when all are shut
   /// down; a [Survived] (no pids: simulators aren't our processes) naming those still booted.
   static Future<KillOutcome> shutdownBooted({Iterable<String>? only}) async {
-    final ours = await _read();
+    await _forgetLastRun();
+    // A fresh listing first: one shut down (and maybe booted again) by someone else since is no longer ours.
+    if (_ours.isNotEmpty) {
+      try {
+        final r = await _simctl(
+          const ['list', 'devices', '-j'],
+          timeout: const Duration(seconds: 30),
+          duringQuit: true,
+        );
+        if (r.code == 0) _watch(parseSimctlDevices(r.stdout));
+      } on AppError catch (e) {
+        debugPrint('Simulators could not be listed before shutting down EveryAI\'s: ${e.message}');
+      }
+    }
+    final ours = [..._ours];
     final targets = only == null
         ? ours
         : [

@@ -2,6 +2,8 @@
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../../../../core/process/supervisor.dart';
 import '../../../../core/security/untrusted.dart';
 import 'tools_io.dart';
@@ -68,13 +70,17 @@ Future<bool> _tracked(String root, String path) async {
     owner: const ProbeOwner('project-notes'),
     maxOutputBytes: 64 * 1024,
   );
-  return switch (r) {
-    Finished(:final code) => code == 0,
+  switch (r) {
+    case Finished(:final code):
+      return code == 0;
     // No git here: nothing can track it.
-    StartFailed() => false,
-    // It hung or the app quits: unknown, so it counts as the repository's (not loaded).
-    TimedOut() || Cancelled() || Refused() => true,
-  };
+    case StartFailed():
+      return false;
+    // It hung or the app quits: unknown, so it counts as the repository's (not loaded), and the log says so.
+    case TimedOut() || Cancelled() || Refused():
+      debugPrint('Project memory $path not loaded: git could not say whether it is tracked ($r).');
+      return true;
+  }
 }
 
 /// The block a new session's system prompt gets: the project memory (when

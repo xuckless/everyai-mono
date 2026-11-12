@@ -84,10 +84,15 @@ abstract interface class LocalSystem {
 
   Future<FmStatus> fmStatus();
 
-  /// Runs a short command (10 s at most; one that takes longer is killed, and the output then says so): its exit
-  /// code and output, null when it couldn't run. [duringQuit] lets a goodbye command (`lms server stop`, quitting
-  /// Ollama.app) run while the app quits.
-  Future<({int code, String out})?> run(String exe, List<String> args, {bool duringQuit = false});
+  /// Runs a short command ([timeout] at most, 10 s by default; one that takes longer is killed, and the output then
+  /// says so with exit -1): its exit code and output, null when it couldn't run. [duringQuit] lets a goodbye command
+  /// (`lms server stop`, quitting Ollama.app) run while the app quits.
+  Future<({int code, String out})?> run(
+    String exe,
+    List<String> args, {
+    bool duringQuit = false,
+    Duration timeout = const Duration(seconds: 10),
+  });
 
   /// Launches the server [id] ([exe] [args]; through `/bin/sh -c` as the leader of its own process group when
   /// [shell], for a user's own start command); its output goes to [logPath] when given; [port] is the port it
@@ -164,22 +169,61 @@ String? startCommandProgram(String command) {
   return name.isEmpty ? null : name;
 }
 
+/// The file names [command] (a process table's command line) may run as, lower case with `.exe` dropped: argv0's
+/// base name tried at each space before the first option (a path may hold spaces:
+/// `/Applications/LM Studio.app/Contents/MacOS/LM Studio`), plus the module of `python -m <module>` or the script an
+/// interpreter runs.
+Set<String> commandProgramNames(String command) {
+  String base(String s) {
+    var n = s.replaceAll(RegExp('''^["']|["']\$'''), '').split(RegExp(r'[/\\]')).last.toLowerCase();
+    if (n.endsWith('.exe')) n = n.substring(0, n.length - 4);
+    return n;
+  }
+
+  final words = command.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+  final names = <String>{};
+  var prefix = '';
+  for (final w in words) {
+    if (w.startsWith('-') && prefix.isNotEmpty) break;
+    prefix = prefix.isEmpty ? w : '$prefix $w';
+    final n = base(prefix);
+    if (n.isNotEmpty) names.add(n);
+  }
+  if (words.isNotEmpty && RegExp(r'^(python[0-9.]*|uv|uvx|node|deno|bun)$').hasMatch(base(words.first))) {
+    for (var i = 1; i < words.length; i++) {
+      final w = words[i];
+      if (w == '-m' && i + 1 < words.length) {
+        names.add(words[i + 1].split('.').first.toLowerCase());
+        break;
+      }
+      if (w == 'run' || w.startsWith('-')) continue;
+      names.add(base(w));
+      break;
+    }
+  }
+  return names;
+}
+
 /// Whether [command] (a listener's command line) is [server]'s kind of program, so a stop may end it: Ollama,
-/// LM Studio, llama.cpp's server, MLX, vLLM, Jan, or the program of a manual server's start command. Anything else
-/// (another app that happens to hold the port) is never stopped.
+/// LM Studio, llama.cpp's server, MLX, vLLM, Jan, or the program of a manual server's start command. Matched on the
+/// program's file name ([commandProgramNames]), never on a word anywhere in the line: an `ssh -L … ollama-box`
+/// tunnel or a program under `/Users/janet/` is not a server. Anything else (another app that happens to hold the
+/// port) is never stopped.
 bool listenerMatches(LocalServer server, String command) {
-  final c = command.toLowerCase();
-  bool has(String s) => c.contains(s);
+  final names = commandProgramNames(command);
+  bool any(bool Function(String n) f) => names.any(f);
   return switch (server.kind) {
-    LocalServerKind.ollama => has('ollama'),
-    LocalServerKind.lmstudio => has('lm studio') || has('lmstudio') || has('lms ') || c.endsWith('/lms'),
-    LocalServerKind.llamacpp => has('llama-server') || has('llama.cpp') || has('llama_cpp'),
-    LocalServerKind.mlx => has('mlx'),
-    LocalServerKind.vllm => has('vllm'),
-    LocalServerKind.jan => has('jan') || has('cortex'),
-    LocalServerKind.fm => c.contains('/fm ') || c.endsWith('/fm') || c.startsWith('fm '),
+    LocalServerKind.ollama => any((n) => n == 'ollama' || n == 'ollama app'),
+    LocalServerKind.lmstudio => any(
+      (n) => n == 'lms' || n == 'lmstudio' || n == 'llmster' || n.startsWith('lm studio'),
+    ),
+    LocalServerKind.llamacpp => any((n) => n == 'llama-server' || n == 'llama_cpp'),
+    LocalServerKind.mlx => any((n) => n.startsWith('mlx')),
+    LocalServerKind.vllm => any((n) => n == 'vllm'),
+    LocalServerKind.jan => any((n) => n == 'jan' || n.startsWith('cortex')),
+    LocalServerKind.fm => any((n) => n == 'fm'),
     LocalServerKind.custom => switch (server.startCommand == null ? null : startCommandProgram(server.startCommand!)) {
-      final p? => c.split(RegExp(r'\s+')).any((w) => w.split(RegExp(r'[/\\]')).last.toLowerCase() == p.toLowerCase()),
+      final p? => names.contains(p.toLowerCase().replaceAll(RegExp(r'\.exe$'), '')),
       null => false,
     },
   };

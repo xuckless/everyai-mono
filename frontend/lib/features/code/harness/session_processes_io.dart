@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../../../core/process/supervisor.dart';
+import '../workflows/workflow_bridge.dart' show workflowScriptLabel;
 import 'session_processes.dart';
 
 ProcessSupervisor get _sup => ProcessSupervisor.instance;
@@ -27,9 +28,10 @@ Future<KillOutcome> killSessionProcesses({
   required String workingDir,
   required bool ownsDir,
   Set<int> roots = const {},
+  bool workflows = false,
 }) async {
   if (tag.isEmpty) return const Ended([]);
-  switch (await _scan(tag, workingDir, ownsDir, roots)) {
+  switch (await _scan(tag, workingDir, ownsDir, roots, workflows: workflows)) {
     case SessionScanFailed(:final why):
       debugPrint('Stop of session $tag: its processes could not be listed ($why).');
       return ScanFailed(why);
@@ -52,7 +54,7 @@ Future<SessionScan> findSessionProcesses({
   required String workingDir,
   required bool ownsDir,
   Set<int> roots = const {},
-}) => _scan(tag, workingDir, ownsDir, roots);
+}) => _scan(tag, workingDir, ownsDir, roots, workflows: false);
 
 String _real(String dir) {
   try {
@@ -62,7 +64,21 @@ String _real(String dir) {
   }
 }
 
-Future<SessionScan> _scan(String tag, String workingDir, bool ownsDir, Set<int> roots) async {
+/// The pids of [children] a session's tag sweep spares (with their trees): the [_helperKinds], and workflow scripts
+/// ([workflowScriptLabel]) unless [workflows] (Stop all, a delete, a budget breach, quit). A plain Stop keeps a
+/// running workflow's engine, which carries the session's tag like everything else it started.
+Set<int> sweepSpares(Iterable<SupervisedChild> children, {required bool workflows}) => {
+  for (final c in children)
+    if (_helperKinds.contains(c.spec.kind) || (!workflows && c.spec.label == workflowScriptLabel)) ?c.pid,
+};
+
+Future<SessionScan> _scan(
+  String tag,
+  String workingDir,
+  bool ownsDir,
+  Set<int> roots, {
+  required bool workflows,
+}) async {
   final windows = Platform.isWindows;
   // No environments and no working directories on Windows: only what the driver roots run. Without one there is
   // nothing to find there, so no PowerShell.
@@ -88,10 +104,7 @@ Future<SessionScan> _scan(String tag, String workingDir, bool ownsDir, Set<int> 
     if (found == null) return SessionScanFailed(why);
     cwds = found;
   }
-  final spared = {
-    for (final c in _sup.children)
-      if (_helperKinds.contains(c.spec.kind)) ?c.pid,
-  };
+  final spared = sweepSpares(_sup.children, workflows: workflows);
   return SessionListed(
     table,
     table.sessionProcesses(

@@ -48,6 +48,16 @@ final class DownloadState {
 /// times a second, verifying a big one well within this).
 const pullStallTimeout = Duration(minutes: 2);
 
+/// The stall limit while Ollama works without a word: after a `verifying sha256 digest` or `writing manifest` line it
+/// hashes or writes the whole layer before the next one, which takes many minutes for a very large layer.
+const pullQuietStallTimeout = Duration(minutes: 30);
+
+/// Whether [status] (the last line's) starts one of Ollama's silent steps ([pullQuietStallTimeout]).
+bool pullStatusIsQuiet(String? status) {
+  final st = (status ?? '').trimLeft().toLowerCase();
+  return st.startsWith('verifying') || st.startsWith('writing');
+}
+
 /// One line of Ollama's `/api/pull` stream: `{status, digest?, total?, completed?}`, `{status: "success"}` at the
 /// end, or `{error}`. Layers report one by one, so the bytes shown are the current layer's.
 DownloadState applyPullLine(DownloadState s, String line) {
@@ -72,8 +82,15 @@ DownloadState applyPullLine(DownloadState s, String line) {
 /// Pulls [tag] from the Ollama server at [ollamaRoot] (`http://127.0.0.1:11434`), reporting each step. Ollama keeps
 /// the layers it already has, so pulling again after a cancel picks up where it stopped. Cancelling the subscription
 /// ends the request at once (not an `async*`, which would wait for the next line first). A pull that sends no line
-/// for [stallAfter] fails as stalled (the request is ended; Download again resumes it).
-Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag, {Duration stallAfter = pullStallTimeout}) {
+/// for [stallAfter] fails as stalled (the request is ended; Download again resumes it); after a line that starts a
+/// silent step (verifying, writing) the limit is [quietStallAfter].
+Stream<DownloadState> pullModel(
+  LocalHttp http,
+  Uri ollamaRoot,
+  String tag, {
+  Duration stallAfter = pullStallTimeout,
+  Duration quietStallAfter = pullQuietStallTimeout,
+}) {
   late final StreamController<DownloadState> out;
   StreamSubscription<String>? lines;
   Timer? stall;
@@ -88,10 +105,11 @@ Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag, {Dur
 
   void watch() {
     stall?.cancel();
+    final limit = pullStatusIsQuiet(s.status) ? quietStallAfter : stallAfter;
     stall = Timer(
-      stallAfter,
+      limit,
       () => finish(
-        s.copyWith(phase: DownloadPhase.failed, error: 'stalled: Ollama sent nothing for ${stallAfter.inSeconds} s'),
+        s.copyWith(phase: DownloadPhase.failed, error: 'stalled: Ollama sent nothing for ${limit.inSeconds} s'),
       ),
     );
   }
@@ -105,9 +123,10 @@ Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag, {Dur
           .listen(
             (line) {
               if (out.isClosed) return;
+              if (line.trim().isNotEmpty) s = applyPullLine(s, line);
+              // After the line: its status picks the limit (a silent step gets the long one).
               watch();
               if (line.trim().isEmpty) return;
-              s = applyPullLine(s, line);
               if (s.phase == DownloadPhase.failed || s.phase == DownloadPhase.done) {
                 finish(s);
               } else {

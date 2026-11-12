@@ -234,6 +234,8 @@ final class ChromeHost {
     } on Object {
       final outcome = await process.stop();
       if (outcome is! Ended) debugPrint('NOT CLOSED: Chrome ($profileDir) after a failed start: $outcome');
+      // Stopped meanwhile: the stop waiting on this launch takes what didn't end (it keeps the process to retry).
+      if (generation != _generation && outcome is! Ended) _launchedAfterStop = (process, outcome);
       _settle(generation, outcome is Ended ? const ChromeClosed() : ChromeNotClosed(process, outcome));
       rethrow;
     }
@@ -255,8 +257,12 @@ final class ChromeHost {
     if (generation == _generation) _to(next);
   }
 
-  Future<void> _settleStop(Future<KillOutcome> done, SupervisedProcess? process) async {
-    final outcome = await done;
+  Future<void> _settleStop(Future<KillOutcome> done, SupervisedProcess? process) async =>
+      _settled(done, await done, process);
+
+  /// The stop [done] ended with [outcome]: closed, or not closed keeping [process] so a later stop retries it.
+  void _settled(Future<KillOutcome> done, KillOutcome outcome, SupervisedProcess? process) {
+    if (_state case ChromeStopping(done: final d) when !identical(d, done)) return;
     if (_state is! ChromeStopping) return;
     if (outcome is Ended) {
       _to(const ChromeClosed());
@@ -304,13 +310,25 @@ final class ChromeHost {
         // a new start waits for it.
         _generation++;
         _launchedAfterStop = null;
-        final done = ready.then<KillOutcome>((_) => const Ended([]), onError: (Object _) => const Ended([])).then((o) {
-          final left = _launchedAfterStop;
-          _launchedAfterStop = null;
-          return left?.$2 ?? o;
+        // What the launch left when it landed: its process travels with the outcome, so a not-closed Chrome can be
+        // stopped again later.
+        final landed = ready
+            .then<(SupervisedProcess?, KillOutcome)>(
+              (_) => (null, const Ended([])),
+              onError: (Object _) => (null, const Ended([])),
+            )
+            .then((o) {
+              final left = _launchedAfterStop;
+              _launchedAfterStop = null;
+              return left ?? o;
+            });
+        late final Future<KillOutcome> done;
+        // Settled before the stop's caller resumes: it finds the host closed (or not closed, with the process).
+        done = landed.then((l) {
+          _settled(done, l.$2, l.$1);
+          return l.$2;
         });
         _to(ChromeStopping(done));
-        unawaited(_settleStop(done, null));
         return done;
       case ChromeUp(:final process) || ChromeNotClosed(process: final process?):
         _generation++;
@@ -318,9 +336,20 @@ final class ChromeHost {
         _to(ChromeStopping(done));
         unawaited(_settleStop(done, process));
         return done;
-      case ChromeNotClosed(process: null, :final outcome):
-        // Nothing of ours to stop again (a launch that landed after its stop is in the supervisor's list).
-        return Future.value(outcome);
+      case ChromeNotClosed(process: null):
+        // The process isn't known here: what the supervisor still lists for this profile is stopped again (a later
+        // stop or use retries; the old outcome is never handed back as if current).
+        final left = [
+          for (final c in ProcessSupervisor.instance.children)
+            if (c.state.live && c.spec.kind == ProcessKind.browser && c.detail == 'profile $profileDir') c,
+        ];
+        _generation++;
+        final done = left.isEmpty
+            ? Future<KillOutcome>.value(const Ended([]))
+            : Future.wait([for (final c in left) c.stop()]).then(KillOutcome.merge);
+        _to(ChromeStopping(done));
+        unawaited(_settleStop(done, null));
+        return done;
     }
   }
 
