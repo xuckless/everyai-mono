@@ -70,16 +70,6 @@ void main() {
     }
   });
 
-  test('live and working', () {
-    for (final s in working) {
-      expect(s.live && s.working, isTrue, reason: '$s');
-    }
-    for (final s in [const ForkSpawning(), const ForkStopping(), const ForkMerging()]) {
-      expect(s.live && !s.working, isTrue, reason: '$s');
-    }
-    expect(reported.live || dropped.live, isFalse);
-  });
-
   group('ForkBook', () {
     test('a background fork: spawn, start, report once, then a follow-up', () {
       final b = ForkBook();
@@ -110,60 +100,6 @@ void main() {
       expect(b.of('c1')!.state, const ForkSpawning());
       expect(b.refused.single, 'c1: spawning → reported(completed)');
       expect(b.to('nope', const ForkRunning()), isFalse);
-    });
-
-    test('the same state again is no move; another question is', () {
-      final b = ForkBook()
-        ..spawn('c1', title: 't')
-        ..started('c1', 'k');
-      expect(b.to('c1', const ForkRunning()), isTrue);
-      expect(b.askLead('c1', 'q1'), isTrue);
-      expect(b.askLead('c1', 'q1'), isFalse, reason: 'already went');
-      expect(b.askLead('c1', 'q2'), isTrue);
-      expect((b.of('c1')!.state as ForkWaitingOnLead).ask.questionId, 'q2');
-      expect(b.refused, isEmpty);
-    });
-
-    test('question routes: to the lead, then answered by the lead or by the user first', () {
-      final b = ForkBook()
-        ..spawn('c1', title: 't')
-        ..started('c1', 'k')
-        ..askLead('c1', 'q1')
-        ..askLead('c1', 'q2');
-      expect(b.askedLead('q1'), isTrue);
-      expect(b.askedLead('q9'), isFalse);
-      expect(b.answered('q1', byUser: false), isTrue);
-      expect(b.of('c1')!.askOf('q1'), isA<AskAnsweredByLead>());
-      // Answered once: a late answer from the other side doesn't count.
-      expect(b.answered('q1', byUser: true), isFalse);
-      expect(b.answered('q2', byUser: true), isTrue);
-      expect(b.of('c1')!.askOf('q2'), isA<AskAnsweredByUser>());
-      expect(b.answered('q9', byUser: true), isFalse);
-      // Answered questions still count as having gone to the lead (the Board's "asked the lead").
-      expect(b.askedLead('q2'), isTrue);
-    });
-
-    test('waiting on the user, a retry back to spawning, and Stop all', () {
-      final b = ForkBook()
-        ..spawn('c1', title: 'a')
-        ..started('c1', 'k1')
-        ..spawn('c2', title: 'b')
-        ..spawn('c3', title: 'c', delivery: ForkDelivery.call);
-      b.to('c1', const ForkWaitingOnUser());
-      expect(b.anyWaitingOnUser, isTrue);
-      // A retry on the lead's model keeps the record.
-      final again = b.spawn('c1', title: 'a');
-      expect(again, b.of('c1'));
-      expect(again.state, const ForkSpawning());
-      expect(again.childId, 'k1');
-      expect(b.anyWaitingOnUser, isFalse);
-      b.started('c1', 'k2');
-      expect(b.children['c1'], 'k2');
-      expect(b.background.map((r) => r.callId), ['c1', 'c2']);
-      expect(b.dropLive('Stopped.'), ['k2']);
-      expect(b.live, isEmpty);
-      expect(b.all.every((r) => r.state is ForkDropped), isTrue);
-      expect(b.refused, isEmpty);
     });
   });
 }

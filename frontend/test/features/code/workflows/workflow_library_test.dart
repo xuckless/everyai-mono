@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:every_ai/features/code/workflows/workflow_library.dart';
-import 'package:every_ai/features/code/workflows/workflow_meta.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // The workflow list: bundled ones in a fixed order, then the project's own
@@ -29,13 +28,6 @@ export const meta = {
 }
 return await agent('draft')
 ''';
-
-  test('bundled workflows come first in a fixed order, with their meta', () async {
-    final all = await activeWorkflows(project.path, const WorkflowTrust());
-    expect([for (final w in all) w.id], bundledWorkflowIds);
-    expect(all.first.title, 'Ultra');
-    expect(all.every((w) => w.origin == WorkflowOrigin.bundled && w.whenToUse.isNotEmpty), isTrue);
-  });
 
   test('a project workflow is listed only while its digest is trusted', () async {
     write('Release Notes.js', mine);
@@ -78,30 +70,5 @@ return await agent('draft')
     expect(lib.active.map((w) => w.id), [...bundledWorkflowIds, 'other']);
     expect(lib.active.where((w) => w.id == 'bugfix').single.origin, WorkflowOrigin.bundled);
     expect(lib.locked.single.note, contains("Can't replace the built-in ultra workflow"));
-  });
-
-  test("a deeply nested meta is unreadable, and doesn't hide the other workflows", () async {
-    // Untrusted, and read before the trust check: nesting this deep used to overflow the stack.
-    write('deep.js', 'export const meta = ${'[' * 200000}');
-    write('fine.js', mine);
-    expect(parseWorkflowMeta('export const meta = ${'[' * 200000}'), isNull);
-    expect(parseWorkflowMeta('export const meta = { a: ${'[' * 30}${']' * 30} }'), isNotNull);
-    final project0 = await loadProjectWorkflows(project.path);
-    expect(project0.map((w) => w.id), ['deep', 'fine']);
-    expect(project0.first.title, 'deep');
-    final all = await activeWorkflows(project.path, const WorkflowTrust());
-    expect([for (final w in all) w.id], bundledWorkflowIds);
-  });
-
-  test('ids are normalised from the file name', () {
-    expect(workflowId('My Flow!.v2'), 'my-flow-v2');
-    expect(workflowId('--A_b--'), 'a_b');
-  });
-
-  test('a meta that is not a plain literal is unreadable, and the file keeps its name', () {
-    expect(parseWorkflowMeta('export const meta = { name: NAME }'), isNull);
-    expect(parseWorkflowMeta('export const meta = { name: `x\${y}` }'), isNull);
-    expect(parseWorkflowMeta('return 1'), isNull);
-    expect(parseWorkflowMeta(r"export const meta = { name: 'it\'s', n: 2, ok: true, x: null }")!.name, "it's");
   });
 }

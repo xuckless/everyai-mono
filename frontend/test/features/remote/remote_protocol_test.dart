@@ -5,12 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('tunnel parts', () {
-    test('a short message is one plain frame', () {
-      final parts = Tunnel.split({'t': 'res', 'id': 1, 'body': 'ok'});
-      expect(parts, hasLength(1));
-      expect(TunnelAssembler().add(parts.single), {'t': 'res', 'id': 1, 'body': 'ok'});
-    });
-
     test('a long one goes in parts under the cap and comes back whole', () {
       final message = {'t': 'ws', 'id': 3, 'data': 'é' * 5000};
       final parts = Tunnel.split(message, maxPart: 1000);

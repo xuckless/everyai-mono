@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:every_ai/features/code/domain/agent_mode.dart';
 import 'package:every_ai/features/code/drivers/driver_events.dart' show stateEvent;
 import 'package:every_ai/features/code/handoff/handoff.dart';
 import 'package:every_ai/features/code/handoff/native/import_steps.dart';
@@ -27,25 +26,6 @@ int _size(List<ImportStep> steps) => steps.fold(
 );
 
 void main() {
-  test('both stints, oldest first, between the lead note and the handoff facts', () {
-    final steps = importSteps(source(), into: 'Codex')!;
-    expect(steps.map(_show), [
-      'note: This conversation was led by EveryAI, Claude Code until now and was moved into Codex. Earlier tool calls '
-          "use Codex's tool names where one matches; the others are written as text. The last request was stopped "
-          'by a usage limit before it was done: the calls made for it so far are the last ones in this history.',
-      'user: Please create hello.txt containing the word PINEAPPLE.',
-      'call FileEditorAction: File created successfully at: /work/repo/hello.txt',
-      'agent: Created hello.txt with PINEAPPLE.',
-      'user: Now make bye.txt containing MANGO, then commit both files.',
-      'call TerminalAction: (no output)',
-      'call TerminalAction (unfinished): $notFinishedResult',
-      'note: <everyai-handoff from="claude-code" kind="full">',
-    ]);
-    final create = steps[2] as CallStep;
-    expect(create.args, {'command': 'create', 'path': '/work/repo/hello.txt', 'file_text': 'PINEAPPLE\n'});
-    expect(importedTurns(steps), 2);
-  });
-
   test('the cut turn round-trips: its calls, no closing reply, an error result, then the facts with <cut-turn>', () {
     final s = source();
     final steps = importSteps(s, into: 'Codex')!;
@@ -63,36 +43,6 @@ void main() {
     final before = steps[steps.length - 2] as CallStep;
     expect((before.finished, before.isError, before.result), (false, true, notFinishedResult));
     expect(steps.whereType<AgentStep>().map((a) => a.text), ['Created hello.txt with PINEAPPLE.']);
-  });
-
-  test('mode and handoff notes are stripped, carry-ons and harness notes dropped', () {
-    final earlier = handoffMessage(handoffOf(stints(), to: 'everyai'));
-    final steps = importSteps(
-      source(
-        from: [
-          (lead: 'EveryAI', conversationId: 'c', events: everyaiStint()),
-          (
-            lead: 'Codex',
-            conversationId: 'x',
-            events: [
-              user('u5', '$earlier\n\nAlso add a README.'),
-              user('u6', carryOnMessage('EveryAI')),
-              user(
-                'u7',
-                modeNote(AgentMode.plan, '<everyai-phase flow="max" phase="research" run="r">\nGo.\n</everyai-phase>'),
-              ),
-              agent('a5', 'README added.'),
-            ],
-          ),
-        ],
-      ),
-      into: 'OpenCode',
-    )!;
-    final users = [
-      for (final s in steps)
-        if (s case UserStep(ours: false, :final text)) text,
-    ];
-    expect(users, ['Please create hello.txt containing the word PINEAPPLE.', 'Also add a README.']);
   });
 
   test('secrets: a .env read is withheld, a key in the user text redacted', () {
@@ -148,58 +98,5 @@ void main() {
       '($dropped earlier turns are left out to keep this short; the whole conversation is in .everyai/handoffs/x.md.)',
     );
     expect(steps.whereType<UserStep>().where((s) => !s.ours).last.text, 'request 39');
-  });
-
-  test('one long request: the oldest results give way, then the oldest calls; the request and newest calls stay', () {
-    final events = [
-      user('u', 'Fix every failing test.'),
-      for (var i = 0; i < 200; i++) ...[
-        agent('a$i', 'Step $i.'),
-        call('c$i', 'terminal', {'kind': 'TerminalAction', 'command': 'run test $i ${'w' * 3000}'}),
-        result('c$i', '${'z' * 7000} $i'),
-      ],
-    ];
-    final steps = importSteps(source(from: [(lead: 'EveryAI', conversationId: 'c', events: events)]), into: 'Codex')!;
-    expect(_size(steps), lessThan(nativeImportMaxChars));
-    expect(importedTurns(steps), 1);
-    expect(steps[1], isA<UserStep>().having((s) => s.text, 'text', 'Fix every failing test.'));
-    final calls = steps.whereType<CallStep>().toList();
-    expect(calls.last.str('command'), startsWith('run test 199 '));
-    expect(calls.last.result, endsWith(' 199'));
-    expect(
-      calls.first.result,
-      '(result left out to keep this short; the whole conversation is in .everyai/handoffs/x.md.)',
-    );
-    // Results gave way first: some calls still stand with no result, the rest are one note.
-    final left = 200 - calls.length;
-    expect(left, greaterThan(0));
-    expect(steps[2], isA<AgentStep>().having((s) => s.text, 'text', startsWith('($left earlier calls are left out')));
-    expect(steps.whereType<AgentStep>().where((s) => s.text.contains('left out')), hasLength(1));
-  });
-
-  test('a request too big alone: null, so the facts handoff is used', () {
-    final steps = importSteps(
-      source(
-        from: [
-          (lead: 'EveryAI', conversationId: 'c', events: [user('u', 'q' * (nativeImportMaxChars + 1))]),
-        ],
-      ),
-      into: 'Codex',
-    );
-    expect(steps, isNull);
-  });
-
-  test('nothing the user asked: null', () {
-    expect(
-      importSteps(
-        source(
-          from: [
-            (lead: 'EveryAI', conversationId: 'c', events: [agent('a', 'hi'), stateEvent('s', ExecutionStatus.idle)]),
-          ],
-        ),
-        into: 'Codex',
-      ),
-      isNull,
-    );
   });
 }

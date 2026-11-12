@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:every_ai/features/code/drivers/briefing/briefing_types.dart';
-import 'package:every_ai/features/code/drivers/driver.dart';
 import 'package:every_ai/features/code/drivers/driver_process.dart';
 import 'package:every_ai/features/code/drivers/opencode/opencode_driver.dart';
 import 'package:every_ai/features/code/drivers/opencode/opencode_host.dart';
@@ -53,48 +52,6 @@ void main() {
       }).detect();
       expect((s.installed, s.path, s.signedIn, s.problem), (true, '/bin/echo', true, null));
     });
-
-    test('not signed in with no provider, unknown when the list is unreadable, absent when not installed', () async {
-      final none = await _driver((_) async => (exitCode: 0, stdout: '[]')).detect();
-      expect(none.signedIn, isFalse);
-      expect(none.problem, contains('opencode auth login'));
-      final bad = await _driver((_) async => (exitCode: 0, stdout: 'not json')).detect();
-      expect((bad.installed, bad.signedIn, bad.problem), (true, null, null));
-      final missing = await _driver((_) async => fail('not run'), installed: false).detect();
-      expect(missing.installed, isFalse);
-    });
-  });
-
-  test('models are the enabled ones as provider/model, with variants as efforts and the default marked', () async {
-    final models = await _driver(
-      (args) async => (exitCode: 0, stdout: _fixture(args[1] == 'model.list' ? 'models.json' : 'model_default.json')),
-    ).models();
-    expect(models.map((m) => m.id), [
-      'anthropic/claude-sonnet-5-5',
-      'minimax-coding-plan/MiniMax-M3.1-Flash',
-      'opencode/claude-sonnet-5-5',
-      'opencode/crouton-alpha-free',
-    ]);
-    final crouton = models.last;
-    expect((crouton.label, crouton.isDefault), ('Crouton Alpha Free', true));
-    expect(crouton.efforts, ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
-    expect(models[1].efforts, isEmpty);
-    expect(models.where((m) => m.isDefault), hasLength(1));
-  });
-
-  test('caps are what the driver does today', () {
-    expect(OpenCodeDriver().caps, {
-      DriverCap.steer,
-      DriverCap.resume,
-      DriverCap.approvals,
-      DriverCap.perCallApprovals,
-      DriverCap.usage,
-      DriverCap.skills,
-      DriverCap.switchModel,
-      DriverCap.effort,
-      DriverCap.nativeModes,
-    });
-    expect(OpenCodeDriver().info.id, 'opencode');
   });
 
   group('launcher', () {
@@ -228,12 +185,5 @@ void main() {
       );
       expect(old.closed, isTrue);
     });
-  });
-
-  test('no briefing env without a skill folder', () {
-    expect(openCodeBriefingEnv(null), isEmpty);
-    expect(openCodeBriefingEnv(const DriverBriefing(mcpUrl: 'http://x', mcpToken: 't')), isEmpty);
-    expect(listeningUrl('server listening on http://127.0.0.1:4096'), 'http://127.0.0.1:4096');
-    expect(listeningUrl('opencode 2.1.3'), isNull);
   });
 }

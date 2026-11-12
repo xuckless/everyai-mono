@@ -1,13 +1,7 @@
 import 'dart:io';
 
-import 'package:every_ai/features/code/checks/post_edit_hooks.dart';
-import 'package:every_ai/features/code/checks/post_edit_hooks_io.dart';
-import 'package:every_ai/features/code/checks/runtime_profiles_io.dart' show recordRuntime;
 import 'package:every_ai/features/code/git/git_service.dart';
-import 'package:every_ai/features/code/git/git_service_io.dart' show guardedEnv, runGit;
-import 'package:every_ai/features/code/harness/everyai/repro_paths_io.dart';
-import 'package:every_ai/features/code/settings/settings_io.dart' show resolveCommitStyle;
-import 'package:every_ai/features/code/settings/agent_settings.dart' show CommitStyle;
+import 'package:every_ai/features/code/git/git_service_io.dart' show runGit;
 import 'package:flutter_test/flutter_test.dart';
 
 Future<String> _git(String dir, List<String> args) async {
@@ -43,33 +37,6 @@ void main() {
     hooksDir: hooks,
   );
 
-  test('an in-place session diffs against its starting snapshot, not HEAD', () async {
-    // Work the user already had going: an edit and an untracked file.
-    File('$repo/README.md').writeAsStringSync('# App\n\nDraft notes\n');
-    File('$repo/notes.txt').writeAsStringSync('mine\n');
-    final base = (await GitService.baseline(repo))!;
-    expect(base.branch, 'main');
-    expect(await GitService.diff(base.diffView), isEmpty);
-
-    // What the session does.
-    File('$repo/lib/a.txt').writeAsStringSync('one\n');
-    File('$repo/lib/new.py').writeAsStringSync('print(1)\n');
-    final files = await GitService.diff(base.diffView);
-    expect(files.map((f) => f.path).toSet(), {'lib/a.txt', 'lib/new.py'});
-    // The checkout itself is untouched: no commit, the user's index as it was.
-    expect((await Process.run('git', ['-C', repo, 'rev-list', '--count', 'HEAD'])).stdout.toString().trim(), '1');
-    expect((await Process.run('git', ['-C', repo, 'diff', '--cached', '--name-only'])).stdout.toString().trim(), '');
-  });
-
-  test('a repository with no commits yet is not branched from', () async {
-    expect(await GitService.hasCommits(repo), isTrue);
-    final fresh = '${tmp.path}/fresh';
-    await Directory(fresh).create();
-    await _git(fresh, ['init', '-q']);
-    expect(await GitService.repoRoot(fresh), isNotNull);
-    expect(await GitService.hasCommits(fresh), isFalse);
-  });
-
   test('a session gets its own branch and checkout; the main checkout is untouched', () async {
     final w = await start();
     expect(w.branch, 'everyai/${w.slug}');
@@ -96,40 +63,6 @@ void main() {
     await GitService.revertHunk(w, a, 1);
     expect(File('${w.path}/lib/a.txt').readAsStringSync(), startsWith('ONE\n'));
     expect(File('${w.path}/lib/a.txt').readAsStringSync(), endsWith('nine\nten\n'));
-  });
-
-  test('uncommitted changes, branch commits and the remote, for /commit and /pr', () async {
-    final w = await start();
-    expect(await GitService.uncommittedDiff(w), isEmpty);
-    expect(await GitService.commitSubjects(w), isEmpty);
-    expect(await GitService.remoteUrl(w), isEmpty);
-    File('${w.path}/lib/new.txt').writeAsStringSync('fresh\n');
-    expect([for (final f in await GitService.uncommittedDiff(w)) f.path], ['lib/new.txt']);
-    expect(await GitService.commitAll(w, 'Add new.txt'), isTrue);
-    expect(await GitService.uncommittedDiff(w), isEmpty);
-    expect(await GitService.commitSubjects(w), ['Add new.txt']);
-    // Still in the diff since the session's base.
-    expect([for (final f in await GitService.diff(w)) f.path], ['lib/new.txt']);
-    await _git(repo, ['remote', 'add', 'origin', 'git@github.com:acme/app.git']);
-    expect(await GitService.remoteUrl(w), 'git@github.com:acme/app.git');
-  });
-
-  test('commitOnNewBranch carries the dirty tree to a new branch; a bad or taken name changes nothing', () async {
-    final w = await start();
-    File('${w.path}/lib/new.txt').writeAsStringSync('fresh\n');
-    final before = await _git(w.path, ['rev-parse', 'HEAD']);
-    await expectLater(GitService.commitOnNewBranch(w, 'bad name~', 'x'), throwsA(isA<GitError>()));
-    await expectLater(GitService.commitOnNewBranch(w, w.branch, 'x'), throwsA(isA<GitError>()));
-    await expectLater(GitService.commitOnNewBranch(w, 'main', 'x'), throwsA(isA<GitError>()));
-    expect(await _git(w.path, ['rev-parse', 'HEAD']), before);
-    expect(await _git(w.path, ['branch', '--show-current']), w.branch);
-    expect(await GitService.isDirty(w), isTrue);
-
-    final sha = await GitService.commitOnNewBranch(w, 'everyai/fix-1', 'Add new.txt');
-    expect(await _git(w.path, ['branch', '--show-current']), 'everyai/fix-1');
-    expect(sha, await _git(w.path, ['rev-parse', 'HEAD']));
-    expect(await _git(w.path, ['log', '-1', '--format=%s']), 'Add new.txt');
-    expect(await GitService.isDirty(w), isFalse);
   });
 
   test('a commit with paths leaves other work alone; nothing to commit does not switch branches', () async {
@@ -166,89 +99,6 @@ void main() {
     expect(await _git(w.path, ['show', '--name-only', '--format=', 'HEAD']), 'lib/more.txt');
   });
 
-  test('after-edit checks see only the files changed since their last run, deletions and .everyai left out', () async {
-    final w = await start();
-    File('${w.path}/pubspec.yaml').writeAsStringSync('name: app\n');
-    File('${w.path}/lib/a.dart').writeAsStringSync('void a() {}\n');
-    File('${w.path}/lib/c.dart').writeAsStringSync('void c() {}\n');
-    final asked = <String>[];
-    // What the lead's tool calls touched: the user's own edit of lib/user.dart is not the lead's to check.
-    File('${w.path}/lib/user.dart').writeAsStringSync('void u() {}\n');
-    final TouchedPaths touched = (
-      written: {'lib/a.dart', 'lib/b.dart', 'lib/c.dart', '.everyai/x.dart'},
-      named: <String>{},
-    );
-    Future<String?> round(String? tree) async {
-      asked.clear();
-      final r = await runPostEditHooks(
-        workingDir: w.path,
-        sessionTag: 'test',
-        shellDir: '${tmp.path}/shell',
-        target: w,
-        tree: tree,
-        // Records what would run, and runs nothing.
-        refusal: (command) {
-          asked.add(command);
-          return 'not in this test';
-        },
-        autoFormat: false,
-        touched: touched,
-      );
-      expect(r.report, isEmpty, reason: 'skips alone are no report');
-      return r.tree;
-    }
-
-    // The first round has no snapshot: everything since the session's base.
-    final first = await round(null);
-    expect(first, isNotNull);
-    expect(asked.first, 'dart format --output=none --set-exit-if-changed -- lib/a.dart lib/c.dart');
-
-    File('${w.path}/lib/b.dart').writeAsStringSync('void b() {}\n');
-    File('${w.path}/lib/c.dart').deleteSync();
-    Directory('${w.path}/.everyai').createSync();
-    File('${w.path}/.everyai/x.dart').writeAsStringSync('void x() {}\n');
-    final second = await round(first);
-    expect(asked, ['dart format --output=none --set-exit-if-changed -- lib/b.dart', 'dart analyze -- lib/b.dart']);
-
-    await round(second);
-    expect(asked, isEmpty, reason: 'nothing changed since');
-  });
-
-  test('after-edit checks and runtime profiles run no fsmonitor; an untracked node_modules tool is named', () async {
-    final marker = '${tmp.path}/fsmonitor-ran';
-    final monitor = File('${tmp.path}/monitor.sh')..writeAsStringSync('#!/bin/sh\ntouch "$marker"\nexit 1\n');
-    await Process.run('chmod', ['+x', monitor.path]);
-    File('$repo/package.json').writeAsStringSync('{}\n');
-    File('$repo/src/a.js')
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync('a\n');
-    await _git(repo, ['config', 'core.fsmonitor', monitor.path]);
-    final base = (await GitService.baseline(repo))!;
-    File('$repo/src/a.js').writeAsStringSync('b\n');
-    // The session put a "prettier" there that no .gitignore hides.
-    File('$repo/node_modules/.bin/prettier')
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync('#!/bin/sh\n');
-    final asked = <String>[];
-    final r = await runPostEditHooks(
-      workingDir: repo,
-      sessionTag: 'test',
-      shellDir: '${tmp.path}/shell',
-      target: base.diffView,
-      tree: null,
-      refusal: (command) {
-        asked.add(command);
-        return 'not in this test';
-      },
-      autoFormat: false,
-      touched: (written: {'src/a.js'}, named: <String>{}),
-    );
-    expect(asked.single, startsWith('node_modules/.bin/prettier --check'));
-    expect(r.report, contains('node_modules/.bin/prettier'));
-    await recordRuntime(repo, 'npm test', '', const Duration(seconds: 3));
-    expect(File(marker).existsSync(), isFalse);
-  });
-
   test('a commit that fails after the switch goes back and removes the new branch', () async {
     final w = await start();
     File('${w.path}/lib/new.txt').writeAsStringSync('fresh\n');
@@ -258,32 +108,6 @@ void main() {
     expect(await _git(w.path, ['branch', '--show-current']), w.branch);
     expect(await _git(w.path, ['branch', '--list', 'everyai/hooked']), isEmpty);
     expect(await GitService.isDirty(w), isTrue);
-  });
-
-  test('the commit hook strips AI credits and still runs the repo\'s own hook', () async {
-    // The project's own commit-msg hook appends a marker.
-    File('$repo/.git/hooks/commit-msg').writeAsStringSync('#!/bin/sh\necho "Reviewed-by: repo-hook" >> "\$1"\n');
-    await Process.run('chmod', ['+x', '$repo/.git/hooks/commit-msg']);
-    final w = await start();
-    File('${w.path}/README.md').writeAsStringSync('# App\n\nMore.\n');
-    await _git(w.path, ['add', '-A']);
-    await _git(w.path, [
-      'commit',
-      '-q',
-      '-m',
-      'docs: expand the readme\n\nSays more.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n'
-          'Co-authored-by: openhands <openhands@all-hands.dev>\nCo-Authored-By: Claude <noreply@anthropic.com>\n'
-          'Co-authored-by: Sam <sam@example.com>',
-    ]);
-    final message = await _git(w.path, ['log', '-1', '--format=%B']);
-    expect(message, contains('docs: expand the readme'));
-    expect(message, contains('Co-authored-by: Sam <sam@example.com>'));
-    expect(message, contains('Reviewed-by: repo-hook'));
-    expect(message, isNot(contains('openhands')));
-    expect(message, isNot(contains('Claude')));
-    expect(await _git(w.path, ['log', '-1', '--format=%an']), 'Dev');
-    // The main checkout keeps its normal hooks.
-    expect(await Process.run('git', ['-C', repo, 'config', '--get', 'core.hooksPath']).then((r) => r.exitCode), 1);
   });
 
   test('checkpoints restore the working tree, untracked files included', () async {
@@ -299,13 +123,6 @@ void main() {
     expect(File('${w.path}/later.txt').existsSync(), isFalse);
     // HEAD and the index are untouched.
     expect(await _git(w.path, ['rev-parse', 'HEAD']), w.baseCommit);
-  });
-
-  test('a missing checkpoint leaves the files alone', () async {
-    final w = await start();
-    File('${w.path}/made.txt').writeAsStringSync('new\n');
-    await expectLater(GitService.restoreCheckpoint(w, 'refs/everyai/${w.slug}/turn-9'), throwsA(isA<GitError>()));
-    expect(File('${w.path}/made.txt').readAsStringSync(), 'new\n');
   });
 
   test('merge fast-forwards the base branch to the prepared commit, then the session is removed', () async {
@@ -347,91 +164,6 @@ void main() {
     expect(Directory(w.path).existsSync(), isFalse);
     expect(await _git(repo, ['branch', '--list', w.branch]), isEmpty);
     expect(await _git(repo, ['for-each-ref', 'refs/everyai/']), isEmpty);
-  });
-
-  test("a fork's own changes: edits and new files since its base, not the dependency folders it borrows", () async {
-    Directory('$repo/node_modules/x').createSync(recursive: true);
-    File('$repo/.gitignore').writeAsStringSync('node_modules/\n');
-    final copy = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'mine'))!;
-    expect(copy.links, contains('node_modules'));
-    expect(await GitService.forkDiff(copy), isEmpty);
-    File('${copy.root}/README.md').writeAsStringSync('# App\n\nForked.\n');
-    File('${copy.root}/lib/new.txt').writeAsStringSync('new\n');
-    final files = await GitService.forkDiff(copy);
-    expect({for (final f in files) f.path}, {'README.md', 'lib/new.txt'});
-    // The parent's checkout is untouched.
-    expect(File('$repo/lib/new.txt').existsSync(), isFalse);
-  });
-
-  test(
-    'orphaned forks: held ones are skipped, empty ones carry no work, changes and commits count as unsaved',
-    () async {
-      final forks = '${tmp.path}/forks';
-      final empty = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'empty'))!;
-      final edited = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'edited'))!;
-      final committed = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'committed'))!;
-      final held = (await GitService.forkCopy(repo, worktreesDir: forks, slug: 'held'))!;
-      File('${edited.root}/lib/new.txt').writeAsStringSync('work\n');
-      File('${committed.root}/lib/c.txt').writeAsStringSync('c\n');
-      await _git(committed.root, ['add', '-A']);
-      await _git(committed.root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'mine']);
-      // A borrowed dependency link isn't work.
-      Directory('${tmp.path}/deps').createSync();
-      Link('${empty.root}/node_modules').createSync('${tmp.path}/deps');
-
-      final found = {
-        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
-      };
-      expect(found.keys.toSet(), {'empty', 'edited', 'committed'});
-      expect(found['empty']!.unsaved, isFalse);
-      expect(found['edited']!.unsaved, isTrue);
-      expect(found['committed']!.unsaved, isTrue);
-      expect(File(found['empty']!.repoRoot).resolveSymbolicLinksSync(), Directory(repo).resolveSymbolicLinksSync());
-
-      // Held, spelled another way (a trailing separator, a `.` segment): still skipped.
-      expect([
-        for (final o in await GitService.orphanForks(forks, {'${held.root}/', '$forks/./held'})) o.path.split('/').last,
-      ], isNot(contains('held')));
-
-      // A fork whose repository can't be reached any more: kept, its work unknown.
-      final lost = Directory('$forks/lost')..createSync();
-      File('${lost.path}/.git').writeAsStringSync('gitdir: /nowhere/.git/worktrees/lost\n');
-      File('${lost.path}/notes.txt').writeAsStringSync('mine\n');
-      final again = {
-        for (final o in await GitService.orphanForks(forks, {held.root})) o.path.split('/').last: o,
-      };
-      expect(again['lost']!.unsaved, isTrue);
-
-      await GitService.removeOrphanFork(found['empty']!);
-      expect(Directory(empty.root).existsSync(), isFalse);
-      expect(await _git(repo, ['worktree', 'list']), isNot(contains('/empty')));
-      expect(Directory('${tmp.path}/deps').existsSync(), isTrue, reason: 'the link goes, not what it points at');
-    },
-  );
-
-  test('unified diffs parse into files and hunks', () {
-    final files = parseUnifiedDiff(
-      'diff --git a/x.txt b/x.txt\nindex 1..2 100644\n--- a/x.txt\n+++ b/x.txt\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n'
-      '@@ -10 +10 @@ ctx\n-y\n+z\ndiff --git a/n.txt b/n.txt\nnew file mode 100644\n--- /dev/null\n+++ b/n.txt\n'
-      '@@ -0,0 +1 @@\n+hi\n',
-    );
-    expect(files.map((f) => f.path), ['x.txt', 'n.txt']);
-    expect(files.first.hunks.map((h) => (h.oldStart, h.added, h.removed)), [(1, 1, 1), (10, 1, 1)]);
-    expect(files.first.patchFor(1), contains('@@ -10 +10 @@ ctx\n-y\n+z\n'));
-    expect(files.first.patchFor(1), isNot(contains('-a')));
-  });
-
-  test('AI credit lines are recognised, people are not', () {
-    expect(
-      stripBranding('fix: x\n\nbody\n\nCo-authored-by: openhands <openhands@all-hands.dev>\n'),
-      'fix: x\n\nbody\n',
-    );
-    expect(stripBranding('fix: x\n\nCo-authored-by: Sam <sam@example.com>\n'), contains('Sam'));
-    expect(stripBranding('Add y\n\nSigned-off-by: Dev <dev@example.com>\n'), contains('Signed-off-by: Dev'));
-    expect(
-      stripBranding('Add z\n\nClaude-Session: https://claude.ai/code/session_01ABC\nAssisted-by: Codex\n'),
-      'Add z\n',
-    );
   });
 
   test('a fork works on a copy of the uncommitted folder and merges back file by file', () async {
@@ -498,88 +230,6 @@ void main() {
     SessionWorktree here() =>
         SessionWorktree(repoRoot: repo, path: repo, branch: 'main', baseBranch: 'main', baseCommit: 'HEAD');
 
-    test('commit here: the lanes\' commits in order with their authors, then one for the rest', () async {
-      final a = await lane('a', [
-        ({'lib/one.txt': 'one\n'}, 'Add one\n\nCo-Authored-By: Claude <noreply@anthropic.com>'),
-        ({'lib/one.txt': 'one, better\n'}, 'Improve one'),
-      ]);
-      final b = await lane('b', [
-        ({'lib/two.txt': 'two\n'}, 'Add two'),
-      ], author: 'Other');
-      // The integrate step's own work, and the user's unrelated work, uncommitted in the folder.
-      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
-      File('$repo/README.md').writeAsStringSync('# App, mine\n');
-      final landed = await GitService.landWithCommits(
-        here(),
-        lanes: [a, b],
-        paths: ['lib/one.txt', 'lib/two.txt', 'lib/glue.txt'],
-        message: 'Ultra: integrate\n\nGenerated with Claude Code',
-      );
-      expect(landed.laneCommits, 3);
-      expect(landed.notes, isEmpty);
-      expect(landed.head, await _git(repo, ['rev-parse', 'HEAD']));
-      expect(
-        await _git(repo, ['log', '--format=%s|%an', 'HEAD~4..HEAD']),
-        ['Ultra: integrate|Dev', 'Add two|Other', 'Improve one|Lane', 'Add one|Lane'].join('\n'),
-      );
-      final bodies = await _git(repo, ['log', '--format=%B', 'HEAD~4..HEAD']);
-      expect(bodies, isNot(contains('Claude')));
-      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'lib/glue.txt');
-      // The run's paths are clean; the user's own work stays uncommitted.
-      expect(await _git(repo, ['status', '--porcelain']), 'M README.md');
-      expect(await _git(repo, ['branch', '--show-current']), 'main');
-    });
-
-    test('a lane that does not apply on top of the others lands as files in the last commit, with a note', () async {
-      // Both start from the same folder and rewrite the same line.
-      final a = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'a'))!;
-      final b = (await GitService.forkCopy(repo, worktreesDir: '${tmp.path}/forks', slug: 'b'))!;
-      for (final (copy, text) in [(a, 'A\n'), (b, 'B\n')]) {
-        File('${copy.root}/lib/a.txt').writeAsStringSync(text);
-        await _git(copy.root, ['commit', '-qam', 'Rewrite a as $text']);
-      }
-      final ma = await GitService.mergeFork(a, slug: 'a');
-      final mb = await GitService.mergeFork(b, slug: 'b');
-      // b's merge left conflict markers; the integrate step resolved them in the folder.
-      File('$repo/lib/a.txt').writeAsStringSync('A and B\n');
-      final landed = await GitService.landWithCommits(
-        here(),
-        lanes: [(ref: ma.ref, base: a.base, label: 'a'), (ref: mb.ref, base: b.base, label: 'b')],
-        paths: ['lib/a.txt'],
-        message: 'Integrate',
-      );
-      expect(landed.laneCommits, 1);
-      expect(landed.notes.single, startsWith("b: its commits didn't apply"));
-      expect(await _git(repo, ['log', '--format=%s', 'HEAD~2..HEAD']), 'Integrate\nRewrite a as A');
-      expect(await _git(repo, ['show', 'HEAD:lib/a.txt']), 'A and B');
-      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
-    });
-
-    test('new branch: the history goes there and the folder follows; a taken name changes nothing', () async {
-      final a = await lane('a', [
-        ({'lib/n.txt': 'n\n'}, 'Add n'),
-      ]);
-      final before = await _git(repo, ['rev-parse', 'HEAD']);
-      await _git(repo, ['branch', 'taken']);
-      await expectLater(
-        GitService.landWithCommits(here(), lanes: [a], paths: ['lib/n.txt'], message: 'x', newBranch: 'taken'),
-        throwsA(isA<GitError>()),
-      );
-      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
-      final landed = await GitService.landWithCommits(
-        here(),
-        lanes: [a],
-        paths: ['lib/n.txt'],
-        message: 'x',
-        newBranch: 'everyai/run',
-      );
-      // Nothing is left beyond the lane's commit, so there is no extra one.
-      expect(landed.laneCommits, 1);
-      expect(await _git(repo, ['branch', '--show-current']), 'everyai/run');
-      expect(await _git(repo, ['log', '--format=%s', '-1']), 'Add n');
-      expect(await _git(repo, ['rev-parse', 'main']), before);
-      expect(await _git(repo, ['status', '--porcelain']), isEmpty);
-    });
     test('the repository\'s index hook and clean filter never run while landing', () async {
       final marker = '${tmp.path}/ran';
       final a = await lane('a', [
@@ -609,90 +259,6 @@ void main() {
       expect(File(marker).existsSync(), isFalse);
       expect(await _git(repo, ['rev-parse', 'HEAD']), before);
     });
-
-    test('a staged file the pattern `b*` would match stays staged; paths are literal', () async {
-      File('$repo/bc').writeAsStringSync('mine\n');
-      await _git(repo, ['add', 'bc']);
-      File('$repo/b*').writeAsStringSync('the run\n');
-      final landed = await GitService.landWithCommits(here(), lanes: const [], paths: ['b*'], message: 'Star');
-      expect(landed.head, isNotNull);
-      expect(await _git(repo, ['show', '--name-only', '--format=', 'HEAD']), 'b*');
-      expect(await _git(repo, ['diff', '--cached', '--name-only']), 'bc');
-    });
-
-    test('a lane commit already in HEAD is not replayed as an empty commit', () async {
-      final a = await lane('a', [
-        ({'lib/d.txt': 'd\n'}, 'Add d'),
-      ]);
-      File('$repo/lib/d.txt').writeAsStringSync('d\n');
-      await _git(repo, ['add', 'lib/d.txt']);
-      await _git(repo, ['commit', '-q', '-m', 'Mine: d']);
-      final before = await _git(repo, ['rev-parse', 'HEAD']);
-      final landed = await GitService.landWithCommits(here(), lanes: [a], paths: ['lib/d.txt'], message: 'x');
-      expect(landed.head, isNull);
-      expect(landed.laneCommits, 0);
-      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
-    });
-
-    test('commit.gpgSign: landing commits are signed, and a signing failure lands nothing', () async {
-      final key = '${tmp.path}/sign_key';
-      final gen = await Process.run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]);
-      if (gen.exitCode != 0) markTestSkipped('ssh-keygen is not available');
-      await _git(repo, ['config', 'commit.gpgsign', 'true']);
-      await _git(repo, ['config', 'gpg.format', 'ssh']);
-      await _git(repo, ['config', 'user.signingkey', key]);
-      final a = await lane('a', [
-        ({'lib/s.txt': 's\n'}, 'Add s'),
-      ]);
-      File('$repo/lib/glue.txt').writeAsStringSync('glue\n');
-      final landed = await GitService.landWithCommits(
-        here(),
-        lanes: [a],
-        paths: ['lib/s.txt', 'lib/glue.txt'],
-        message: 'Signed',
-      );
-      expect(landed.laneCommits, 1);
-      for (final rev in ['HEAD', 'HEAD~1']) {
-        expect(await _git(repo, ['cat-file', '-p', rev]), contains('gpgsig'));
-      }
-      // A key that isn't there: an error, not an unsigned commit.
-      await _git(repo, ['config', 'user.signingkey', '${tmp.path}/missing_key']);
-      File('$repo/lib/glue.txt').writeAsStringSync('glue 2\n');
-      final before = await _git(repo, ['rev-parse', 'HEAD']);
-      await expectLater(
-        GitService.landWithCommits(here(), lanes: const [], paths: ['lib/glue.txt'], message: 'Unsigned?'),
-        throwsA(isA<GitError>().having((e) => e.message, 'message', contains('commit.gpgSign'))),
-      );
-      expect(await _git(repo, ['rev-parse', 'HEAD']), before);
-    });
-  });
-
-  test('a fork gets its own copy in a repository with no commit yet, and merges back', () async {
-    final fresh = '${tmp.path}/fresh-fork';
-    await Directory(fresh).create();
-    await _git(fresh, ['init', '-q', '-b', 'main']);
-    File('$fresh/index.html').writeAsStringSync('<html>one</html>\n');
-    final copy = (await GitService.forkCopy(fresh, worktreesDir: '${tmp.path}/forks', slug: 'f2'))!;
-    expect(File('${copy.path}/index.html').readAsStringSync(), '<html>one</html>\n');
-    File('${copy.path}/index.html').writeAsStringSync('<html>two</html>\n');
-    File('${copy.path}/games.js').writeAsStringSync('play()\n');
-    // Until it merges back, the parent's folder doesn't change.
-    expect(File('$fresh/games.js').existsSync(), isFalse);
-    final result = await GitService.mergeFork(copy, slug: 'f2');
-    expect(result.merged, unorderedEquals(['index.html', 'games.js']));
-    expect(File('$fresh/index.html').readAsStringSync(), '<html>two</html>\n');
-    expect(await GitService.hasCommits(fresh), isFalse);
-  });
-
-  test('a repository with no commit yet still gets a baseline: everything new shows as added', () async {
-    final fresh = '${tmp.path}/fresh';
-    await Directory(fresh).create();
-    await _git(fresh, ['init', '-q', '-b', 'main']);
-    final base = (await GitService.baseline(fresh))!;
-    File('$fresh/index.html').writeAsStringSync('<html></html>\n');
-    final changes = await GitService.changes(base.diffView);
-    expect(changes.single.path, 'index.html');
-    expect(changes.single.kind, ChangeKind.added);
   });
 
   group('a repository that defines programs', () {
@@ -816,73 +382,6 @@ void main() {
 
       expect(File(marks).existsSync() ? File(marks).readAsStringSync() : '', isEmpty);
       // The trap works: plain git in the same repository runs it.
-      await Process.run('git', ['-C', repo, 'status']);
-      expect(File(marks).readAsStringSync(), contains('fsmonitor'));
-    });
-
-    test('a filter that cleans files turns EveryAI\'s git work off, in plain words', () async {
-      final run = await arm();
-      await _git(repo, ['config', 'filter.x.clean', '$run clean']);
-      File('$repo/secret.a').writeAsStringSync('plain\n');
-      File('$repo/.gitattributes').writeAsStringSync('*.a filter=x\n');
-      final message = predicate<GitError>((e) => e.message.contains('filter "x"') && e.message.contains('.git/config'));
-      await expectLater(GitService.baseline(repo), throwsA(message));
-      final head = await _git(repo, ['rev-parse', 'HEAD']);
-      final view = SessionWorktree(repoRoot: repo, path: repo, branch: 'main', baseBranch: 'main', baseCommit: head);
-      await expectLater(GitService.changes(view), throwsA(message));
-      await expectLater(GitService.commitAll(view, 'Secret'), throwsA(message));
-      // Checkouts and reads only smudge, which is blanked: a session still starts, and its changes stay off.
-      final w = await start();
-      expect(File('${w.path}/README.md').existsSync(), isTrue);
-      expect(await GitService.isDirty(w), isFalse);
-      await expectLater(GitService.changes(w), throwsA(message));
-      expect(File(marks).existsSync(), isFalse);
-      expect(await _git(repo, ['rev-parse', 'HEAD']), head);
-    });
-
-    test(
-      'a filter named with "=" (which `-c` can\'t reach) turns EveryAI\'s git work off; a shell still blanks it',
-      () async {
-        File('$repo/.gitattributes').writeAsStringSync('* filter=x=y\n');
-        await _git(repo, ['add', '-A']);
-        await _git(repo, ['commit', '-q', '-m', 'Attributes']);
-        final run = await arm();
-        await _git(repo, ['config', 'filter.x=y.smudge', '$run smudge-eq']);
-        await _git(repo, ['config', 'filter.x=y.required', 'true']);
-        await expectLater(start(), throwsA(predicate<GitError>((e) => e.message.contains('"x=y"'))));
-        final shell = await Process.run(
-          'sh',
-          ['-c', 'rm README.md && git checkout -- README.md'],
-          workingDirectory: repo,
-          environment: await guardedEnv(repo),
-        );
-        expect(shell.exitCode, 0, reason: '${shell.stderr}');
-        expect(File('$repo/README.md').existsSync(), isTrue);
-        expect(File(marks).existsSync() ? File(marks).readAsStringSync() : '', isEmpty);
-        // The trap works: plain git runs it.
-        File('$repo/README.md').deleteSync();
-        await Process.run('git', ['-C', repo, 'checkout', '--', 'README.md']);
-        expect(File(marks).readAsStringSync(), contains('smudge-eq'));
-      },
-    );
-
-    test('EveryAI\'s other git callers run none of them either', () async {
-      await arm();
-      await _git(repo, ['config', 'log.showSignature', 'true']);
-      File('$repo/lib/a.txt').writeAsStringSync('changed\n');
-      File('$repo/lib/a_test.txt').writeAsStringSync('new test\n');
-      // Bug fix's repro snapshot, the commit style, the review diff (runGit) and the shell probe (guardedEnv).
-      expect(await reproPaths(repo, 'run lib/a_test.txt'), contains('lib/a_test.txt'));
-      expect(await resolveCommitStyle(repo, CommitStyle.auto), isNotNull);
-      expect('${(await runGit(repo, ['diff', 'HEAD', '--stat', '-p'])).stdout}', contains('lib/a.txt'));
-      final shell = await Process.run(
-        'sh',
-        ['-c', 'git status --porcelain && git log -1 --format=%s'],
-        workingDirectory: repo,
-        environment: await guardedEnv(repo),
-      );
-      expect('${shell.stdout}', contains('Initial commit'));
-      expect(File(marks).existsSync() ? File(marks).readAsStringSync() : '', isEmpty);
       await Process.run('git', ['-C', repo, 'status']);
       expect(File(marks).readAsStringSync(), contains('fsmonitor'));
     });

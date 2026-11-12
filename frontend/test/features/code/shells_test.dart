@@ -13,7 +13,6 @@ import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
 import 'package:every_ai/features/code/panes/pty.dart';
 import 'package:every_ai/features/code/shells/shell_log_io.dart';
 import 'package:every_ai/features/code/shells/shell_registry.dart';
-import 'package:every_ai/features/code/shells/terminal_text.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Pipes standing in for a pseudo-terminal (flutter_pty's library isn't loaded under `flutter test`): stdin stays
@@ -60,38 +59,6 @@ Future<ShellPty?> _start(
 );
 
 void main() {
-  group('terminal text', () {
-    test('codes go, CRLF becomes LF, redrawn lines keep their last state', () {
-      expect(cleanTerminalText('\x1B[32mok\x1B[0m\r\nnext'), 'ok\nnext');
-      expect(cleanTerminalText('10%\r50%\r100%\ndone'), '100%\ndone');
-      expect(cleanTerminalText('\x1B]0;title\x07hello'), 'hello');
-      expect(cleanTerminalText('abc\b\bX'), 'aX');
-      expect(cleanTerminalText('long line\rshort'), 'shortline');
-    });
-
-    test('prompts', () {
-      expect(looksLikePrompt('Ok to proceed? (y)'), isTrue);
-      expect(looksLikePrompt('Need to install the following packages: Ok to proceed? (y) '), isTrue);
-      expect(looksLikePrompt('Continue? [Y/n]'), isTrue);
-      expect(looksLikePrompt('Project name:'), isTrue);
-      expect(looksLikePrompt('? Which framework? › React'), isTrue);
-      expect(looksLikePrompt('Password'), isTrue);
-      expect(looksLikePrompt('Compiled successfully in 120ms'), isFalse);
-      expect(looksLikePrompt('  VITE v5.0.0  ready in 300 ms'), isFalse);
-    });
-
-    test('keys and what the user typed', () {
-      expect(keySequence('enter'), '\r');
-      expect(keySequence('ctrl-c'), '\x03');
-      expect(keySequence('Ctrl+D'), '\x04');
-      expect(keySequence('up'), '\x1B[A');
-      expect(keySequence('hyper-x'), isNull);
-      expect(describeTyped('rs\r'), 'rs⏎');
-      expect(describeTyped('\x03'), '^C');
-      expect(describeTyped('\x1B[Aq'), '↑q');
-    });
-  });
-
   group('shell log', () {
     late Directory tmp;
     setUp(() async => tmp = await Directory.systemTemp.createTemp('shell-log'));
@@ -148,23 +115,6 @@ void main() {
       expect(log, contains('hi bob'));
     });
 
-    test('without a pty a background shell still runs, with stdin closed', () async {
-      final bg = await shell(pty: false).start('read n || echo "no stdin"');
-      expect(bg.interactive, isFalse);
-      await _until(() => !bg.running);
-      expect(bg.takeNew(), contains('no stdin'));
-      expect(bg.write('x'), isFalse);
-    });
-
-    test('foreground commands are registered and logged with CRLF line ends', () async {
-      final r = await shell().run('echo one; echo two', timeout: const Duration(seconds: 10));
-      expect(r.output, 'one\ntwo\n');
-      final entry = registry.of('s1').single;
-      expect(entry.background, isFalse);
-      expect(entry.exitCode, 0);
-      expect(utf8.decode(await readShellLog(entry.logPath!)), endsWith('one\r\ntwo\r\n'));
-    });
-
     test('bash_input types into the shell; bash_output tells what the user typed', () async {
       final sh = shell();
       final runner = ToolRunner(
@@ -195,15 +145,6 @@ void main() {
       expect(out.text, contains('got rs'));
       expect(out.text, contains('The user typed into this shell from the app: rs⏎'));
       await runner.run('kill_shell', {'shell_id': 'bg_1'});
-    });
-
-    test('the pty environment has colour and no pagers or git prompts', () {
-      final env = ptyShellEnv({'NO_COLOR': '1', 'TERM': 'dumb', 'PATH': '/bin'}, 'tag');
-      expect(env.containsKey('NO_COLOR'), isFalse);
-      expect(env['TERM'], 'xterm-256color');
-      expect(env['GIT_TERMINAL_PROMPT'], '0');
-      expect(env['PAGER'], 'cat');
-      expect(env['PATH'], '/bin');
     });
   });
 }

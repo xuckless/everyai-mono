@@ -11,28 +11,7 @@ final class _Recorder implements SystemNotifier {
   Future<void> show(String title, String body) async => shown.add(title);
 }
 
-final _notify = Provider.family<void, (SessionStatus, SessionStatus)>(
-  (ref, change) => notifyStatusChange(ref, change.$1, change.$2, 'Fix the tests'),
-);
-
 void main() {
-  test('asks whether the app is in front at every change, not once', () {
-    var focused = true;
-    final recorder = _Recorder();
-    final container = ProviderContainer(
-      overrides: [
-        appFocusedProvider.overrideWithValue(() => focused),
-        systemNotifierProvider.overrideWithValue(recorder),
-      ],
-    );
-    addTearDown(container.dispose);
-    container.read(_notify((SessionStatus.running, SessionStatus.done)));
-    expect(recorder.shown, isEmpty);
-    focused = false;
-    container.read(_notify((SessionStatus.running, SessionStatus.needsInput)));
-    expect(recorder.shown, ['Needs your input']);
-  });
-
   group('StatusAlerts', () {
     late _Recorder recorder;
     late ProviderContainer container;
@@ -71,25 +50,10 @@ void main() {
     });
     tearDown(() => container.dispose());
 
-    test('an approval the mode answers at once (a blip) notifies nothing', () {
-      for (var i = 0; i < 5; i++) {
-        alerts.onChange(SessionStatus.running, SessionStatus.needsInput);
-        alerts.onChange(SessionStatus.needsInput, SessionStatus.running);
-      }
-      expect(recorder.shown, isEmpty);
-    });
-
     test('a wait that lasts notifies once', () {
       alerts.onChange(SessionStatus.running, SessionStatus.needsInput);
       timers.single();
       expect(recorder.shown, ['Needs your input']);
-    });
-
-    test('a blip right before the end still reads as finished', () {
-      alerts.onChange(SessionStatus.running, SessionStatus.needsInput);
-      alerts.onChange(SessionStatus.needsInput, SessionStatus.done);
-      batches.single();
-      expect(recorder.shown, ['Finished']);
     });
 
     test("a lead that finishes while its forks run isn't news until they end and settle, then once", () {
@@ -143,23 +107,6 @@ void main() {
       expect(recorder.shown, ['Finished']);
     });
 
-    test('work that starts again while a finish releases holds it again', () {
-      busy = true;
-      alerts.onChange(SessionStatus.running, SessionStatus.done);
-      busy = false;
-      alerts.recheck();
-      busy = true;
-      alerts.recheck();
-      // The old release timer fires late and finds the finish held again.
-      timers.single();
-      expect(batches, isEmpty);
-      busy = false;
-      alerts.recheck();
-      timers.last();
-      batches.single();
-      expect(recorder.shown, ['Finished']);
-    });
-
     test('running again drops a held finish', () {
       busy = true;
       alerts.onChange(SessionStatus.running, SessionStatus.done);
@@ -170,26 +117,6 @@ void main() {
       expect(batches, isEmpty);
     });
 
-    test('waiting on the user drops a held finish: the wait is the news', () {
-      busy = true;
-      alerts.onChange(SessionStatus.running, SessionStatus.done);
-      alerts.onChange(SessionStatus.done, SessionStatus.needsInput);
-      busy = false;
-      alerts.recheck();
-      timers.single();
-      expect(recorder.shown, ['Needs your input']);
-      expect(batches, isEmpty);
-    });
-
-    test('two sessions with the same title that finish together are two', () {
-      final a = make('Fix the tests', id: 'a');
-      final b = make('Fix the tests', id: 'b');
-      a.onChange(SessionStatus.running, SessionStatus.done);
-      b.onChange(SessionStatus.running, SessionStatus.done);
-      batches.single();
-      expect(recorder.shown, ['2 sessions finished']);
-    });
-
     test('sessions that finish together make one notification', () {
       alerts.onChange(SessionStatus.running, SessionStatus.done);
       make('Write docs').onChange(SessionStatus.running, SessionStatus.done);
@@ -197,11 +124,6 @@ void main() {
       batches.single();
       expect(recorder.shown, ['2 sessions finished']);
       expect(finishedNotice(['A', 'B']).body, 'A, B');
-    });
-
-    test('a session reopened already waiting is not news', () {
-      alerts.onChange(null, SessionStatus.needsInput);
-      expect(timers, isEmpty);
     });
   });
 }

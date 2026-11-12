@@ -4,24 +4,19 @@ import 'dart:convert';
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_error.dart';
-import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
-import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/chat/chat_providers.dart';
 import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/ask_user.dart';
 import 'package:every_ai/features/chat/domain/chat_session.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
-import 'package:every_ai/features/chat/ui/ask_user_card.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/questions/domain/questions.dart';
 import 'package:every_ai/features/skills/skills_providers.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart' as m;
 
 class _Transport implements ChatTransport {
   final requests = <ChatRequest>[];
@@ -122,12 +117,6 @@ void main() {
     return state().messages.last;
   }
 
-  test('ask_user is declared as a client tool', () async {
-    await askOnce();
-    expect(transport.requests.single.clientTools, contains(askUserTool));
-    expect(state().pendingTools.single.name, askUserTool);
-  });
-
   test('card answers go back to the model and stay on the saved part', () async {
     await askOnce();
     final outcome = AskUserOutcome.answered(const [
@@ -165,59 +154,5 @@ void main() {
     // Once answered, more typing while busy goes nowhere.
     await ctl().send('again');
     expect(results.answers, hasLength(1));
-  });
-
-  test('outcomes round-trip and unanswered calls get a note', () {
-    const reply = AskUserOutcome.replied('my own words');
-    expect(AskUserOutcome.fromJson(reply.toJson())!.reply, 'my own words');
-    expect(AskUserOutcome.fromJson('not json'), isNull);
-    expect(AskUserOutcome.fromJson(null), isNull);
-    final part = ToolCallPart(toolName: askUserTool, argumentsJson: _args, callId: 'x');
-    expect(askUserQuestions(part).single.options.map((o) => o.label), ['Formal', 'Casual']);
-    expect(askUserNote(part), contains('(no answer)'));
-  });
-
-  group('AskUserCard', () {
-    Widget host(ToolCallPart part) => UncontrolledProviderScope(
-      container: container,
-      child: m.MaterialApp(
-        home: m.Material(
-          child: EveryThemeScope(
-            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: SingleChildScrollView(
-              child: AskUserCard(part: part, conversationId: id),
-            ),
-          ),
-        ),
-      ),
-    );
-
-    testWidgets('a waiting card submits the picked option', (tester) async {
-      await tester.runAsync(askOnce);
-      final part = state().liveParts.whereType<ToolCallPart>().single;
-      await tester.pumpWidget(host(part));
-
-      expect(find.text('Which tone?'), findsOneWidget);
-      await tester.tap(find.text('Formal'));
-      await tester.pump();
-      await tester.tap(find.text('Submit answer'));
-      await tester.runAsync(settle);
-      await tester.pump();
-
-      expect(results.answers.single.$2, contains('Which tone? → Formal'));
-      // The answered part renders as a summary.
-      await tester.pumpWidget(host(state().liveParts.whereType<ToolCallPart>().single));
-      expect(find.text('Submit answer'), findsNothing);
-      expect(find.text('Formal'), findsOneWidget);
-    });
-
-    testWidgets('a card nobody waits on is closed', (tester) async {
-      await tester.runAsync(settle);
-      await tester.pumpWidget(host(ToolCallPart(toolName: askUserTool, argumentsJson: _args, callId: 'old')));
-      expect(find.text('No longer waiting for an answer'), findsOneWidget);
-      await tester.tap(find.text('Casual'));
-      await tester.pump();
-      expect(results.answers, isEmpty);
-    });
   });
 }

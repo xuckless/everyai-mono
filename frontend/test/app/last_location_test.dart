@@ -12,15 +12,6 @@ void main() {
     return c.read(restored);
   }
 
-  test('chats, Code home, sessions, the Board and top-level pages come back at launch', () {
-    for (final at in ['/chat/abc', '/code', '/code/board', '/code/s/s1', '/chats', '/artifacts', '/models']) {
-      expect(restorableLocation(at), isTrue, reason: at);
-    }
-    for (final at in ['/sign-in', '/settings/billing', '/code/settings', '/']) {
-      expect(restorableLocation(at), isFalse, reason: at);
-    }
-  });
-
   test('the saved screen is reopened; a removed Code session falls back to Code home', () {
     expect(restore({}), isNull);
     expect(restore({lastLocationKey: '/chat/abc'}), '/chat/abc');

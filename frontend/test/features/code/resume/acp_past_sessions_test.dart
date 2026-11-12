@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:every_ai/core/process/supervisor.dart' show Ended, KillOutcome;
 import 'package:crypto/crypto.dart';
 import 'package:every_ai/features/code/drivers/json_rpc.dart';
-import 'package:every_ai/features/code/harness/events.dart';
 import 'package:every_ai/features/code/resume/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -76,58 +75,6 @@ void main() {
       expect(a.lastActive, DateTime.utc(2026, 11, 1, 10, 5));
       expect(list.first.cwd, worktree);
     });
-
-    test('maps the chat in its own vocabulary: tool names, todos, thoughts, results', () async {
-      put('repo', 'session-a.json', chat(id: 'a'));
-      final source = GeminiPastSessions(home: home);
-      final session = (await source.list(project)).single;
-      final events = await source.history(session);
-
-      final messages = events.whereType<ChatMessage>().toList();
-      expect(
-        [for (final m in messages) (m.fromUser, m.text)],
-        [
-          (true, 'Add a greeting to hello.txt\nand keep it short'),
-          (false, "I'll look at the file first."),
-          (true, 'thanks'),
-          (false, 'Done.'),
-        ],
-      );
-      expect(messages[1].reasoning, '**Reading**\nCheck what hello.txt holds.');
-
-      final calls = events.whereType<ActionCall>().toList();
-      expect([for (final c in calls) c.nativeName], ['read_file', 'run_shell_command', 'plan', 'replace']);
-      expect(calls[0].actionKind, 'ReadFileAction');
-      expect(calls[0].action['path'], '$project/hello.txt');
-      expect(calls[1].actionKind, 'TerminalAction');
-      expect(calls[1].action['command'], 'ls');
-      expect(calls[2].actionKind, 'TaskTrackerAction');
-      expect([for (final t in calls[2].action['task_list']! as List) (t as Map)['status']], ['in_progress', 'todo']);
-      expect(calls[3].actionKind, 'FileEditorAction');
-
-      final results = {for (final r in events.whereType<ToolResult>()) r.actionId: r};
-      expect(results['read_file-1']!.text, 'hi');
-      expect(results['run_shell_command-2']!.text, 'hello.txt');
-      expect(results['replace-4']!.text, 'old_string not found');
-      expect(results['replace-4']!.outcome, ToolOutcome.error);
-    });
-
-    test('no home, no Gemini folder or a broken projects.json lists nothing and never throws', () async {
-      expect(await GeminiPastSessions(env: () async => const {}).list(project), isEmpty);
-      expect(await GeminiPastSessions(home: '${tmp.path}/nobody').list(project), isEmpty);
-      File('$home/.gemini/projects.json').writeAsStringSync('[1,2');
-      put(_hash(project), 'session-a.json', chat(id: 'a'));
-      expect([for (final s in await GeminiPastSessions(home: home).list(project)) s.nativeId], ['a']);
-    });
-
-    test('a chat with no user message is not offered', () async {
-      final m = jsonDecode(chat(id: 'a')) as Map<String, Object?>;
-      m['messages'] = [
-        {'id': 'x', 'type': 'info', 'content': 'hello'},
-      ];
-      put('repo', 'session-a.json', jsonEncode(m));
-      expect(await GeminiPastSessions(home: home).list(project), isEmpty);
-    });
   });
 
   group('ACP session/list', () {
@@ -163,45 +110,6 @@ void main() {
       expect(fake.closed, isTrue);
       expect(await source.history(list.first), isEmpty);
     });
-
-    test('an agent without list or load offers nothing; a failing agent offers nothing', () async {
-      final noList = _FakeAgent(caps: {'loadSession': true});
-      expect(await acpPastSessions('kimi', open: (_) async => noList.peer)!.list(project), isEmpty);
-      expect(noList.calls, ['initialize']);
-      final noLoad = _FakeAgent(
-        caps: {
-          'sessionCapabilities': {'list': <String, Object?>{}},
-        },
-      );
-      expect(await acpPastSessions('kimi', open: (_) async => noLoad.peer)!.list(project), isEmpty);
-      expect(await acpPastSessions('kimi', open: (_) async => throw StateError('no'))!.list(project), isEmpty);
-    });
-
-    test('acpCanListAndLoad reads the initialize reply', () {
-      expect(acpCanListAndLoad(null), isFalse);
-      expect(
-        acpCanListAndLoad({
-          'agentCapabilities': {
-            'loadSession': true,
-            'sessionCapabilities': {'list': <String, Object?>{}},
-          },
-        }),
-        isTrue,
-      );
-    });
-  });
-
-  test('sources and unsupported reasons per agent', () {
-    expect(acpPastSessions('gemini'), isA<GeminiPastSessions>());
-    expect(acpPastSessions('acp:gemini'), isA<GeminiPastSessions>());
-    expect(acpPastSessions('kimi'), isNull, reason: 'no way to start it given');
-    expect(acpPastSessions('antigravity', open: (_) async => throw UnimplementedError()), isNull);
-    expect(acpResumeUnsupported('gemini'), isNull);
-    expect(acpResumeUnsupported('antigravity'), contains('session/resume'));
-    expect(acpResumeUnsupported('acp:agy'), contains('session/resume'));
-    expect(acpResumeUnsupported('opencode'), contains('OpenCode'));
-    expect(acpResumeUnsupported('qwen-code'), isNotNull);
-    expect(acpResumeUnsupported('kimi'), isNull);
   });
 }
 

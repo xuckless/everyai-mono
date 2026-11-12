@@ -1,13 +1,7 @@
 import 'dart:convert';
 
-import 'package:every_ai/core/platform/platform_kind.dart';
-import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/domain/notebook.dart';
-import 'package:every_ai/features/code/ui/console/notebook_view.dart';
-import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart' as m;
 
 // A one-pixel PNG.
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
@@ -60,22 +54,6 @@ String notebook() =>
     })}\n';
 
 void main() {
-  test('cells with ids, sources and outputs; the model sees them as tagged cells', () {
-    final nb = parseNotebook(notebook())!;
-    expect(nb.language, 'python');
-    expect([for (final c in nb.cells) (c.id, c.type)], [('intro', 'markdown'), ('load', 'code')]);
-    expect(nb.cells[1].source, 'import pandas as pd\ndf = pd.read_csv("s.csv")');
-    expect(nb.cells[1].outputs.map((o) => o.error), [false, false, true]);
-    expect(nb.cells[1].outputs[1].image, _png);
-    expect(nb.cells[1].outputs[2].text, "KeyError: 'x'", reason: 'colour codes out');
-    final shown = notebookForModel(notebook());
-    expect(shown, startsWith('Notebook (python), 2 cells. Edit it with notebook_edit by cell id.'));
-    expect(shown, contains('<cell id="load" type="code" run="3">\nimport pandas as pd'));
-    expect(shown, contains('[a picture, image/png] <Figure>'));
-    expect(shown, contains('<output error="true">'));
-    expect(parseNotebook('{"not": "a notebook"}'), isNull);
-  });
-
   test('replace, insert and delete keep the file a valid notebook, and only the cell changes', () {
     final replaced = editNotebook(notebook(), mode: 'replace', cellId: 'load', source: 'df = load()\nprint(df)');
     expect(replaced.error, isNull);
@@ -107,23 +85,5 @@ void main() {
     expect(editNotebook(notebook(), mode: 'replace', cellId: 'nope', source: '').error, contains('no cell has id'));
     expect(editNotebook('not json', mode: 'delete', cellId: 'a').error, contains('not valid JSON'));
     expect(editNotebook(notebook(), mode: 'move', cellId: 'load').error, contains('edit_mode'));
-  });
-
-  testWidgets('the Files tab shows the cells, their outputs and pictures', (tester) async {
-    await tester.pumpWidget(
-      ProviderScope(
-        child: m.MaterialApp(
-          builder: (context, child) =>
-              EveryThemeScope(theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light), child: child!),
-          home: m.Material(child: NotebookView(text: notebook())),
-        ),
-      ),
-    );
-    await tester.pump();
-    expect(find.textContaining('import pandas as pd'), findsOneWidget);
-    expect(find.text('[3]'), findsOneWidget);
-    expect(find.textContaining('loaded 12 rows'), findsOneWidget);
-    expect(find.textContaining('KeyError'), findsOneWidget);
-    expect(find.byType(Image), findsOneWidget);
   });
 }

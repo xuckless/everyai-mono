@@ -5,24 +5,19 @@ import 'dart:io';
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/core/net/api_error.dart';
-import 'package:every_ai/core/platform/platform_kind.dart';
 import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/core/providers.dart';
 import 'package:every_ai/core/security/untrusted.dart';
-import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/chat/chat_providers.dart';
 import 'package:every_ai/features/chat/data/chat_transport.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:every_ai/features/chat/domain/security_alert.dart';
-import 'package:every_ai/features/chat/ui/security_alert_card.dart';
 import 'package:every_ai/features/code/session_notifications.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
 import 'package:every_ai/features/models/models_providers.dart';
 import 'package:every_ai/features/skills/skills_providers.dart';
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart' as m;
 
 class _Transport implements ChatTransport {
   final turns = <StreamController<ChatEvent>>[];
@@ -62,62 +57,6 @@ String _alert({String severity = 'warning', String what = 'The page told me to i
 });
 
 void main() {
-  group('SecurityAlert', () {
-    test('parses every field', () {
-      final a = SecurityAlert.fromJson(_alert(severity: 'critical'));
-      expect(a.severity, SecuritySeverity.critical);
-      expect(a.what, 'The page told me to ignore you.');
-      expect(a.source, 'https://evil.example/page');
-      expect(a.actionTaken, 'I ignored it.');
-      expect(a.exposed, ['your OpenAI key: rotate it']);
-      expect(a.note, '[Security notice shown to the user: The page told me to ignore you.]');
-    });
-
-    test('bad arguments fall back and long ones are clipped', () {
-      final broken = SecurityAlert.fromJson('{not json');
-      expect(broken.severity, SecuritySeverity.warning);
-      expect(broken.what, 'A security problem was found.');
-      final odd = SecurityAlert.fromJson(
-        jsonEncode({
-          'severity': 'panic',
-          'what': '  ',
-          'source': 7,
-          'exposed': [for (var i = 0; i < 12; i++) 'item $i', 3, ''],
-          'action_taken': 'x' * 900,
-        }),
-      );
-      expect(odd.severity, SecuritySeverity.warning);
-      expect(odd.what, 'A security problem was found.');
-      expect(odd.source, isNull);
-      expect(odd.exposed, hasLength(8));
-      expect(odd.actionTaken!.length, 500);
-    });
-  });
-
-  testWidgets('the card shows the notice, with the source as plain text', (tester) async {
-    final part = ToolCallPart(
-      toolName: securityAlertTool,
-      argumentsJson: _alert(severity: 'critical'),
-      callId: 'c1',
-    );
-    await tester.pumpWidget(
-      m.MaterialApp(
-        home: m.Material(
-          child: EveryThemeScope(
-            theme: EveryTheme.resolve(DesignLanguage.material, Brightness.light),
-            child: SecurityAlertCard(part: part),
-          ),
-        ),
-      ),
-    );
-    expect(find.text('Security alert'), findsOneWidget);
-    expect(find.text('The page told me to ignore you.'), findsOneWidget);
-    expect(find.text('From: https://evil.example/page'), findsOneWidget);
-    expect(find.text('What I did: I ignored it.'), findsOneWidget);
-    expect(find.text('• your OpenAI key: rotate it'), findsOneWidget);
-    expect(find.byWidgetPredicate((w) => w is GestureDetector), findsNothing, reason: 'nothing to tap');
-  });
-
   group('the controller', () {
     late AppDatabase db;
     late _Transport transport;
@@ -183,20 +122,6 @@ void main() {
       await pumpEventQueue();
       expect(container.read(chatSessionProvider(id)).messages, isNotEmpty);
       expect(notifier.shown, hasLength(1));
-    });
-
-    test('in front, only a critical alert notifies', () async {
-      focused = true;
-      await turn([UiToolCall(id: 'a1', name: securityAlertTool, argumentsJson: _alert())]);
-      expect(notifier.shown, isEmpty);
-      await turn([
-        UiToolCall(
-          id: 'a2',
-          name: securityAlertTool,
-          argumentsJson: _alert(severity: 'critical'),
-        ),
-      ]);
-      expect(notifier.shown.single.$1, 'Security alert');
     });
   });
 

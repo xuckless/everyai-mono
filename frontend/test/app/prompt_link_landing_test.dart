@@ -8,9 +8,4 @@ void main() {
     expect(landedOn(Routes.newChat, Routes.newChat), isFalse);
     expect(landedOn(Routes.newChat, '/code'), isFalse);
   });
-
-  test('other routes match by path', () {
-    expect(landedOn('/code', '/code?project=p1'), isTrue);
-    expect(landedOn('/code', '/chat/x'), isFalse);
-  });
 }

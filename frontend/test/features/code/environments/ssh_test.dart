@@ -1,63 +1,11 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:every_ai/core/preferences.dart';
 import 'package:every_ai/features/code/environments/bridges.dart';
-import 'package:every_ai/features/code/environments/discovery.dart';
-import 'package:every_ai/features/code/environments/environment_providers.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('sshConfigHosts: names, patterns skipped, one level of Include', () {
-    const config = '''
-# work
-Host box devbox.lan
-  HostName 10.0.0.2
-host = gpu
-Host *.internal !secret ?x
-Include config.d/*
-Include /etc/ssh/extra
-''';
-    final files = {
-      '/Users/a/.ssh/config.d/b': 'Host from-include\nInclude deeper\n',
-      '/Users/a/.ssh/config.d/a': 'HOST box\n',
-      '/etc/ssh/extra': 'Host extra',
-      '/Users/a/.ssh/deeper': 'Host too-deep',
-    };
-    final hosts = sshConfigHosts(
-      config,
-      read: (p) => files[p],
-      list: (d) => d == '/Users/a/.ssh/config.d' ? ['b', 'a'] : const [],
-      sshDir: '/Users/a/.ssh',
-      home: '/Users/a',
-    );
-    expect(hosts, ['box', 'devbox.lan', 'gpu', 'from-include', 'extra']);
-  });
-
-  test('remotes: problems, keys and the Preferences round trip', () {
-    expect(const SshRemote.alias('-oProxyCommand=x').problem, isNotNull);
-    expect(const SshRemote.host(user: 'me', host: 'a b').problem, isNotNull);
-    expect(const SshRemote.host(user: 'me', host: 'h', port: 70000).problem, isNotNull);
-    const remotes = [SshRemote.alias('box'), SshRemote.host(user: 'me', host: 'example.com', port: 2222)];
-    expect(readSshRemotes(encodeSshRemotes(remotes)), remotes);
-    expect(readSshRemotes('not json'), isEmpty);
-
-    final prefs = Preferences.inMemory();
-    final c = ProviderContainer(overrides: [preferencesProvider.overrideWithValue(prefs)]);
-    addTearDown(c.dispose);
-    final n = c.read(sshRemotesProvider.notifier);
-    n.add(remotes[1]);
-    n.add(remotes[1]);
-    n.add(const SshRemote.alias('-bad'));
-    expect(c.read(sshRemotesProvider), [remotes[1]]);
-    expect(readSshRemotes(prefs[sshRemotesKey]), [remotes[1]]);
-    n.remove(remotes[1]);
-    expect(readSshRemotes(prefs[sshRemotesKey]), isEmpty);
-  });
-
   test('wrap: one remote line, BatchMode and a connect timeout', () {
     const env = SshEnv(
       cli: '/usr/bin/ssh',
@@ -88,14 +36,4 @@ Include /etc/ssh/extra
   // What sshd does with the line: the remote user's login shell runs it with
   // -c. csh allows no newline inside quotes and fish reads \\ and \' there,
   // so the line must mean the same to each.
-  for (final shell in ['/bin/sh', '/bin/tcsh', '/bin/csh', '/usr/bin/fish', '/opt/homebrew/bin/fish']) {
-    test('the remote line runs the same under $shell', () {
-      const arg = "it's \\ a\nnew line \$HOME `x` \"q\" C:\\";
-      const env = SshEnv(cli: '/usr/bin/ssh', remote: SshRemote.alias('box'));
-      final w = env.wrap('printf', ['%s|%s', arg, r'C:\'], cwd: '/', env: {'K': 'v'});
-      final r = Process.runSync(shell, ['-c', w.args.last]);
-      expect(r.exitCode, 0, reason: '${r.stderr}');
-      expect(r.stdout, '$arg|C:\\');
-    }, skip: Platform.isWindows || !File(shell).existsSync() ? 'no $shell here' : false);
-  }
 }

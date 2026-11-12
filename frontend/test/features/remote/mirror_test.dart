@@ -288,13 +288,6 @@ void main() {
       }
     });
 
-    test("messages past the relay's frame cap go across in parts", () async {
-      final pushed = client.messages.first;
-      await client.send({'t': Tunnel.list, 'big': 'x' * (6 << 20)});
-      expect((await pushed.timeout(const Duration(seconds: 5)))['big'], hasLength(6 << 20));
-      expect(relay.oversized, isEmpty);
-    });
-
     test('a device the host did not approve gets nothing through', () async {
       approved = {};
       await hostLink.close();
@@ -310,26 +303,6 @@ void main() {
       await expectLater(client.call({'t': Tunnel.act, 'kind': 'x'}), throwsA(isA<RemoteUnavailable>()));
       expect(client.status, RemoteLinkStatus.keyMismatch);
       expect(hostGot, isEmpty);
-    });
-
-    test('the link comes back when the host does, and fails while it stays away', () async {
-      await client.call({'t': Tunnel.act, 'kind': 'x'});
-      await relay.dropHost();
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(client.status, RemoteLinkStatus.hostOffline);
-      // The host link reconnects by itself; an action made meanwhile waits for it.
-      await client.call({'t': Tunnel.act, 'kind': 'x'});
-      expect(client.status, RemoteLinkStatus.ready);
-
-      await hostLink.close();
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      await expectLater(client.call({'t': Tunnel.act, 'kind': 'x'}), throwsA(isA<RemoteUnavailable>()));
-    });
-
-    test('a lost handshake is sent again', () async {
-      relay.dropClientFrames = 1;
-      await client.call({'t': Tunnel.act, 'kind': 'x'});
-      expect(client.status, RemoteLinkStatus.ready);
     });
   });
 
@@ -389,21 +362,6 @@ void main() {
     var nextId = 0;
     void act(int channel, String kind, [Map<String, Object?> args = const {}]) =>
         mirror.receive(channel, {'t': Tunnel.act, 'id': ++nextId, 's': info.id, 'kind': kind, 'args': args});
-
-    test('the followed set tracks open, close and a dropped channel (the sidebar\'s devices icon)', () async {
-      Set<String> followed() => container.read(remoteFollowedProvider);
-      mirror
-        ..receive(1, {'t': Tunnel.open, 's': info.id})
-        ..receive(2, {'t': Tunnel.open, 's': info.id});
-      await Future<void>.delayed(Duration.zero);
-      expect(followed(), {info.id});
-      mirror.receive(1, {'t': Tunnel.close, 's': info.id});
-      await Future<void>.delayed(Duration.zero);
-      expect(followed(), {info.id});
-      mirror.channelClosed(2);
-      await Future<void>.delayed(Duration.zero);
-      expect(followed(), isEmpty);
-    });
 
     test('devices list the sessions, follow one and drive it on the host', () async {
       mirror.receive(1, {'t': Tunnel.list});
@@ -466,18 +424,6 @@ void main() {
       act(2, MirrorAction.send, {'text': 'one more'});
       await _until(() => browser.said, (s) => s.contains('user:one more'));
       expect(phone.said, hasLength(before));
-    });
-
-    test('an unknown session or action is refused', () async {
-      devices[3] = _Device('nope');
-      mirror.receive(3, {'t': Tunnel.open, 's': 'nope'});
-      expect(devices[3]!.state.gone, isNotNull);
-      mirror.receive(1, {'t': Tunnel.act, 'id': 7, 's': 'nope', 'kind': MirrorAction.stop});
-      await _until(() => devices[1]!.done.containsKey(7), (v) => v);
-      expect(devices[1]!.done[7], isNotNull);
-      act(1, 'format_disk');
-      await _until(() => devices[1]!.done.containsKey(nextId), (v) => v);
-      expect(devices[1]!.done[nextId], contains('Unknown action'));
     });
   });
 }

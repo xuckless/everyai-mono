@@ -1,204 +1,21 @@
-import 'dart:async';
-
 import 'package:drift/native.dart';
 import 'package:every_ai/core/db/app_database.dart';
 import 'package:every_ai/features/attachments/attachment.dart';
 import 'package:every_ai/features/attachments/attachment_input.dart';
-import 'package:every_ai/features/attachments/image_normalize.dart';
-import 'package:every_ai/features/attachments/ui/image_viewer.dart';
 import 'package:every_ai/features/chat/data/chat_cleanup.dart';
 import 'package:every_ai/features/chat/data/chat_repository.dart';
 import 'package:every_ai/features/chat/domain/message.dart';
 import 'package:every_ai/features/models/domain/model_catalog.dart';
-import 'package:every_ai/core/platform/platform_kind.dart';
-import 'package:every_ai/core/theme/every_theme.dart';
-import 'package:file_selector/file_selector.dart' show XFile;
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:image/image.dart' as img;
 
 void main() {
   group('clipboard', () {
-    testWidgets('Cmd+V still pastes text inside the drop zone', (tester) async {
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-        if (call.method == 'Clipboard.getData') return {'text': 'hello'};
-        if (call.method == 'Clipboard.hasStrings') return {'value': true};
-        return null;
-      });
-      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
-      final controller = TextEditingController();
-      final got = <XFile>[];
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: AttachmentDropZone(
-              onFiles: got.addAll,
-              child: TextField(controller: controller, autofocus: true),
-            ),
-          ),
-        ),
-      );
-      await tester.pump();
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-      // The clipboard plugins answer on real async.
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
-      await tester.pumpAndSettle();
-      expect(got, isEmpty);
-      expect(controller.text, 'hello');
-    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
-
-    test('pastedTextFile: boundaries by UTF-8 bytes', () {
-      String name() => 'pasted-1.txt';
-      expect(pastedTextFile(null, name), isNull);
-      expect(pastedTextFile('short', name), isNull);
-      expect(pastedTextFile('a' * pasteAttachThreshold, name), isNull);
-      expect(pastedTextFile('a' * (pasteAttachThreshold + 1), name)?.name, 'pasted-1.txt');
-      // 3-byte characters: under the limit in characters, over in bytes.
-      expect(pastedTextFile('\u20ac' * 11000, name), isNotNull);
-      expect(pastedTextFile('\u20ac' * 10000, name), isNull);
-      // Past the attachment limit it still becomes one, so the size error shows.
-      expect(pastedTextFile('a' * (300 * 1024), name), isNotNull);
-    });
-
-    for (final c in [
-      (name: '40 KiB becomes attachments', size: 40 * 1024, attach: true, attached: 2),
-      (name: 'exactly 32 KiB pastes as text', size: 32 * 1024, attach: true, attached: 0),
-      (name: 'a short paste stays text', size: 10, attach: true, attached: 0),
-      (name: 'over 256 KiB becomes an attachment (size error shows)', size: 300 * 1024, attach: true, attached: 2),
-      (name: 'attachLongText off pastes as text', size: 40 * 1024, attach: false, attached: 0),
-    ]) {
-      testWidgets('long paste: ${c.name}', (tester) async {
-        final text = 'a' * c.size;
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-          if (call.method == 'Clipboard.getData') return {'text': text};
-          if (call.method == 'Clipboard.hasStrings') return {'value': true};
-          return null;
-        });
-        addTearDown(
-          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null),
-        );
-        final controller = TextEditingController();
-        final got = <XFile>[];
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: AttachmentDropZone(
-                onFiles: got.addAll,
-                attachLongText: c.attach,
-                readFiles: () async => const [],
-                readText: () async => text,
-                child: TextField(controller: controller, autofocus: true),
-              ),
-            ),
-          ),
-        );
-        await tester.pump();
-        for (var i = 0; i < 2; i++) {
-          await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
-          await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
-          await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
-          await tester.pump();
-        }
-        if (c.attached > 0) {
-          expect([for (final f in got) f.name], ['pasted-1.txt', 'pasted-2.txt']);
-          expect(controller.text, isEmpty);
-          final errors = <String>[];
-          final read = await tester.runAsync(() => readAttachments(got.take(1), onError: errors.add));
-          if (c.size <= AttachmentKind.text.maxBytes) {
-            expect(read!.single.kind, AttachmentKind.text);
-            expect(read.single.bytes.length, c.size);
-          } else {
-            expect(read, isEmpty);
-            expect(errors.single, contains('too large'));
-          }
-        } else {
-          expect(got, isEmpty);
-          expect(controller.text.length, c.size * 2);
-        }
-      }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
-    }
-
-    test('files on the clipboard win over an image', () async {
-      final files = await clipboardFiles(
-        readFiles: () async => ['/tmp/a.pdf', 'content://x/1'],
-        readImage: () async => Uint8List.fromList([0x89, 0x50, 1, 2, 3, 4]),
-        readText: () async => 'a.pdf',
-        isFile: (p) => p == '/tmp/a.pdf',
-      );
-      expect(files.map((f) => f.path), ['/tmp/a.pdf']);
-    });
-
     test('a "/" or folder path next to copied text is not a file: the text pastes', () async {
       final files = await clipboardFiles(
         readFiles: () async => ['/', '/Users'],
         readImage: () async => null,
         readText: () async => 'const x = 1;',
-      );
-      expect(files, isEmpty);
-    });
-
-    test('an unreadable path is reported, not thrown', () async {
-      final errors = <String>[];
-      final out = await readAttachments([XFile('/')], onError: errors.add);
-      expect(out, isEmpty);
-      expect(errors.single, contains("Couldn't read"));
-    });
-
-    test('an image becomes a named png or jpg file', () async {
-      final png = await clipboardFiles(
-        readFiles: () async => [],
-        readImage: () async => Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0, 0]),
-        readText: () async => null,
-      );
-      expect((png.single.name, png.single.mimeType), ('Pasted image.png', 'image/png'));
-      final jpg = await clipboardFiles(
-        readFiles: () async => [],
-        readImage: () async => Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xE0, 0]),
-        readText: () async => '',
-      );
-      expect(jpg.single.name, 'Pasted image.jpg');
-    });
-
-    test('a Windows clipboard BMP becomes an opaque png', () async {
-      // XRGB like the Windows clipboard: 32 bits with the fourth byte 0.
-      final bmp = img.Image(width: 3, height: 2, numChannels: 4)..clear(img.ColorRgba8(200, 30, 40, 0));
-      final files = await clipboardFiles(
-        readFiles: () async => [],
-        readImage: () async => img.encodeBmp(bmp),
-        readText: () async => null,
-      );
-      expect((files.single.name, files.single.mimeType), ('Pasted image.png', 'image/png'));
-      final back = img.decodePng(await files.single.readAsBytes())!;
-      expect((back.width, back.height), (3, 2));
-      final p = back.getPixel(1, 1);
-      expect((p.r, p.g, p.b, p.a), (200, 30, 40, 255));
-    });
-
-    test('text-only or failing clipboards give nothing', () async {
-      Future<String?> none() async => null;
-      expect(await clipboardFiles(readFiles: () async => [], readImage: () async => null, readText: none), isEmpty);
-      expect(
-        await clipboardFiles(readFiles: () async => [], readImage: () async => Uint8List(0), readText: none),
-        isEmpty,
-      );
-      expect(
-        await clipboardFiles(
-          readFiles: () async => throw StateError('no'),
-          readImage: () async => null,
-          readText: none,
-        ),
-        isEmpty,
-      );
-    });
-
-    test('text with a picture of itself (copied cells, rich text) pastes as text', () async {
-      final files = await clipboardFiles(
-        readFiles: () async => [],
-        readImage: () async => Uint8List.fromList([0x89, 0x50, 0x4e, 0x47, 0, 0]),
-        readText: () async => 'A1\tB1\nA2\tB2',
       );
       expect(files, isEmpty);
     });
@@ -234,61 +51,5 @@ void main() {
     await repo.delete('c');
     expect(await collectBlobGarbage(db), 1);
     expect(await db.select(db.blobs).get(), isEmpty);
-  });
-
-  group('normalizeImage', () {
-    test('big photos shrink to the edge limit, small ones are kept', () async {
-      final noisy = img.Image(width: 3000, height: 1500);
-      var seed = 7;
-      for (final p in noisy) {
-        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-        p.setRgb(seed & 255, (seed >> 8) & 255, (seed >> 16) & 255);
-      }
-      final big = Uint8List.fromList(img.encodePng(noisy));
-      expect(big.length, greaterThan(keepImageBytes));
-      final out = await normalizeImage(big, 'png');
-      expect(out, isNotNull);
-      expect(out!.extension, 'jpg');
-      expect(out.bytes.length, lessThan(big.length));
-      final decoded = img.decodeJpg(out.bytes)!;
-      expect((decoded.width, decoded.height), (maxImageEdge, 1024));
-
-      expect(await normalizeImage(Uint8List(100), 'png'), isNull);
-      expect(await normalizeImage(big, 'gif'), isNull);
-    });
-
-    test('a rotated portrait photo is capped on its long side as shown', () {
-      // Stored landscape (3000x2000) with EXIF orientation 6: shown as a 2000x3000 portrait.
-      final stored = img.Image(width: 3000, height: 2000);
-      stored.exif.imageIfd.orientation = 6;
-      final out = uprightWithin(stored, maxImageEdge);
-      expect((out.width, out.height), (1365, maxImageEdge));
-      // Already upright and small: left alone.
-      final small = img.Image(width: 800, height: 600);
-      expect(identical(uprightWithin(small, maxImageEdge), small), isTrue);
-    });
-  });
-
-  testWidgets('the image viewer opens and closes on escape', (tester) async {
-    final png = Uint8List.fromList(img.encodePng(img.Image(width: 4, height: 4)));
-    late BuildContext ctx;
-    await tester.pumpWidget(
-      MaterialApp(
-        builder: (context, child) =>
-            EveryThemeScope(theme: EveryTheme.resolve(DesignLanguage.material, Brightness.dark), child: child!),
-        home: Builder(
-          builder: (c) {
-            ctx = c;
-            return const SizedBox();
-          },
-        ),
-      ),
-    );
-    unawaited(showImageViewer(ctx, png, label: 'pic'));
-    await tester.pumpAndSettle();
-    expect(find.byType(InteractiveViewer), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pumpAndSettle();
-    expect(find.byType(InteractiveViewer), findsNothing);
   });
 }

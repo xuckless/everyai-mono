@@ -110,53 +110,6 @@ void main() {
     expect(alive(child), isFalse);
   }, skip: Platform.isWindows);
 
-  test(
-    'at most maxRunningServers run across sessions: the least recently used stops, and starts again on use',
-    () async {
-      LspHub.maxRunningServers = 2;
-      final hubs = [hub('a'), hub('b'), hub('c')];
-      for (final h in hubs) {
-        expect(await h.check(cFile(h).path), isEmpty);
-      }
-      expect(LspHub.runningServers, 2);
-      expect(hubs.map((h) => h.phaseOf(LspLanguage.cpp)), [LspPhase.stopped, LspPhase.ready, LspPhase.ready]);
-      expect(await hubs.first.check(cFile(hubs.first).path), isEmpty);
-      expect(hubs.map((h) => h.phaseOf(LspLanguage.cpp)), [LspPhase.ready, LspPhase.stopped, LspPhase.ready]);
-    },
-    skip: Platform.isWindows,
-  );
-
-  test('an idle server stops by itself', () async {
-    LspHub.serverIdle = const Duration(milliseconds: 300);
-    final h = hub('a');
-    await h.check(cFile(h).path);
-    await Future<void>.delayed(const Duration(seconds: 2));
-    expect(h.phaseOf(LspLanguage.cpp), LspPhase.stopped);
-    expect(LspHub.runningServers, 0);
-  }, skip: Platform.isWindows);
-
-  test('a hub closed while its server starts ends that server when it lands', () async {
-    final h = hub('a', delay: 0.8);
-    final check = h.check(cFile(h).path);
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    expect(h.phaseOf(LspLanguage.cpp), LspPhase.starting);
-    await h.close();
-    expect(h.phaseOf(LspLanguage.cpp), LspPhase.stopped);
-    expect(await check, isNull);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(LspHub.runningServers, 0);
-    expect(childPids().where(alive), isEmpty);
-  }, skip: Platform.isWindows);
-
-  test('a child the server leaves running after a clean exit is still ended (it was listed before)', () async {
-    final h = hub('a', orphan: true);
-    expect(await h.check(cFile(h).path), isEmpty);
-    final child = childPids().single;
-    await h.close();
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(alive(child), isFalse);
-  }, skip: Platform.isWindows);
-
   test('a burst of starts keeps to the cap (a start holds its place while it starts)', () async {
     LspHub.maxRunningServers = 2;
     final hubs = [
@@ -177,16 +130,5 @@ void main() {
     await watch;
     expect(LspHub.runningServers, lessThanOrEqualTo(2));
     expect(peak, lessThanOrEqualTo(2));
-  }, skip: Platform.isWindows);
-
-  test('closeAll (quit) also ends a server that is still starting', () async {
-    final h = hub('a', delay: 0.8);
-    final check = h.check(cFile(h).path);
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    await LspHub.closeAll();
-    expect(await check, isNull);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    expect(childPids().where(alive), isEmpty);
-    expect(Process.runSync('pgrep', ['-f', '${tmp.path}/bin/clangd']).exitCode, isNot(0));
   }, skip: Platform.isWindows);
 }

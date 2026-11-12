@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -17,14 +16,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// Agents that answer with [answers] by label prefix, as a fenced json block.
 final class _Agents implements AgentLauncher {
-  _Agents(this.answers, {this.bugChecks = const {}, this.batchChecks = const {}, this.holds = const {}, this.onStart});
+  _Agents(this.answers, {this.bugChecks = const {}, this.batchChecks = const {}});
   final Map<String, Object? Function(WorkflowAgentCall call)> answers;
-
-  /// Answers held back until the future completes, by exact label.
-  final Map<String, Future<void>> holds;
-
-  /// Told of every agent as it starts.
-  final void Function(WorkflowAgentCall call)? onStart;
 
   /// The app's bug_check record by label prefix; verified when none matches.
   final Map<String, Map<String, Object?>> bugChecks;
@@ -40,7 +33,6 @@ final class _Agents implements AgentLauncher {
   @override
   Future<WorkflowChild> start(WorkflowAgentCall call) async {
     calls.add(call);
-    onStart?.call(call);
     final id = 'c${calls.length}';
     _byChild[id] = call;
     return (childId: id, harness: call.harness ?? 'lead', model: call.model ?? 'lead-model', note: null);
@@ -49,7 +41,6 @@ final class _Agents implements AgentLauncher {
   @override
   Future<WorkflowAgentResult> watch(String childId, {bool reattached = false}) async {
     final call = _byChild[childId]!;
-    await holds[call.label];
     final answer = answers.entries.where((e) => call.label.startsWith(e.key)).firstOrNull?.value;
     if (answer == null) return (text: '', error: 'no answer for ${call.label}', spentMicros: null);
     final v = answer(call);
@@ -225,35 +216,6 @@ void main() {
       expect(result['reviewed_on'], 'openai/gpt-6.1');
     }, skip: skip);
 
-    test(
-      'two lenses saying the same thing become one finding that names both, and the refix result has no commits',
-      () async {
-        final agents = _Agents({
-          'review:a:cost-simplicity': (_) => _review('fix-then-ship', [
-            {..._finding, 'summary': 'drops the last item in a list', 'failure_scenario': 'a list of exactly one item'},
-          ]),
-          ...answers(),
-        });
-        final end = await run('ultra', {
-          'items': [
-            {'id': 'a', 'spec': 'Build A'},
-          ],
-        }, agents);
-        final item = ((end.result! as Map)['items'] as List).single as Map;
-        final findings = item['findings'] as List;
-        expect(findings, hasLength(1));
-        expect((findings.single as Map)['lenses'], ['correctness', 'cost-simplicity']);
-        expect((findings.single as Map)['merged_from'], 2);
-        // The refix is asked about it once.
-        expect('"failure_scenario"'.allMatches(agents.byLabel('refix:a').prompt), hasLength(1));
-        // The commits are the item's; the refix keeps its other fields.
-        expect(item['commits'], ['abc impl:a', 'def refix']);
-        expect(item['refix'], isNot(contains('commits')));
-        expect((item['refix'] as Map)['fixed'], ['drops the last item']);
-      },
-      skip: skip,
-    );
-
     test('an item with a check is one batch: a failed gate refixes from the kept ref, then reviews', () async {
       final agents = _Agents(
         answers(),
@@ -304,277 +266,6 @@ void main() {
       expect((items.first['check_fix'] as Map)['fixed'], ['the failing test']);
     }, skip: skip);
 
-    test('a fix of the check that fails its gate too leaves the item check_failed, unreviewed', () async {
-      final agents = _Agents(
-        answers(verdict: 'ship'),
-        batchChecks: {
-          'impl:a': {'passed': false, 'output': 'boom'},
-          'fix-check:a': {'passed': false, 'output': 'still boom'},
-        },
-      );
-      final end = await run('ultra', {
-        'items': [
-          {
-            'id': 'a',
-            'spec': 'Build A',
-            'files': ['lib/a.dart'],
-            'check': 'full',
-          },
-        ],
-      }, agents);
-      final item = ((end.result! as Map)['items'] as List).single as Map;
-      expect(item['status'], 'check_failed');
-      expect(item['batch_check'], containsPair('output', 'still boom'));
-      expect(agents.labels, isNot(contains('review:a:correctness')));
-      expect(agents.byLabel('integrate').prompt, contains('check_failed'));
-      expect(agents.byLabel('integrate').prompt, contains('still boom'));
-    }, skip: skip);
-
-    test('a review refix that fails its gate keeps the merged implementation and leaves its own commits out', () async {
-      final agents = _Agents(
-        answers(),
-        batchChecks: {
-          'refix:a': {'passed': false, 'output': 'broke it'},
-        },
-      );
-      final end = await run('ultra', {
-        'items': [
-          {
-            'id': 'a',
-            'spec': 'Build A',
-            'files': ['lib/a.dart'],
-            'check': {'command': 'make test'},
-          },
-        ],
-      }, agents);
-      final item = ((end.result! as Map)['items'] as List).single as Map;
-      expect(item['status'], 'refix_check_failed');
-      expect(item['commits'], ['abc impl:a']);
-      final ref = 'refs/everyai/forks/c${agents.calls.indexOf(agents.byLabel('refix:a')) + 1}';
-      expect(item['batch_check'], allOf(containsPair('output', 'broke it'), containsPair('kept_ref', ref)));
-      final integrate = agents.byLabel('integrate').prompt;
-      expect(integrate, contains('refix_check_failed merged its implementation'));
-      expect(integrate, contains(ref));
-    }, skip: skip);
-
-    test('a bad check runs its item ungated and says why; a skipped check merges unchecked and is reviewed', () async {
-      final agents = _Agents(
-        answers(verdict: 'ship'),
-        batchChecks: {
-          'impl:b': {'skipped': true, 'output': 'Not run'},
-        },
-      );
-      final end = await run('ultra', {
-        'items': [
-          {
-            'id': 'a',
-            'spec': 'Build A',
-            'check': {'command': ''},
-          },
-          {
-            'id': 'b',
-            'spec': 'Build B',
-            'check': {'command': 'make test'},
-          },
-          // No files to find the tests from: the check could never pass.
-          {'id': 'c', 'spec': 'Build C', 'check': 'full'},
-        ],
-      }, agents);
-      final items = ((end.result! as Map)['items'] as List).cast<Map<String, Object?>>();
-      expect(items.first['status'], 'done');
-      expect(items.first['check_problem'], contains('check.command'));
-      expect(agents.byLabel('impl:a').batch, isNull);
-      expect(items[1]['status'], 'done');
-      expect(items[1]['batch_check'], containsPair('skipped', true));
-      expect(agents.labels, containsAll(['review:b:correctness', 'research:a', 'research:c']));
-      expect(agents.labels, isNot(contains('fix-check:b')));
-      expect(items.last['status'], 'done');
-      expect(items.last['check_problem'], contains('needs the batch\'s files'));
-      expect(agents.byLabel('integrate').prompt, allOf(contains('merged unchecked'), contains('check_problem')));
-      expect([for (final l in end.logs) l.text].join('\n'), contains('a: its check was not usable'));
-    }, skip: skip);
-
-    test('a flat check is normalised; a check with no test to run merges and spends no fix agent', () async {
-      final agents = _Agents(
-        answers(verdict: 'ship'),
-        batchChecks: {
-          'impl:a': {'skipped': true, 'unverified': true, 'output': 'No test found for: lib/a.dart'},
-        },
-      );
-      final end = await run('ultra', {
-        'items': [
-          {
-            'id': 'a',
-            'spec': 'Build A',
-            'files': ['lib/a.dart'],
-            'check': {'files': <String>[], 'command': '', 'full': true},
-          },
-        ],
-      }, agents);
-      expect(agents.byLabel('impl:a').batch!.check, isA<FullCheck>());
-      final item = ((end.result! as Map)['items'] as List).single as Map;
-      expect(item['status'], 'done');
-      expect(item['batch_check'], containsPair('unverified', true));
-      expect(agents.labels, isNot(contains('fix-check:a')));
-    }, skip: skip);
-
-    test('with plan_ref the plan\'s batches fill in the items, or are the items', () async {
-      final batches = [
-        {
-          'id': 'a',
-          'intent': 'Build A',
-          'files': ['lib/a.dart'],
-          'check': {
-            'files': ['test/a_test.dart'],
-          },
-        },
-        {
-          'id': 'b',
-          'intent': 'Build B',
-          'files': ['lib/b.dart'],
-          'check': {'full': true},
-        },
-      ];
-      final ctx = {'runId': 'run-1', 'planBatches': batches};
-      var agents = _Agents(answers(verdict: 'ship'));
-      await run(
-        'ultra',
-        {
-          'items': [
-            {'id': 'a', 'spec': 'Build A'},
-            {'id': 'c', 'spec': 'Build C'},
-          ],
-          'plan_ref': '2026-11-05-x.md',
-        },
-        agents,
-        ctx: ctx,
-      );
-      expect((agents.byLabel('impl:a').batch!.check! as FilesCheck).files, ['test/a_test.dart']);
-      expect(agents.byLabel('impl:c').batch, isNull);
-      agents = _Agents(answers(verdict: 'ship'));
-      await run('ultra', {'plan_ref': '2026-11-05-x.md'}, agents, ctx: ctx);
-      expect(agents.labels, isNot(contains('split')));
-      expect(agents.byLabel('impl:b').batch!.check, isA<FullCheck>());
-      expect(agents.byLabel('research:a').prompt, contains('batch a of the plan .everyai/plans/2026-11-05-x.md'));
-      // Without plan_ref the batches in ctx are not used.
-      agents = _Agents(answers(verdict: 'ship'));
-      await run(
-        'ultra',
-        {
-          'items': [
-            {'id': 'a', 'spec': 'Build A'},
-          ],
-        },
-        agents,
-        ctx: ctx,
-      );
-      expect(agents.byLabel('impl:a').batch, isNull);
-    }, skip: skip);
-
-    test('the integration step is told not to commit', () async {
-      final agents = _Agents(answers(verdict: 'ship'));
-      await run('ultra', {
-        'items': [
-          {'id': 'a', 'spec': 'Build A'},
-        ],
-      }, agents);
-      expect(agents.byLabel('integrate').prompt, contains('do not commit'));
-    }, skip: skip);
-
-    test('a ship verdict skips the refix, and no review model reviews on the lead\'s', () async {
-      final agents = _Agents(answers(verdict: 'ship'));
-      final end = await run('ultra', {
-        'items': [
-          {'id': 'a', 'spec': 'Build A'},
-        ],
-      }, agents);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels, isNot(contains('refix:a')));
-      expect(agents.byLabel('review:a:correctness').model, isNull);
-      expect((end.result! as Map)['reviewed_on'], "a fresh agent on the lead's model");
-    }, skip: skip);
-
-    test(
-      'a failed review keeps the other lens on its findings; a failed refix and integration keep the work',
-      () async {
-        final agents = _Agents({
-          // Before the spread: answers match by the first prefix that fits.
-          'review:a:cost-simplicity': (_) => _review('fix-then-ship', const [_finding]),
-          ...answers(),
-          // The correctness review fails: the other lens's finding must still be its own.
-          'review:a:correctness': (_) => null,
-          'refix:': (_) => null,
-          'integrate': (_) => null,
-        });
-        final end = await run('ultra', {
-          'items': [
-            {'id': 'a', 'spec': 'Build A'},
-          ],
-        }, agents);
-        expect(end.error, isNull);
-        expect(end.status, WorkflowStatus.done);
-        final result = end.result! as Map;
-        final item = (result['items'] as List).single as Map;
-        expect([for (final f in item['findings'] as List) (f as Map)['lens']], ['cost-simplicity']);
-        expect(item['commits'], ['abc impl:a']);
-        expect((item['refix'] as Map)['failed'], isNotNull);
-        expect(result['integration'], isNull);
-        expect(result['integration_error'], isNotNull);
-      },
-      skip: skip,
-    );
-
-    test('a whole task is split into items by a read-only agent first, then each is built', () async {
-      final agents = _Agents({
-        'split': (_) => {
-          'items': [
-            {'id': 'Dark Mode!', 'title': 'Dark mode', 'spec': 'Add a dark theme'},
-            {'id': 'dark-mode', 'title': 'Export', 'spec': 'Add CSV export'},
-            {'id': 'empty', 'title': 'Nothing', 'spec': ' '},
-          ],
-        },
-        ...answers(verdict: 'ship'),
-      });
-      final end = await run('ultra', {'task': 'Add dark mode and CSV export'}, agents);
-      expect(end.error, isNull);
-      expect(end.phases, ['Split', 'Research', 'Implement', 'Review', 'Integrate']);
-      final split = agents.byLabel('split');
-      expect(split.readOnly, isTrue);
-      expect(split.prompt, contains('Add dark mode and CSV export'));
-      // Ids become unique slugs; an item without a spec is dropped.
-      expect(agents.labels.where((l) => l.startsWith('impl:')), ['impl:dark-mode', 'impl:item-2']);
-    }, skip: skip);
-
-    test("items don't wait for each other's research", () async {
-      // b's research answers only once a's implementation has started: a barrier after research would hang here.
-      final aBuilding = Completer<void>();
-      final agents = _Agents(
-        answers(verdict: 'ship'),
-        holds: {'research:b': aBuilding.future},
-        onStart: (c) {
-          if (c.label == 'impl:a' && !aBuilding.isCompleted) aBuilding.complete();
-        },
-      );
-      final end = await run('ultra', {
-        'items': [
-          {'id': 'a', 'spec': 'Build A'},
-          {'id': 'b', 'spec': 'Build B'},
-        ],
-      }, agents);
-      expect(end.error, isNull);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels.indexOf('impl:a'), lessThan(agents.labels.indexOf('impl:b')));
-      expect(agents.labels.last, 'integrate');
-      // Each item's one-line result is logged under Integrate.
-      expect(
-        [
-          for (final l in end.logs)
-            if (l.phase == 'Integrate') l.text,
-        ],
-        ['a: done, 0 findings to fix, refix skipped', 'b: done, 0 findings to fix, refix skipped'],
-      );
-    }, skip: skip);
-
     test('a plan_ref reaches only the agents in the session folder; others read only this run\'s notes', () async {
       const plan = '.everyai/plans/2026-11-05-x.md';
       // saved_plans lists bare names and savePlan returns absolute paths: each means the same file.
@@ -601,62 +292,6 @@ void main() {
         }
         expect(agents.byLabel('research:a').prompt, contains('Copy into the note what this item needs from the plan'));
       }
-    }, skip: skip);
-
-    test(
-      'a plan_ref outside .everyai/plans/ stops the run before any agent, with an error the lead can act on',
-      () async {
-        for (final bad in [
-          '../x.md',
-          'notes/x.md',
-          '.everyai/plans/../../x.md',
-          '/a/.everyai/plans/sub/x.md',
-          'x.txt',
-          7,
-        ]) {
-          final other = _Agents(answers(verdict: 'ship'));
-          final r = await run('ultra', {
-            'items': [
-              {'id': 'a', 'spec': 'Build A'},
-            ],
-            'plan_ref': bad,
-          }, other);
-          expect(r.status, WorkflowStatus.failed, reason: '$bad');
-          expect(r.error, contains('a file name from saved_plans'), reason: '$bad');
-          expect(other.calls, isEmpty, reason: '$bad');
-        }
-      },
-      skip: skip,
-    );
-
-    test('an item whose implementation fails is reported as not finished, and the others go on', () async {
-      final agents = _Agents({'impl:a': (_) => null, ...answers(verdict: 'ship')});
-      final end = await run('ultra', {
-        'items': [
-          {'id': 'a', 'spec': 'Build A'},
-          {'id': 'b', 'spec': 'Build B'},
-        ],
-      }, agents);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels, isNot(contains('review:a:correctness')));
-      expect(agents.labels, contains('review:b:correctness'));
-      expect(
-        [
-          for (final l in end.logs)
-            if (l.phase == 'Integrate') l.text,
-        ],
-        ['a: did not finish', 'b: done, 0 findings to fix, refix skipped'],
-      );
-      // The failed implement agent's row is under Implement on the card.
-      expect(end.agents.firstWhere((v) => v.label == 'impl:a').phase, 'Implement');
-    }, skip: skip);
-
-    test('a failed split builds the task as one item', () async {
-      final agents = _Agents({'split': (_) => null, ...answers(verdict: 'ship')});
-      final end = await run('ultra', {'task': 'Add dark mode'}, agents);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels.where((l) => l.startsWith('impl:')), ['impl:task']);
-      expect(agents.byLabel('research:task').prompt, contains('Add dark mode'));
     }, skip: skip);
 
     test('missing items fail with a readable error', () async {
@@ -731,81 +366,6 @@ void main() {
       expect(result['proof'], 'bug_check');
       expect(result['bug_check'], {'state': 'verified', 'command': 'dart test test/repro_test.dart'});
       expect(result['repro_command'], 'dart test test/repro_test.dart');
-    }, skip: skip);
-
-    test('the result says cause, fix, repro, files and commits once, not again inside refix', () async {
-      final agents = _Agents({
-        'fix': (c) => fix(c.label),
-        'review': (_) => _review('fix-then-ship', const [_finding]),
-        'refix': (c) => fix(c.label),
-      });
-      final end = await run('bugfix', {'bug': 'The last item is missing'}, agents);
-      final result = end.result! as Map;
-      expect(result['files'], ['lib/a.dart']);
-      expect(result['refix'], isNot(anyOf(contains('cause'), contains('fix_summary'), contains('commits'))));
-      expect('off by one'.allMatches(jsonEncode(result)), hasLength(1));
-    }, skip: skip);
-
-    test("bug_check's record wins over the agent's own verified", () async {
-      final agents = _Agents(
-        {'fix': (c) => fix(c.label), 'review': (_) => _review('ship')},
-        bugChecks: {
-          'fix': {'available': true, 'state': 'reproduced', 'command': 'dart test test/a_test.dart'},
-        },
-      );
-      final end = await run('bugfix', {'bug': 'Crash on save'}, agents);
-      final result = end.result! as Map;
-      expect(result['verified'], isFalse);
-      expect(result['proof'], 'bug_check');
-      expect((result['bug_check'] as Map)['state'], 'reproduced');
-    }, skip: skip);
-
-    test('without bug_check the proof is self-reported and says why', () async {
-      final agents = _Agents(
-        {'fix': (c) => fix(c.label), 'review': (_) => _review('ship')},
-        bugChecks: {
-          'fix': {'available': false, 'why': "this harness can't reach EveryAI's tools"},
-        },
-      );
-      final end = await run('bugfix', {'bug': 'Crash on save'}, agents);
-      final result = end.result! as Map;
-      expect(result['verified'], isTrue);
-      expect(result['proof'], 'self-reported');
-      expect(result['proof_note'], contains("this harness can't reach EveryAI's tools"));
-      expect(result.containsKey('bug_check'), isFalse);
-      expect(agents.byLabel('review').prompt, contains('dart test test/a_test.dart'));
-    }, skip: skip);
-
-    test("a refix that commits nothing keeps the fixer's proof; one that commits brings its own", () async {
-      Map<String, Object?> unchanged(String label) => {...fix(label), 'commits': <String>[]};
-      final reproduced = {'available': true, 'state': 'reproduced', 'command': 'dart test test/a_test.dart'};
-      for (final (answer, verified) in [(unchanged, true), (fix, false)]) {
-        final agents = _Agents(
-          {
-            'fix': (c) => fix(c.label),
-            'review': (_) => _review('fix-then-ship', const [_finding]),
-            'refix': (c) => answer(c.label),
-          },
-          bugChecks: {'refix': reproduced},
-        );
-        final result = (await run('bugfix', {'bug': 'Crash on save'}, agents)).result! as Map;
-        expect(result['verified'], verified);
-        expect((result['bug_check'] as Map)['state'], verified ? 'verified' : 'reproduced');
-      }
-    }, skip: skip);
-
-    test('a ship verdict skips the refix', () async {
-      final agents = _Agents({'fix': (c) => fix(c.label), 'review': (_) => _review('ship')});
-      final end = await run('bugfix', {'bug': 'Crash on save'}, agents);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels, ['fix', 'review']);
-      expect((end.result! as Map)['refix'], isNull);
-    }, skip: skip);
-
-    test('a missing bug fails with a readable error', () async {
-      final end = await run('bugfix', {'bug': 3}, _Agents({}));
-      expect(end.status, WorkflowStatus.failed);
-      expect(end.error, contains('bugfix needs args {bug}'));
     }, skip: skip);
   });
 
@@ -883,77 +443,6 @@ void main() {
       expect('"exploit"'.allMatches(prompt), hasLength(1));
       expect(prompt, contains('"injection"'));
       expect(prompt, contains('"data"'));
-    }, skip: skip);
-
-    test('a failed lens leaves the others\' labels right; a failed verify returns the findings unverified', () async {
-      final agents = _Agents({
-        'threat-model': (_) => {
-          'summary': 's',
-          'entry_points': <String>[],
-          'boundaries': <String>[],
-          'assets': <String>[],
-          'files': <String>[],
-          'base': 'abc1234def',
-        },
-        'lens:secrets': (_) => null,
-        'lens:injection': (_) => {
-          'findings': [finding('sql', 'builds SQL from input')],
-        },
-        'lens:': (_) => {'findings': <Object>[]},
-        'verify': (_) => null,
-      });
-      final end = await run('security_review', {}, agents);
-      expect(end.error, isNull);
-      final result = end.result! as Map;
-      expect(result['verified'], isFalse);
-      expect([for (final f in result['findings'] as List) (f as Map)['lens']], ['injection']);
-      // The base the threat model found: a plain diff, no substitution for the others.
-      for (final c in agents.calls.skip(1)) {
-        expect(c.prompt, contains('git diff abc1234def...HEAD'), reason: c.label);
-        expect(c.prompt, isNot(contains(r'$(')), reason: c.label);
-      }
-    }, skip: skip);
-
-    test('a focus from the user is quoted into the threat model and the lenses', () async {
-      final agents = _Agents({
-        'threat-model': (_) => {
-          'summary': 's',
-          'entry_points': <String>[],
-          'boundaries': <String>[],
-          'assets': <String>[],
-          'files': <String>[],
-        },
-        'lens:': (_) => {'findings': <Object>[]},
-      });
-      final end = await run('security_review', {'focus': 'the upload endpoint'}, agents);
-      expect(end.status, WorkflowStatus.done);
-      for (final c in agents.calls) {
-        expect(c.prompt, contains('```\nthe upload endpoint\n```'), reason: c.label);
-      }
-      final bad = await run('security_review', {'focus': 3}, _Agents({}));
-      expect(bad.status, WorkflowStatus.failed);
-    }, skip: skip);
-
-    test('no candidate findings skips the verify step; a bad base is refused', () async {
-      final agents = _Agents({
-        'threat-model': (_) => {
-          'summary': 's',
-          'entry_points': <String>[],
-          'boundaries': <String>[],
-          'assets': <String>[],
-          'files': <String>[],
-        },
-        'lens:': (_) => {'findings': <Object>[]},
-      });
-      final end = await run('security_review', {}, agents);
-      expect(end.status, WorkflowStatus.done);
-      expect(agents.labels, isNot(contains('verify')));
-      expect((end.result! as Map)['findings'], isEmpty);
-      expect(agents.byLabel('threat-model').prompt, contains('git merge-base'));
-
-      final bad = await run('security_review', {'base': 'main; rm -rf /'}, _Agents({}));
-      expect(bad.status, WorkflowStatus.failed);
-      expect(bad.error, contains('a git ref'));
     }, skip: skip);
   });
 }

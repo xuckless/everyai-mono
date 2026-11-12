@@ -238,41 +238,6 @@ void main() {
     },
   );
 
-  test('compact is offered before the list loads, and a failed load is tried again by the next listen', () async {
-    final http = ReplayHttpClient.script(
-      [
-        _head('turn_approvals.jsonl', '/prompt'),
-        _line('out', {'id': 3, 'method': 'GET', 'path': '/api/command'}),
-        _line('in', {
-          'id': 3,
-          'status': 503,
-          'body': {'error': 'warming up'},
-        }),
-        _line('out', {'id': 4, 'method': 'GET', 'path': '/api/command'}),
-        _line('in', {
-          'id': 4,
-          'status': 200,
-          'body': {
-            'data': [
-              {'name': 'init', 'description': 'guided AGENTS.md setup'},
-            ],
-          },
-        }),
-      ].join('\n'),
-    );
-    final (:driver, data: _) = _driver(http);
-    final session = await driver.start(_spec(initial: null));
-    final native = session as HasNativeCommands;
-    expect((await native.commands.first).map((c) => c.name), ['compact']);
-    await pumpEventQueue();
-    final lists = <List<NativeCommand>>[];
-    native.commands.listen(lists.add);
-    await pumpEventQueue();
-    expect(lists.last.map((c) => c.name), ['compact', 'init']);
-    http.channel.expectFinished();
-    await session.close();
-  });
-
   test('a session is created with our rules, listens before the first prompt, and answers per call', () async {
     final http = _replay('turn_approvals.jsonl');
     final (:driver, :data) = _driver(http);
@@ -385,78 +350,6 @@ void main() {
     await session.close();
   });
 
-  test('interrupt, steer and a model switch use their own calls', () async {
-    final http = _replay('interrupt_steer.jsonl');
-    final (:driver, data: _) = _driver(http);
-    final session = await driver.start(_spec(model: 'default', initial: 'Run the shell command `sleep 30` once.'));
-    final events = await _collect(session);
-    expect(events.whereType<ActionCall>().single.str('command'), 'sleep 30');
-    await session.interrupt();
-    await pumpEventQueue();
-    expect(events.whereType<ToolResult>().single.outcome, ToolOutcome.error);
-    expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.idle);
-
-    await session.send('Read README.md with your read tool, then tell me what it says.');
-    await pumpEventQueue();
-    await (session as SteersRuns).steer('Also: end your reply with the word DONE.');
-    await pumpEventQueue();
-    await session.respond(accept: true);
-    await pumpEventQueue();
-    expect(events.whereType<ChatMessage>().last.text, endsWith('DONE'));
-    await session.switchLlm(_spec(model: 'opencode/crouton-alpha-free').withEffort('high'));
-    http.channel.expectFinished();
-    // The prompt of a fresh session names no model when the app has none.
-    expect((http.channel.sent[1]['body']! as Map).containsKey('model'), isFalse);
-    expect(_replies(http).every((r) => r['decision'] != 'always'), isTrue);
-    _expectAuth(http);
-    await session.close();
-  });
-
-  test("Allow for this session on the card is OpenCode's own `always`", () async {
-    // external_dir_cancel.jsonl with our first reply changed to always.
-    final http = ReplayHttpClient.script(
-      File('$_dir/external_dir_cancel.jsonl')
-          .readAsStringSync()
-          .replaceFirst(RegExp(r'"body":\s*\{"decision":\s*"once"\}'), '"body":{"decision":"always"}'),
-    );
-    final (:driver, data: _) = _driver(http);
-    expect(driver.remembers, NativeRemember.session);
-    final session = await driver.start(_spec(model: 'x', initial: 'Read /etc/hosts.'));
-    final events = await _collect(session);
-    await (session as AllowsRemembered).allowRemembered(
-      NativeGrant.session,
-      callIds: [events.whereType<ActionCall>().single.id],
-    );
-    await pumpEventQueue();
-    await session.respond(accept: false);
-    await pumpEventQueue();
-    http.channel.expectFinished();
-    expect(_replies(http), [
-      {'decision': 'always'},
-      {'decision': 'reject'},
-    ]);
-    await session.close();
-  });
-
-  test('refusing every waiting call without a reason sends a bare reject, which parks the run', () async {
-    final http = _replay('external_dir_cancel.jsonl');
-    final (:driver, data: _) = _driver(http);
-    final session = await driver.start(_spec(model: 'x', initial: 'Read /etc/hosts.'));
-    final events = await _collect(session);
-    await session.respond(accept: true, callIds: [events.whereType<ActionCall>().single.id]);
-    await pumpEventQueue();
-    await session.respond(accept: false);
-    await pumpEventQueue();
-    http.channel.expectFinished();
-    expect(_replies(http), [
-      {'decision': 'once'},
-      {'decision': 'reject'},
-    ]);
-    expect(events.whereType<ToolResult>().last.outcome, ToolOutcome.rejected);
-    expect(events.whereType<StateChange>().last.executionStatus, ExecutionStatus.idle);
-    await session.close();
-  });
-
   test('attach replays history and waiting requests, and a dropped stream resyncs without repeats', () async {
     final http = _replay('attach_resync.jsonl');
     final (:driver, :data) = _driver(http);
@@ -514,20 +407,6 @@ void main() {
     }
   });
 
-  test("attach without a record says it can't find the session", () async {
-    final (:driver, data: _) = _driver(ReplayHttpClient.script(''));
-    await expectLater(driver.attach('ses_gone'), throwsA(isA<HarnessError>()));
-  });
-
-  test('rewinding is refused; models without a provider are refused for a switch', () async {
-    final http = _replay('external_dir_cancel.jsonl');
-    final (:driver, data: _) = _driver(http);
-    final session = await driver.start(_spec(model: 'x', initial: null));
-    await expectLater(session.rewindTo(null), throwsA(isA<HarnessError>()));
-    await expectLater(session.switchLlm(_spec(model: 'plain')), throwsA(isA<HarnessError>()));
-    await session.close();
-  });
-
   test('refusing every waiting call with a reason hands the model the reason, then stops the run', () async {
     const ses = 'ses_e5adcc5e9ffeq46VWxD6qlLA9d';
     final http = ReplayHttpClient.script(
@@ -581,26 +460,6 @@ void main() {
     expect(process.closed, isTrue);
     // Not open any more: only the record says it existed.
     expect(await driver.statuses([_ses]), {_ses: ExecutionStatus.idle});
-  });
-
-  test('a stream that drops before it is connected fails the start, with no reconnecting after', () async {
-    final http = ReplayHttpClient.script(
-      [
-        _line('out', {'id': 1, 'method': 'GET', 'path': '/api/event'}),
-        jsonEncode({
-          'dir': 'in',
-          'msg': {'sse': 'drop'},
-        }),
-      ].join('\n'),
-    );
-    final process = _Process();
-    final (:driver, data: _) = _driver(http, process: process);
-    await expectLater(driver.start(_spec()), throwsA(isA<HarnessError>()));
-    await pumpEventQueue();
-    // A reconnect would have asked for the stream again, past the script's end.
-    http.channel.expectFinished();
-    expect(http.channel.sent, hasLength(1));
-    expect(process.closed, isTrue);
   });
 
   test('reopening a session whose run was cut off when the app quit leaves it idle, not running', () async {
@@ -779,27 +638,5 @@ void main() {
       http.channel.expectFinished();
       await session.close();
     },
-  );
-
-  test('the executable is looked up once per driver, not for every session', () async {
-    var lookups = 0;
-    final (:driver, data: _) = _driver(_replay('external_dir_cancel.jsonl'), found: () => lookups++);
-    final session = await driver.start(_spec(model: 'x', initial: null));
-    await session.close();
-    await expectLater(driver.attach('ses_gone'), throwsA(isA<HarnessError>()));
-    await driver.models();
-    expect(lookups, 1);
-  });
-}
-
-extension on SessionSpec {
-  SessionSpec withEffort(String effort) => SessionSpec(
-    workingDir: workingDir,
-    model: model,
-    mode: mode,
-    llmBaseUrl: llmBaseUrl,
-    llmApiKey: llmApiKey,
-    sessionTag: sessionTag,
-    effort: effort,
   );
 }

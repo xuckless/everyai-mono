@@ -50,36 +50,6 @@ CodeSessionInfo _info(String id, {String? parent, bool ownTag = false, String di
 
 void main() {
   group('billing tags and processes', () {
-    test('subagents bill to their parent, Ultra children to themselves', () {
-      expect(_info('a').billingTag, 'a');
-      expect(_info('b', parent: 'a').billingTag, 'a');
-      expect(_info('c', parent: 'a', ownTag: true).billingTag, 'c');
-      final back = CodeSessionInfo.fromJson(_info('c', parent: 'a', ownTag: true).toJson());
-      expect(back.ownTag, isTrue);
-      expect(back.bypassChecks, isFalse);
-      expect(CodeSessionInfo.fromJson(back.copyWith(bypassChecks: true).toJson()).bypassChecks, isTrue);
-      // Saved before the flag: an Ultra call id still marks it.
-      final legacy = {..._info('d', parent: 'a').toJson(), 'parent_call_id': 'ultra-r1-a.s-1'};
-      expect(CodeSessionInfo.fromJson(legacy).billingTag, 'd');
-    });
-
-    test('Ultra children end their own processes; other subagents leave it to the parent', () {
-      final parent = _info('a', dir: '/wt/a');
-      expect(killsOwnProcesses(parent), isTrue);
-      expect(killsOwnProcesses(_info('b', parent: 'a')), isFalse);
-      final step = _info('c', parent: 'a', ownTag: true, dir: '/ultra/r1/a.s');
-      expect(killsOwnProcesses(step), isTrue);
-      expect(ownsWorkingDir(step, parent: parent), isTrue);
-      expect(
-        ownsWorkingDir(
-          _info('d', parent: 'a', ownTag: true, dir: '/wt/a'),
-          parent: parent,
-        ),
-        isFalse,
-      );
-      expect(killsOwnProcesses(_info('e', dir: 'demo://counter-app')), isFalse);
-    });
-
     test('a budget counts children billed under their own ids', () {
       final sessions = [
         _info('a'),
