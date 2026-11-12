@@ -80,35 +80,6 @@ enum ProcessKind {
   static ProcessKind parse(String name) => values.firstWhere((k) => k.name == name, orElse: () => helper);
 }
 
-/// What to start, and for whom.
-@immutable
-final class SpawnSpec {
-  const SpawnSpec({
-    required this.owner,
-    required this.kind,
-    required this.exe,
-    this.args = const [],
-    this.env = const {},
-    this.includeParentEnvironment = true,
-    this.cwd,
-    String? label,
-  }) : _label = label; // ignore: prefer_initializing_formals
-
-  final ProcessOwner owner;
-  final ProcessKind kind;
-  final String exe;
-  final List<String> args;
-
-  /// Added to (or, with [includeParentEnvironment] off, instead of) the app's environment.
-  final Map<String, String> env;
-  final bool includeParentEnvironment;
-  final String? cwd;
-  final String? _label;
-
-  /// What the ledger and diagnostics call it.
-  String get label => _label ?? exe;
-}
-
 // ------------------------------------------------------------------ scans
 
 /// Whether a process's environment could be read, and the EveryAI tags in it.
@@ -124,7 +95,7 @@ final class EnvRead extends EnvView {
   final Map<String, String> tags;
 }
 
-/// Not readable: another user's process, or (macOS) a system binary.
+/// Not readable: another user's process, or (macOS) an Apple platform binary.
 final class EnvHidden extends EnvView {
   const EnvHidden();
 }
@@ -138,21 +109,33 @@ final class ScanRow {
     required this.pgid,
     required this.start,
     required this.command,
+    this.uid,
     this.zombie = false,
     this.env = const EnvHidden(),
   });
 
   final int pid;
   final int ppid;
-  final int pgid;
+
+  /// Its process group; null where there are none (Windows).
+  final int? pgid;
   final String start;
   final String command;
+  final int? uid;
 
   /// Ended, waiting for its parent to reap it: counts as gone.
   final bool zombie;
   final EnvView env;
 
-  ProcessIdentity get identity => ProcessIdentity(pid: pid, pgid: pgid, start: start);
+  ProcessIdentity get identity => ProcessIdentity(
+    pid: pid,
+    start: start,
+    group: switch (pgid) {
+      null => const NoGroups(),
+      final g when g == pid => const OwnGroup(),
+      final g => SharedGroup(g),
+    },
+  );
 
   String? tag(String name) => switch (env) {
     EnvRead(:final tags) => tags[name],
@@ -160,7 +143,7 @@ final class ScanRow {
   };
 
   ScanRow withEnv(EnvView env) =>
-      ScanRow(pid: pid, ppid: ppid, pgid: pgid, start: start, command: command, zombie: zombie, env: env);
+      ScanRow(pid: pid, ppid: ppid, pgid: pgid, start: start, command: command, uid: uid, zombie: zombie, env: env);
 }
 
 /// The processes on this machine.
@@ -174,13 +157,23 @@ final class ProcessList {
   final Map<int, ScanRow> rows;
   final _children = <int, List<int>>{};
 
-  /// Whether [id] (that pid with that start time) is still running (a zombie counts as gone).
-  bool alive(ProcessIdentity id) => aliveAt(id.pid, id.start);
-
-  bool aliveAt(int pid, String start) => switch (rows[pid]) {
-    final r? => r.start == start && !r.zombie,
+  /// Whether [id] (that pid with that start time) is still running (a zombie counts as gone). An identity whose
+  /// start is unknown matches its pid alone.
+  bool alive(ProcessIdentity id) => switch (rows[id.pid]) {
+    final r? => !r.zombie && (!id.startKnown || r.start == id.start),
     null => false,
   };
+
+  bool aliveAt(int pid, String start) => alive(ProcessIdentity(pid: pid, start: start));
+
+  /// Whether [pid] runs and started within a few seconds of [at] (a process recorded before its start time could
+  /// be read).
+  bool aliveNear(int pid, DateTime at) {
+    final r = rows[pid];
+    if (r == null || r.zombie) return false;
+    final t = lstartTime(r.start);
+    return t != null && t.difference(at).inSeconds.abs() <= 3;
+  }
 
   /// Every process below [pid], nearest first.
   List<int> descendants(int pid) {
@@ -221,8 +214,14 @@ sealed class ProcessScan {
 }
 
 final class Listed extends ProcessScan {
-  const Listed(this.table);
+  const Listed(this.table, {required this.at, this.withEnv = false});
   final ProcessList table;
+
+  /// When it was read.
+  final DateTime at;
+
+  /// Whether environments were read too.
+  final bool withEnv;
 }
 
 // ------------------------------------------------------------------ kills
@@ -232,10 +231,12 @@ final class Listed extends ProcessScan {
 sealed class KillOutcome {
   const KillOutcome();
 
-  /// One outcome for several stops: anything that survived wins, then a scan that failed, else what ended.
+  /// One outcome for several stops: anything that survived wins, then a scan that failed, then processes that
+  /// couldn't be accounted for, else what ended.
   static KillOutcome merge(Iterable<KillOutcome> outcomes) {
     final ended = <int>{};
     final survived = <int>{};
+    final unaccounted = <int>{};
     final reasons = <String>[];
     final failed = <String>[];
     for (final o in outcomes) {
@@ -246,19 +247,23 @@ sealed class KillOutcome {
           survived.addAll(pids);
           ended.addAll(e);
           if (!reasons.contains(reason)) reasons.add(reason);
+        case Unaccounted(:final candidates, :final reason, ended: final e):
+          unaccounted.addAll(candidates);
+          ended.addAll(e);
+          if (!reasons.contains(reason)) reasons.add(reason);
         case ScanFailed(:final why):
           if (!failed.contains(why)) failed.add(why);
       }
     }
-    if (survived.isNotEmpty) {
-      return Survived(survived.toList()..sort(), reasons.join('; '), ended: ended.toList()..sort());
-    }
+    List<int> sorted(Set<int> s) => s.toList()..sort();
+    if (survived.isNotEmpty) return Survived(sorted(survived), reasons.join('; '), ended: sorted(ended));
     if (failed.isNotEmpty) return ScanFailed(failed.join('; '));
-    return Ended(ended.toList()..sort());
+    if (unaccounted.isNotEmpty) return Unaccounted(sorted(unaccounted), reasons.join('; '), ended: sorted(ended));
+    return Ended(sorted(ended));
   }
 }
 
-/// Everything it signalled is gone (checked by pid + start time).
+/// Everything it signalled is gone (checked by pid + start time), and nothing it may have started is unaccounted for.
 final class Ended extends KillOutcome {
   const Ended(this.pids);
 
@@ -280,6 +285,17 @@ final class Survived extends KillOutcome {
   String toString() => 'Survived($pids: $reason; ended $ended)';
 }
 
+/// What it could see ended, but these processes may have been started by the child and left its tree (orphaned
+/// while it ran, environment hidden so their tags can't be read): they were not touched, and the end is not proven.
+final class Unaccounted extends KillOutcome {
+  const Unaccounted(this.candidates, this.reason, {this.ended = const []});
+  final List<int> candidates;
+  final String reason;
+  final List<int> ended;
+  @override
+  String toString() => 'Unaccounted($candidates: $reason; ended $ended)';
+}
+
 /// The process table couldn't be read, so nothing can be said about what is left: never "nothing running". Both a
 /// [ProcessScan] (the scan itself) and a [KillOutcome] (a stop that couldn't check its work).
 final class ScanFailed extends KillOutcome implements ProcessScan {
@@ -291,6 +307,18 @@ final class ScanFailed extends KillOutcome implements ProcessScan {
 
 // ------------------------------------------------------------------ bounded runs
 
+/// What a bounded run read from one pipe.
+@immutable
+final class RunOutput {
+  const RunOutput(this.bytes, {this.truncated = false});
+  final Uint8List bytes;
+
+  /// More was written than `maxOutputBytes`; the rest was read and dropped.
+  final bool truncated;
+
+  String text(Encoding encoding) => encoding.decode(bytes);
+}
+
 /// How a [runBounded] call ended.
 @immutable
 sealed class RunResult {
@@ -298,30 +326,57 @@ sealed class RunResult {
 }
 
 final class Finished extends RunResult {
-  const Finished(this.code, this.stdout, this.stderr);
+  const Finished(
+    this.code,
+    this.out,
+    this.err, {
+    this.stdoutEncoding = systemEncodingLike,
+    this.stderrEncoding = systemEncodingLike,
+    this.leftRunning,
+  });
   final int code;
-  final String stdout;
-  final String stderr;
+  final RunOutput out;
+  final RunOutput err;
+  final Encoding stdoutEncoding;
+  final Encoding stderrEncoding;
+
+  /// The program exited but something it started still held its pipes; that was stopped, with this outcome.
+  final KillOutcome? leftRunning;
+
+  String get stdout => out.text(stdoutEncoding);
+  String get stderr => err.text(stderrEncoding);
+  Uint8List get stdoutBytes => out.bytes;
+  Uint8List get stderrBytes => err.bytes;
+  bool get truncated => out.truncated || err.truncated;
   @override
-  String toString() => 'Finished($code)';
+  String toString() => 'Finished($code${leftRunning == null ? '' : ', left running: $leftRunning'})';
 }
 
+/// The encoding [Finished] decodes with when none is given (the caller passes `systemEncoding`).
+const Encoding systemEncodingLike = utf8;
+
 final class TimedOut extends RunResult {
-  const TimedOut(this.kill, {this.stdout = '', this.stderr = ''});
+  const TimedOut(this.kill, this.out, this.err, {this.encoding = systemEncodingLike});
   final KillOutcome kill;
 
   /// What it wrote before it was stopped.
-  final String stdout;
-  final String stderr;
+  final RunOutput out;
+  final RunOutput err;
+  final Encoding encoding;
+  String get stdout => out.text(encoding);
+  String get stderr => err.text(encoding);
   @override
   String toString() => 'TimedOut($kill)';
 }
 
 final class Cancelled extends RunResult {
-  const Cancelled(this.kill, {this.stdout = '', this.stderr = ''});
+  const Cancelled(this.kill, this.out, this.err, {this.encoding = systemEncodingLike});
   final KillOutcome kill;
-  final String stdout;
-  final String stderr;
+  final RunOutput out;
+  final RunOutput err;
+  final Encoding encoding;
+  String get stdout => out.text(encoding);
+  String get stderr => err.text(encoding);
   @override
   String toString() => 'Cancelled($kill)';
 }
@@ -392,6 +447,11 @@ final class QuitReport {
         if (e.outcome case Survived(:final pids, :final reason))
           {'id': e.id, 'label': e.label, 'owner': e.owner, 'pids': pids, 'reason': reason},
     ],
+    'unaccounted': [
+      for (final e in entries)
+        if (e.outcome case Unaccounted(:final candidates, :final reason))
+          {'id': e.id, 'label': e.label, 'owner': e.owner, 'pids': candidates, 'reason': reason},
+    ],
     'scanFailed': [
       for (final e in entries)
         if (e.outcome case ScanFailed(:final why)) {'id': e.id, 'label': e.label, 'owner': e.owner, 'why': why},
@@ -405,6 +465,19 @@ final class QuitReport {
 /// watchdog script makes it too.
 String startToken(String lstart) => lstart.trim().split(RegExp(r'\s+')).where((s) => s.isNotEmpty).join('_');
 
+const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/// The local time a [startToken] names (`Thu_Nov_12_01:50:25_2026`), or null when it isn't one.
+DateTime? lstartTime(String token) {
+  final p = token.split('_');
+  if (p.length != 5) return null;
+  final month = _months.indexOf(p[1]) + 1;
+  final day = int.tryParse(p[2]), year = int.tryParse(p[4]);
+  final hms = p[3].split(':').map(int.tryParse).toList();
+  if (month == 0 || day == null || year == null || hms.length != 3 || hms.contains(null)) return null;
+  return DateTime(year, month, day, hms[0]!, hms[1]!, hms[2]!);
+}
+
 /// The value of [appEnvVar] for app [pid] that started at [start].
 String appTag(int pid, String start) => '$pid:$start';
 
@@ -416,10 +489,10 @@ String appTag(int pid, String start) => '$pid:$start';
   return pid == null ? null : (pid: pid, start: tag.substring(i + 1));
 }
 
-final _psLine = RegExp(r'^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s?(.*)$');
+final _psLine = RegExp(r'^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s?(.*)$');
 
-/// Rows of `ps -A -ww -o pid=,ppid=,pgid=,stat=,lstart=,command=` (macOS, Linux) under `LC_ALL=C`. Lines that
-/// don't parse are left out; a listing with none that parses is a failed scan (the caller decides).
+/// Rows of `ps -A -ww -o pid=,ppid=,pgid=,uid=,stat=,lstart=,command=` (macOS, Linux) under `LC_ALL=C`. Lines
+/// that don't parse are left out; a listing with none that parses is a failed scan (the caller decides).
 List<ScanRow> parsePsRows(String out) => [
   for (final line in const LineSplitter().convert(out))
     if (_psLine.firstMatch(line) case final m?)
@@ -427,9 +500,10 @@ List<ScanRow> parsePsRows(String out) => [
         pid: int.parse(m.group(1)!),
         ppid: int.parse(m.group(2)!),
         pgid: int.parse(m.group(3)!),
-        zombie: m.group(4)!.startsWith('Z'),
-        start: startToken(m.group(5)!),
-        command: m.group(6)!.trim(),
+        uid: int.parse(m.group(4)!),
+        zombie: m.group(5)!.startsWith('Z'),
+        start: startToken(m.group(6)!),
+        command: m.group(7)!.trim(),
       ),
 ];
 
@@ -467,7 +541,8 @@ Map<String, String> envTagsOf(String environ) => {
 
 // ------------------------------------------------------------------ the ledger
 
-/// One line of a run's ledger (`processes/ledger-<app pid>.jsonl`): what this run started and what became of it.
+/// One line of a run's ledger (`processes/ledger-<app pid>-<app start token>.jsonl`): what this run started and
+/// what became of it.
 @immutable
 sealed class LedgerLine {
   const LedgerLine();
@@ -483,12 +558,13 @@ sealed class LedgerLine {
     } on FormatException {
       return null; // a line cut off by a crash
     }
+    if (j is! Map<String, Object?>) return null;
+    List<ProcessIdentity> ids(Object? list) => [
+      if (list is List)
+        for (final x in list) ?ProcessIdentity.fromJson(x),
+    ];
     return switch (j) {
-      {'t': 'app', 'pid': final int pid, 'start': final String start, 'pgid': final int pgid} => LedgerApp(
-        pid: pid,
-        start: start,
-        pgid: pgid,
-      ),
+      {'t': 'app', 'pid': final int pid, 'start': final String start} => LedgerApp(pid: pid, start: start),
       {
         't': 'spawn',
         'id': final int id,
@@ -497,15 +573,34 @@ sealed class LedgerLine {
         'kind': final String kind,
         'label': final String label,
       } =>
-        LedgerSpawn(id: id, exe: exe, owner: owner, kind: kind, label: label),
+        LedgerSpawn(
+          id: id,
+          exe: exe,
+          owner: owner,
+          kind: kind,
+          label: label,
+          outlivesApp: j['outlives'] == true,
+          port: j['port'] is int ? j['port'] as int : null,
+          detail: j['detail'] is String ? j['detail'] as String : null,
+        ),
+      {'t': 'launch', 'id': final int id, 'pid': final int pid, 'at': final int at} => LedgerLaunch(
+        id: id,
+        pid: pid,
+        at: DateTime.fromMillisecondsSinceEpoch(at),
+        ownGroup: j['own'] != false,
+      ),
       {'t': 'run', 'id': final int id} => switch (ProcessIdentity.fromJson(j)) {
         final ident? => LedgerRun(id: id, identity: ident),
         null => null,
       },
+      {'t': 'tree', 'id': final int id} => LedgerTree(id: id, processes: ids(j['procs'])),
       {'t': 'state', 'id': final int id, 'state': final String state} => LedgerState(id: id, state: state),
       {'t': 'exit', 'id': final int id} => LedgerExit(id: id, code: j['code'] is int ? j['code'] as int : null),
-      {'t': 'notClosed', 'id': final int id, 'survivors': final List<Object?> s, 'reason': final String reason} =>
-        LedgerNotClosed(id: id, survivors: [for (final x in s) ?ProcessIdentity.fromJson(x)], reason: reason),
+      {'t': 'notClosed', 'id': final int id, 'reason': final String reason} => LedgerNotClosed(
+        id: id,
+        survivors: ids(j['survivors']),
+        reason: reason,
+      ),
       _ => null,
     };
   }
@@ -513,12 +608,11 @@ sealed class LedgerLine {
 
 /// The first line: whose ledger this is.
 final class LedgerApp extends LedgerLine {
-  const LedgerApp({required this.pid, required this.start, required this.pgid});
+  const LedgerApp({required this.pid, required this.start});
   final int pid;
   final String start;
-  final int pgid;
   @override
-  Map<String, Object?> toJson() => {'t': 'app', 'pid': pid, 'start': start, 'pgid': pgid};
+  Map<String, Object?> toJson() => {'t': 'app', 'pid': pid, 'start': start};
 }
 
 /// Written before the process is started, so a crash right after leaves a trace.
@@ -529,14 +623,49 @@ final class LedgerSpawn extends LedgerLine {
     required this.owner,
     required this.kind,
     required this.label,
+    this.outlivesApp = false,
+    this.port,
+    this.detail,
   });
   final int id;
   final String exe;
   final String owner;
   final String kind;
   final String label;
+
+  /// Started to outlive the app on purpose (an editor, a file reveal, the updater's restart): never swept.
+  final bool outlivesApp;
+  final int? port;
+  final String? detail;
   @override
-  Map<String, Object?> toJson() => {'t': 'spawn', 'id': id, 'exe': exe, 'owner': owner, 'kind': kind, 'label': label};
+  Map<String, Object?> toJson() => {
+    't': 'spawn',
+    'id': id,
+    'exe': exe,
+    'owner': owner,
+    'kind': kind,
+    'label': label,
+    if (outlivesApp) 'outlives': true,
+    'port': ?port,
+    'detail': ?detail,
+  };
+}
+
+/// Its pid, at once (before its start time is read).
+final class LedgerLaunch extends LedgerLine {
+  const LedgerLaunch({required this.id, required this.pid, required this.at, this.ownGroup = true});
+  final int id;
+  final int pid;
+  final DateTime at;
+  final bool ownGroup;
+  @override
+  Map<String, Object?> toJson() => {
+    't': 'launch',
+    'id': id,
+    'pid': pid,
+    'at': at.millisecondsSinceEpoch,
+    if (!ownGroup) 'own': false,
+  };
 }
 
 /// Its pid, group and start time.
@@ -546,6 +675,19 @@ final class LedgerRun extends LedgerLine {
   final ProcessIdentity identity;
   @override
   Map<String, Object?> toJson() => {'t': 'run', 'id': id, ...identity.toJson()};
+}
+
+/// What runs below it (or ran below it and left), as last seen.
+final class LedgerTree extends LedgerLine {
+  const LedgerTree({required this.id, required this.processes});
+  final int id;
+  final List<ProcessIdentity> processes;
+  @override
+  Map<String, Object?> toJson() => {
+    't': 'tree',
+    'id': id,
+    'procs': [for (final p in processes) p.toJson()],
+  };
 }
 
 final class LedgerState extends LedgerLine {
@@ -578,23 +720,37 @@ final class LedgerNotClosed extends LedgerLine {
   };
 }
 
-/// What a ledger says is still running: by child, its identity (or, once not closed, the survivors).
-typedef LedgerLive = ({int id, String label, String owner, List<ProcessIdentity> processes});
+/// A process a ledger names: by pid + start time, or (recorded before its start time was read) by pid and when it
+/// was started.
+typedef LedgerProcess = ({ProcessIdentity id, DateTime? at});
 
-/// A ledger read back.
+/// What a ledger says is still running, by child: the child and what its tree held.
+typedef LedgerLive = ({int id, String label, String owner, List<LedgerProcess> processes});
+
+/// A ledger read back. Ids are this ledger's own (one run each); never mix two ledgers' ids.
 @immutable
 final class LedgerFold {
-  const LedgerFold({required this.app, required this.live});
+  const LedgerFold({required this.app, required this.live, required this.lastId});
 
   /// Whose ledger (null when its first line is missing or cut off).
   final LedgerApp? app;
   final List<LedgerLive> live;
 
+  /// The highest child id in it (a reopened run goes on from there).
+  final int lastId;
+
   static LedgerFold of(Iterable<String> lines) {
     LedgerApp? app;
+    var lastId = 0;
     final spawns = <int, LedgerSpawn>{};
-    final procs = <int, List<ProcessIdentity>>{};
+    final self = <int, LedgerProcess>{};
+    final trees = <int, List<ProcessIdentity>>{};
     final order = <int>[];
+    void see(int id) {
+      if (!order.contains(id)) order.add(id);
+      if (id > lastId) lastId = id;
+    }
+
     for (final l in lines) {
       if (l.trim().isEmpty) continue;
       switch (LedgerLine.decode(l)) {
@@ -602,30 +758,47 @@ final class LedgerFold {
           app ??= a;
         case final LedgerSpawn s:
           spawns[s.id] = s;
+          see(s.id);
+        case LedgerLaunch(:final id, :final pid, :final at, :final ownGroup):
+          see(id);
+          self[id] = (
+            id: ProcessIdentity(pid: pid, start: unknownStart, group: ownGroup ? const OwnGroup() : SharedGroup(0)),
+            at: at,
+          );
         case LedgerRun(:final id, :final identity):
-          if (!order.contains(id)) order.add(id);
-          procs[id] = [identity];
+          see(id);
+          self[id] = (id: identity, at: null);
+        case LedgerTree(:final id, :final processes):
+          trees[id] = processes;
         case LedgerExit(:final id):
-          procs.remove(id);
+          self.remove(id);
         case LedgerNotClosed(:final id, :final survivors):
-          if (!order.contains(id)) order.add(id);
-          procs[id] = survivors;
+          see(id);
+          self.remove(id);
+          trees[id] = [...?trees[id], ...survivors];
         case LedgerState() || null:
           break;
       }
     }
     return LedgerFold(
       app: app,
+      lastId: lastId,
       live: [
         for (final id in order)
-          if (procs[id] case final p? when p.isNotEmpty)
-            (id: id, label: spawns[id]?.label ?? '?', owner: spawns[id]?.owner ?? 'app', processes: p),
+          if (!(spawns[id]?.outlivesApp ?? false))
+            if ([?self[id], for (final t in trees[id] ?? const <ProcessIdentity>[]) (id: t, at: null)] case final p
+                when p.isNotEmpty)
+              (id: id, label: spawns[id]?.label ?? '?', owner: spawns[id]?.owner ?? 'app', processes: p),
       ],
     );
   }
 }
 
-/// The watchdog's list, from what is live: one `<pgid or -> <pid> <start token>` line per process. The group is
-/// given only for a process that leads its own group.
-String watchList(Iterable<ProcessIdentity> live, {required int appPgid}) =>
-    [for (final p in live) '${p.leadsGroup && p.pgid != appPgid ? p.pgid : '-'} ${p.pid} ${p.start}\n'].join();
+/// The watchdog's list: one `<pgid or -> <pid> <start token or ~epoch>` line per process. The group is given only
+/// for a process that leads its own group; `~<epoch seconds>` names a process by when it was started (its start
+/// time wasn't read yet).
+String watchList(Iterable<LedgerProcess> live) => [
+  for (final p in live)
+    '${p.id.leadsGroup ? p.id.pid : '-'} ${p.id.pid} '
+        '${p.id.startKnown ? p.id.start : '~${(p.at ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000}'}\n',
+].join();

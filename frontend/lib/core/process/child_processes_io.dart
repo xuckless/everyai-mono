@@ -1,6 +1,8 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
-import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'child_processes.dart';
 import 'supervisor.dart';
@@ -10,15 +12,21 @@ import 'supervisor.dart';
 ProcessSupervisor get _sup => ProcessSupervisor.instance;
 
 void track(int pid, {required String label, required String executable, required Future<int> exited}) {
-  _sup.adopt(
-    pid,
-    SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: executable, label: label),
-    exitCode: exited,
-  );
+  try {
+    _sup.adopt(
+      pid,
+      SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: executable, label: label),
+      exitCode: exited,
+    );
+  } on SupervisorClosed catch (e) {
+    // Started while the app quits: it must not outlive it.
+    debugPrint('$label ($pid) started while quitting ($e); ending it.');
+    Process.killPid(pid, ProcessSignal.sigkill);
+  }
 }
 
 ChildPhase? phaseOf(int pid) => switch (_sup.byPid(pid)?.state) {
-  ChildStarting() || ChildRunning() => ChildPhase.running,
+  ChildStarting() || ChildLaunched() || ChildRunning() || ChildUnverified() => ChildPhase.running,
   ChildTerming() || ChildKilling() || ChildNotClosed() => ChildPhase.stopping,
   ChildExited() || ChildStartFailed() || null => null,
 };

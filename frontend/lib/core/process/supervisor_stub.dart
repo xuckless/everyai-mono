@@ -14,6 +14,7 @@ ProcessSupervisor createSupervisor(SupervisorHooks hooks, {required String? ledg
 final class _NoProcesses extends ProcessSupervisor {
   static const _why = 'No processes on this platform';
   final _sweep = ValueNotifier<SweepReport?>(null);
+  final _children = ValueNotifier<List<SupervisedChild>>(const []);
 
   @override
   set ledgerDirectory(String path) {}
@@ -22,11 +23,13 @@ final class _NoProcesses extends ProcessSupervisor {
   @override
   String get appTag => '';
   @override
+  Map<String, String> tagsFor(ProcessOwner owner) => const {};
+  @override
   Future<SupervisedProcess> spawn(SpawnSpec spec) => Future.error(UnsupportedError(_why));
   @override
   SupervisedChild adopt(int pid, SpawnSpec spec, {Future<int>? exitCode}) => throw UnsupportedError(_why);
   @override
-  Future<KillOutcome> stop(SupervisedChild child) async => const ScanFailed(_why);
+  Future<KillOutcome> stop(SupervisedChild child, {StopTimings? timings}) async => const ScanFailed(_why);
   @override
   Future<KillOutcome> stopOwner(ProcessOwner owner, {bool tagged = true, bool descendants = true}) async =>
       const Ended([]);
@@ -44,7 +47,10 @@ final class _NoProcesses extends ProcessSupervisor {
     bool includeParentEnvironment = true,
     String? cwd,
     String? stdin,
-    Encoding encoding = systemEncoding,
+    List<int>? stdinBytes,
+    Encoding stdoutEncoding = systemEncoding,
+    Encoding stderrEncoding = systemEncoding,
+    int? maxOutputBytes,
     String? label,
   }) async => const StartFailed(_why);
   @override
@@ -54,9 +60,14 @@ final class _NoProcesses extends ProcessSupervisor {
   @override
   ValueListenable<SweepReport?> get lastSweep => _sweep;
   @override
-  Future<QuitReport> stopAll() async => QuitReport(const [], at: DateTime.now());
+  Future<QuitReport> stopAll({StopTimings timings = StopTimings.quit}) async =>
+      QuitReport(const [], at: DateTime.now());
   @override
   List<SupervisedChild> get children => const [];
+  @override
+  ValueListenable<List<SupervisedChild>> get childrenListenable => _children;
+  @override
+  int liveCount(ProcessOwner owner) => 0;
   @override
   SupervisedChild? byPid(int pid) => null;
 }

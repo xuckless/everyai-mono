@@ -47,6 +47,7 @@ void main() {
               for (final p in alive) ScanRow(pid: p, ppid: 1, pgid: 1, start: 's$p', command: '/bin/p'),
               ScanRow(pid: pid, ppid: 1, pgid: pid, start: 'me', command: 'test'),
             ]),
+            at: DateTime.now(),
           ),
           signal: (p, s) {
             if (s == ProcessSignal.sigterm && alive.remove(p)) {

@@ -2,43 +2,106 @@
 
 import 'package:flutter/foundation.dart';
 
-/// One process as the OS knows it: its pid, its process group and when it started. A pid can be reused, but not
-/// with the same start time, so a pid is only ever signalled while its start time still matches.
+/// The start token of a process whose start time hasn't been (or can't be) read.
+const unknownStart = '?';
+
+/// Which process group a process is in, as far as killing goes.
+@immutable
+sealed class ProcessGroup {
+  const ProcessGroup();
+}
+
+/// It leads a group (and session) of its own: the whole group can be signalled.
+final class OwnGroup extends ProcessGroup {
+  const OwnGroup();
+  @override
+  bool operator ==(Object other) => other is OwnGroup;
+  @override
+  int get hashCode => 1;
+  @override
+  String toString() => 'own';
+}
+
+/// It is in another process's group (the app's, for an adopted process or one started without a launcher): only
+/// its tree is ended, never the group.
+final class SharedGroup extends ProcessGroup {
+  const SharedGroup(this.pgid);
+  final int pgid;
+  @override
+  bool operator ==(Object other) => other is SharedGroup && other.pgid == pgid;
+  @override
+  int get hashCode => Object.hash(2, pgid);
+  @override
+  String toString() => 'shared $pgid';
+}
+
+/// Process groups don't exist here (Windows).
+final class NoGroups extends ProcessGroup {
+  const NoGroups();
+  @override
+  bool operator ==(Object other) => other is NoGroups;
+  @override
+  int get hashCode => 3;
+  @override
+  String toString() => 'none';
+}
+
+/// One process as the OS knows it: its pid, when it started and its group. A pid can be reused, but not with the
+/// same start time, so a pid is only ever signalled while its start time still matches.
 @immutable
 final class ProcessIdentity {
-  const ProcessIdentity({required this.pid, required this.pgid, required this.start});
+  const ProcessIdentity({required this.pid, required this.start, this.group = const OwnGroup()});
 
   final int pid;
 
-  /// Its process group. Equal to [pid] when it leads a group of its own (every child the supervisor spawns on
-  /// macOS and Linux); the app's own group for an adopted process.
-  final int pgid;
-
   /// Its start time as a token: `ps -o lstart=` with each run of whitespace turned into one `_` (macOS, Linux), or
-  /// a FILETIME number (Windows).
+  /// [unknownStart] (Windows, or not read).
   final String start;
+  final ProcessGroup group;
 
-  /// Whether it leads a process group of its own (so the whole group can be signalled).
-  bool get leadsGroup => pgid == pid;
+  bool get leadsGroup => group is OwnGroup;
 
-  Map<String, Object?> toJson() => {'pid': pid, 'pgid': pgid, 'start': start};
+  /// The group id, where there is one.
+  int? get pgid => switch (group) {
+    OwnGroup() => pid,
+    SharedGroup(:final pgid) => pgid,
+    NoGroups() => null,
+  };
+
+  bool get startKnown => start != unknownStart;
+
+  Map<String, Object?> toJson() => {
+    'pid': pid,
+    'start': start,
+    'group': switch (group) {
+      OwnGroup() => 'own',
+      SharedGroup(:final pgid) => 'shared:$pgid',
+      NoGroups() => 'none',
+    },
+  };
 
   static ProcessIdentity? fromJson(Object? json) => switch (json) {
-    {'pid': final int pid, 'pgid': final int pgid, 'start': final String start} => ProcessIdentity(
+    {'pid': final int pid, 'start': final String start} => ProcessIdentity(
       pid: pid,
-      pgid: pgid,
       start: start,
+      group: switch (json['group']) {
+        'own' => const OwnGroup(),
+        'none' => const NoGroups(),
+        final String g when g.startsWith('shared:') => SharedGroup(int.tryParse(g.substring(7)) ?? 0),
+        // An older line: {pgid}
+        _ => json['pgid'] == pid ? const OwnGroup() : SharedGroup(json['pgid'] is int ? json['pgid'] as int : 0),
+      },
     ),
     _ => null,
   };
 
   @override
   bool operator ==(Object other) =>
-      other is ProcessIdentity && other.pid == pid && other.pgid == pgid && other.start == start;
+      other is ProcessIdentity && other.pid == pid && other.start == start && other.group == group;
   @override
-  int get hashCode => Object.hash(pid, pgid, start);
+  int get hashCode => Object.hash(pid, start, group);
   @override
-  String toString() => '$pid(pg $pgid, $start)';
+  String toString() => '$pid($group, $start)';
 }
 
 /// How a child's end was seen. Only these two count: the exit future of the process the app waits on, or a scan
@@ -48,8 +111,7 @@ sealed class ExitSeen {
   const ExitSeen();
 }
 
-/// The process's own exit (the future `Process.exitCode` or a pty's). On macOS a spawned child's code comes from
-/// the small shell that holds it in its own group, so a signal reads as 128 + its number there.
+/// The process's own exit (`Process.exitCode`, a pty's): the program's real code, negative for a signal.
 final class ExitCode extends ExitSeen {
   const ExitCode(this.code);
   final int code;
@@ -61,8 +123,8 @@ final class ExitCode extends ExitSeen {
   String toString() => 'code $code';
 }
 
-/// A scan showed the pid gone, or alive with another start time (an adopted process, or one whose exit the app
-/// can't wait on). Its exit code is unknown.
+/// A scan showed the pid gone, or alive with another start time (an adopted process the app can't wait on). Its
+/// exit code is unknown.
 final class SeenGone extends ExitSeen {
   const SeenGone();
   @override
@@ -76,22 +138,23 @@ final class SeenGone extends ExitSeen {
 /// Where a child process the supervisor owns is in its life. Every change goes through [nextChildState]:
 ///
 /// ```text
-///                landed(id)                 TERM sent            KILL sent
-///   Starting ───────────────▶ Running(id) ───────────▶ Terming ───────────▶ Killing
-///     │  │                      │  │ KILL sent            │                   │
-///     │  │ startFailed          │  └──────────────────────┼──────────────────▶│
-///     │  ▼                      │                         │ survivors          │ survivors
-///     │ StartFailed             │ exit                    ▼                   ▼
-///     │                         │                     NotClosed(survivors, reason) ◀─┐
-///     │ exit (ended before      ▼                       │ ▲  │ TERM/KILL sent (retry) │
-///     └──its pid was read)──▶ Exited(how) ◀──── exit ───┘ │  └──▶ Terming / Killing ──┘
-///                               │  survivors (its group left processes behind)
-///                               └──────────────────────────┘
+///            spawned(pid)              landed(id)
+///   Starting ────────────▶ Launched(pid) ────────▶ Running(id) ──TERM──▶ Terming ──KILL──▶ Killing
+///     │                      │   │ unverifiable      ▲   │                  │                 │
+///     │ startFailed          │   ▼                   │   │ KILL             │ survivors       │ survivors
+///     ▼                      │ Unverified(pid, why) ─┘   └──────────────────┼────────────────▶│
+///   StartFailed              │   │  (landed later)                          ▼                 ▼
+///                            │   │ TERM / KILL (by tree) ──▶ Terming / Killing      NotClosed(survivors, reason)
+///                            │   │                                                    │  ▲   │ TERM/KILL: retry
+///                            ▼   ▼            exit                                    │  │   ▼
+///                         Exited(how, at) ◀───────────────────────────── exit ────────┘  └─ Terming / Killing
+///                            │ survivors (its group or tree left processes behind)
+///                            └──────────────────────────────▶ NotClosed
 /// ```
 ///
-/// Terming, Killing and NotClosed also end in Exited on an exit. Exited is only reached on the process's own exit
-/// future or a pid + start-time check ([ExitSeen]); never because a signal was sent. NotClosed stays listed, is
-/// retried by the next stop, and is loud (the state stream and the log).
+/// Launched, Running, Unverified, Terming and Killing all end in Exited on an exit. Exited is only reached on the
+/// process's own exit future or a pid + start-time check ([ExitSeen]); never because a signal was sent. NotClosed
+/// and Unverified stay listed and are loud (the state stream and the log); NotClosed is re-checked until gone.
 @immutable
 sealed class ChildState {
   const ChildState();
@@ -105,6 +168,7 @@ sealed class ChildState {
   String get name;
 }
 
+/// `Process.start` hasn't returned yet.
 final class ChildStarting extends ChildState {
   const ChildStarting();
   @override
@@ -117,12 +181,32 @@ final class ChildStarting extends ChildState {
   String toString() => 'Starting';
 }
 
+/// Started: its pid is known, its start time is being read.
+final class ChildLaunched extends ChildState {
+  const ChildLaunched(this.pid, this.at, {this.group = const OwnGroup()});
+  final int pid;
+
+  /// When it was started (for matching it by start time before that is read).
+  final DateTime at;
+
+  /// The group it was started in (its own with a launcher; [SharedGroup] / [NoGroups] without).
+  final ProcessGroup group;
+  @override
+  String get name => 'launched';
+  @override
+  bool operator ==(Object other) =>
+      other is ChildLaunched && other.pid == pid && other.at == at && other.group == group;
+  @override
+  int get hashCode => Object.hash(8, pid, at, group);
+  @override
+  String toString() => 'Launched($pid)';
+}
+
 final class ChildRunning extends ChildState {
   const ChildRunning(this.id, this.startedAt);
   final ProcessIdentity id;
   final DateTime startedAt;
   int get pid => id.pid;
-  int get pgid => id.pgid;
   @override
   String get name => 'running';
   @override
@@ -133,6 +217,26 @@ final class ChildRunning extends ChildState {
   String toString() => 'Running($id)';
 }
 
+/// Running, but its start time couldn't be read (the process table failed, or it isn't listed): it can be ended by
+/// pid and tree only, and nothing about it can be checked. Loud.
+final class ChildUnverified extends ChildState {
+  const ChildUnverified(this.pid, this.at, this.why, {this.group = const OwnGroup()});
+  final int pid;
+  final DateTime at;
+  final String why;
+  final ProcessGroup group;
+  @override
+  String get name => 'unverified';
+  @override
+  bool operator ==(Object other) =>
+      other is ChildUnverified && other.pid == pid && other.why == why && other.at == at && other.group == group;
+  @override
+  int get hashCode => Object.hash(9, pid, why, at, group);
+  @override
+  String toString() => 'Unverified($pid: $why)';
+}
+
+/// SIGTERM sent. [id]'s start is [unknownStart] when the child wasn't verified.
 final class ChildTerming extends ChildState {
   const ChildTerming(this.id, this.since);
   final ProcessIdentity id;
@@ -162,8 +266,11 @@ final class ChildKilling extends ChildState {
 }
 
 final class ChildExited extends ChildState {
-  const ChildExited(this.how);
+  const ChildExited(this.how, this.at);
   final ExitSeen how;
+
+  /// When the end was seen.
+  final DateTime at;
 
   /// The exit code, when the process's own exit was seen.
   int? get code => switch (how) {
@@ -173,9 +280,9 @@ final class ChildExited extends ChildState {
   @override
   String get name => 'exited';
   @override
-  bool operator ==(Object other) => other is ChildExited && other.how == how;
+  bool operator ==(Object other) => other is ChildExited && other.how == how && other.at == at;
   @override
-  int get hashCode => Object.hash(4, how);
+  int get hashCode => Object.hash(4, how, at);
   @override
   String toString() => 'Exited($how)';
 }
@@ -183,7 +290,8 @@ final class ChildExited extends ChildState {
 final class ChildNotClosed extends ChildState {
   const ChildNotClosed(this.survivors, this.reason);
 
-  /// What is still running (the child, or what its group or tree left behind), by pid + start time.
+  /// What is still running (the child, or what its group or tree left behind), by pid + start time (or
+  /// [unknownStart] where it couldn't be read). Never empty.
   final List<ProcessIdentity> survivors;
   final String reason;
   @override
@@ -216,13 +324,31 @@ sealed class ChildChange {
   const ChildChange();
 }
 
-/// Its pid, group and start time were read.
+/// `Process.start` returned (or a process was adopted): its pid.
+final class ChildSpawned extends ChildChange {
+  const ChildSpawned(this.pid, this.at, {this.group = const OwnGroup()});
+  final int pid;
+  final DateTime at;
+  final ProcessGroup group;
+  @override
+  String toString() => 'spawned($pid)';
+}
+
+/// Its start time (and group) were read.
 final class ChildLanded extends ChildChange {
   const ChildLanded(this.id, this.at);
   final ProcessIdentity id;
   final DateTime at;
   @override
   String toString() => 'landed($id)';
+}
+
+/// Its start time can't be read.
+final class ChildUnverifiable extends ChildChange {
+  const ChildUnverifiable(this.why);
+  final String why;
+  @override
+  String toString() => 'unverifiable($why)';
 }
 
 final class ChildFailedToStart extends ChildChange {
@@ -247,8 +373,9 @@ final class ChildKillSent extends ChildChange {
 }
 
 final class ChildExitSeen extends ChildChange {
-  const ChildExitSeen(this.how);
+  const ChildExitSeen(this.how, this.at);
   final ExitSeen how;
+  final DateTime at;
   @override
   String toString() => 'exit($how)';
 }
@@ -256,6 +383,8 @@ final class ChildExitSeen extends ChildChange {
 /// The re-scan after a stop found these still running.
 final class ChildSurvivors extends ChildChange {
   const ChildSurvivors(this.survivors, this.reason);
+
+  /// Never empty.
   final List<ProcessIdentity> survivors;
   final String reason;
   @override
@@ -284,21 +413,45 @@ final class ChildRefused extends ChildStep {
   const ChildRefused();
 }
 
+ProcessIdentity _unchecked(int pid, ProcessGroup group) => ProcessIdentity(pid: pid, start: unknownStart, group: group);
+
 /// The one transition table (see the diagram on [ChildState]).
 ChildStep nextChildState(ChildState from, ChildChange event) => switch ((from, event)) {
-  (ChildStarting(), ChildLanded(:final id, :final at)) => ChildMoves(ChildRunning(id, at)),
+  (ChildStarting(), ChildSpawned(:final pid, :final at, :final group)) => ChildMoves(
+    ChildLaunched(pid, at, group: group),
+  ),
   (ChildStarting(), ChildFailedToStart(:final error)) => ChildMoves(ChildStartFailed(error)),
-  // It ended before its pid could be read (a short command).
-  (ChildStarting(), ChildExitSeen(:final how)) => ChildMoves(ChildExited(how)),
+  (ChildLaunched(), ChildLanded(:final id, :final at)) => ChildMoves(ChildRunning(id, at)),
+  (ChildLaunched(:final pid, :final at, :final group), ChildUnverifiable(:final why)) => ChildMoves(
+    ChildUnverified(pid, at, why, group: group),
+  ),
+  (ChildLaunched(:final pid, :final group), ChildTermSent(:final at)) => ChildMoves(
+    ChildTerming(_unchecked(pid, group), at),
+  ),
+  (ChildLaunched(:final pid, :final group), ChildKillSent(:final at)) => ChildMoves(
+    ChildKilling(_unchecked(pid, group), at),
+  ),
+  (ChildLaunched(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
+  (ChildLaunched(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
   (ChildRunning(:final id), ChildTermSent(:final at)) => ChildMoves(ChildTerming(id, at)),
   (ChildRunning(:final id), ChildKillSent(:final at)) => ChildMoves(ChildKilling(id, at)),
-  (ChildRunning(), ChildExitSeen(:final how)) => ChildMoves(ChildExited(how)),
+  (ChildRunning(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
+  (ChildUnverified(), ChildLanded(:final id, :final at)) => ChildMoves(ChildRunning(id, at)),
+  (ChildUnverified(), ChildUnverifiable()) => const ChildStays(),
+  (ChildUnverified(:final pid, :final group), ChildTermSent(:final at)) => ChildMoves(
+    ChildTerming(_unchecked(pid, group), at),
+  ),
+  (ChildUnverified(:final pid, :final group), ChildKillSent(:final at)) => ChildMoves(
+    ChildKilling(_unchecked(pid, group), at),
+  ),
+  (ChildUnverified(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
+  (ChildUnverified(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
   (ChildTerming(), ChildTermSent()) => const ChildStays(),
   (ChildTerming(:final id), ChildKillSent(:final at)) => ChildMoves(ChildKilling(id, at)),
-  (ChildTerming(), ChildExitSeen(:final how)) => ChildMoves(ChildExited(how)),
+  (ChildTerming(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
   (ChildTerming(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
   (ChildKilling(), ChildTermSent() || ChildKillSent()) => const ChildStays(),
-  (ChildKilling(), ChildExitSeen(:final how)) => ChildMoves(ChildExited(how)),
+  (ChildKilling(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
   (ChildKilling(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
   // The child itself is gone; a stop may still be ending what its tree left behind.
   (ChildExited(), ChildExitSeen() || ChildTermSent() || ChildKillSent()) => const ChildStays(),
@@ -306,7 +459,7 @@ ChildStep nextChildState(ChildState from, ChildChange event) => switch ((from, e
   // A retry: the next stop starts over from the survivors.
   (ChildNotClosed(:final survivors), ChildTermSent(:final at)) => ChildMoves(ChildTerming(survivors.first, at)),
   (ChildNotClosed(:final survivors), ChildKillSent(:final at)) => ChildMoves(ChildKilling(survivors.first, at)),
-  (ChildNotClosed(), ChildExitSeen(:final how)) => ChildMoves(ChildExited(how)),
+  (ChildNotClosed(), ChildExitSeen(:final how, :final at)) => ChildMoves(ChildExited(how, at)),
   (ChildNotClosed(), ChildSurvivors(:final survivors, :final reason)) => ChildMoves(ChildNotClosed(survivors, reason)),
   _ => const ChildRefused(),
 };

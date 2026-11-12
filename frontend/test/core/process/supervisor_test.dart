@@ -1,11 +1,14 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+@TestOn('mac-os || linux')
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:every_ai/core/process/supervisor.dart';
-import 'package:every_ai/core/process/supervisor_io.dart' show watchdogScript;
+import 'package:every_ai/core/process/supervisor_io.dart' show childEnvVar, watchdogScript;
 import 'package:flutter_test/flutter_test.dart';
 
 // Every process these tests start carries [marker] (a shell's $0, a script's name) or sleeps [nap] seconds, so the
@@ -34,6 +37,13 @@ List<String> leftovers() => [
     if ((l.contains(marker) || l.contains(' $nap')) && !l.contains(' ps ') && !l.contains('Z')) l.trim(),
 ];
 
+/// The pids of `sleep <nap>` processes whose parent is init.
+List<int> orphanNaps() => [
+  for (final l in const LineSplitter().convert(_ps(['-A', '-ww', '-o', 'pid=,ppid=,command='])))
+    if (RegExp(r'^\s*(\d+)\s+1\s+sleep ' + RegExp.escape(nap) + r'$').firstMatch(l) case final m?)
+      int.parse(m.group(1)!),
+];
+
 Future<void> eventually(bool Function() ok, {Duration within = const Duration(seconds: 5)}) async {
   final until = DateTime.now().add(within);
   while (!ok()) {
@@ -42,12 +52,23 @@ Future<void> eventually(bool Function() ok, {Duration within = const Duration(se
   }
 }
 
+SpawnSpec napSpec({ProcessOwner owner = const AppOwner()}) =>
+    SpawnSpec(owner: owner, kind: ProcessKind.helper, exe: 'sleep', args: [nap]);
+
 void main() {
   late Directory dir;
   final made = <ProcessSupervisor>[];
 
-  ProcessSupervisor supervisor({SupervisorHooks hooks = const SupervisorHooks(timings: fast)}) {
-    final s = ProcessSupervisor.create(hooks: hooks, ledgerDir: '${dir.path}/l${made.length}');
+  setUpAll(() {
+    // The launcher the supervisor finds in frontend/.tools (as in development).
+    if (!File('.tools/everyai-exec').existsSync()) {
+      final r = Process.runSync('tool/build_exec_helper.sh', const []);
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+    }
+  });
+
+  ProcessSupervisor supervisor({SupervisorHooks hooks = const SupervisorHooks(timings: fast), String? ledgerDir}) {
+    final s = ProcessSupervisor.create(hooks: hooks, ledgerDir: ledgerDir ?? '${dir.path}/l${made.length}');
     made.add(s);
     return s;
   }
@@ -74,7 +95,7 @@ void main() {
   });
 
   group('the state table', () {
-    final id = const ProcessIdentity(pid: 10, pgid: 10, start: 's');
+    const id = ProcessIdentity(pid: 10, start: 's');
     final at = DateTime(2026);
     ChildState step(ChildState s, ChildChange e) => switch (nextChildState(s, e)) {
       ChildMoves(:final next) => next,
@@ -84,75 +105,173 @@ void main() {
     bool refused(ChildState s, ChildChange e) => nextChildState(s, e) is ChildRefused;
 
     test('the edges of the diagram', () {
-      var s = step(const ChildStarting(), ChildLanded(id, at));
+      var s = step(const ChildStarting(), ChildSpawned(10, at));
+      expect(s, ChildLaunched(10, at));
+      expect(
+        step(s, const ChildUnverifiable('no table')),
+        ChildUnverified(10, at, 'no table'),
+        reason: 'its start time could not be read',
+      );
+      expect(step(ChildUnverified(10, at, 'x'), ChildLanded(id, at)), ChildRunning(id, at));
+      expect(
+        step(ChildUnverified(10, at, 'x'), ChildTermSent(at)),
+        ChildTerming(const ProcessIdentity(pid: 10, start: unknownStart), at),
+      );
+      expect(step(s, ChildExitSeen(ExitCode(0), at)), ChildExited(ExitCode(0), at));
+      s = step(s, ChildLanded(id, at));
       expect(s, ChildRunning(id, at));
       s = step(s, ChildTermSent(at));
       expect(s, isA<ChildTerming>());
       expect(step(s, ChildTermSent(at)), s, reason: 'a second TERM joins');
       s = step(s, ChildKillSent(at));
       expect(s, isA<ChildKilling>());
-      s = step(s, const ChildExitSeen(ExitCode(-9)));
-      expect(s, const ChildExited(ExitCode(-9)));
-      expect(step(s, const ChildExitSeen(SeenGone())), s, reason: 'the exit future after a scan saw it gone');
-      expect(step(s, ChildSurvivors([id], 'left')), isA<ChildNotClosed>(), reason: 'its group left processes');
-      final nc = step(ChildKilling(id, at), ChildSurvivors([id], 'x'));
-      expect(nc, ChildNotClosed([id], 'x'));
+      s = step(s, ChildExitSeen(ExitCode(-9), at));
+      expect(s, ChildExited(ExitCode(-9), at));
+      expect(step(s, ChildExitSeen(SeenGone(), at)), s, reason: 'the exit future after a scan saw it gone');
+      expect(step(s, const ChildSurvivors([id], 'left')), isA<ChildNotClosed>(), reason: 'its group left processes');
+      final nc = step(ChildKilling(id, at), const ChildSurvivors([id], 'x'));
+      expect(nc, const ChildNotClosed([id], 'x'));
       expect(step(nc, ChildTermSent(at)), ChildTerming(id, at), reason: 'a retry');
-      expect(step(nc, const ChildExitSeen(SeenGone())), const ChildExited(SeenGone()));
-      expect(step(const ChildStarting(), const ChildExitSeen(ExitCode(0))), const ChildExited(ExitCode(0)));
+      expect(step(nc, ChildExitSeen(SeenGone(), at)), ChildExited(SeenGone(), at));
       expect(step(const ChildStarting(), const ChildFailedToStart('no')), const ChildStartFailed('no'));
       expect(step(ChildRunning(id, at), ChildKillSent(at)), ChildKilling(id, at));
     });
 
     test('refused edges: recorded, and the state stays', () {
-      expect(refused(const ChildStarting(), ChildTermSent(at)), isTrue, reason: 'a stop waits for the landing');
-      expect(refused(const ChildStarting(), ChildSurvivors([id], 'x')), isTrue);
+      expect(refused(const ChildStarting(), ChildTermSent(at)), isTrue, reason: 'a stop waits for the start');
+      expect(refused(const ChildStarting(), ChildLanded(id, at)), isTrue);
       expect(refused(ChildRunning(id, at), ChildLanded(id, at)), isTrue);
-      expect(refused(ChildRunning(id, at), ChildSurvivors([id], 'x')), isTrue, reason: 'survivors only after a stop');
-      expect(refused(const ChildExited(SeenGone()), ChildLanded(id, at)), isTrue);
-      for (final e in [ChildLanded(id, at), ChildTermSent(at), const ChildExitSeen(SeenGone())]) {
+      expect(refused(ChildRunning(id, at), const ChildSurvivors([id], 'x')), isTrue);
+      expect(refused(ChildRunning(id, at), ChildSpawned(1, at)), isTrue);
+      expect(refused(ChildExited(SeenGone(), at), ChildLanded(id, at)), isTrue);
+      for (final e in [ChildLanded(id, at), ChildTermSent(at), ChildExitSeen(SeenGone(), at)]) {
         expect(refused(const ChildStartFailed('x'), e), isTrue);
       }
       assertOnRefusedChildTransition = false;
       refusedChildTransitions.clear();
-      final s = applyChildEvent(const ChildExited(SeenGone()), ChildLanded(id, at), label: 't');
-      expect(s, const ChildExited(SeenGone()));
+      final s = applyChildEvent(ChildExited(SeenGone(), at), ChildLanded(id, at), label: 't');
+      expect(s, ChildExited(SeenGone(), at));
       expect(refusedChildTransitions.single.label, 't');
       assertOnRefusedChildTransition = true;
     });
   });
 
-  group('processes', () {
-    test('a child leads a process group of its own and carries the app and owner tags', () async {
+  group('starting', () {
+    test('a child leads a session of its own from the start, has no terminal, and carries its tags', () async {
       final s = supervisor();
-      final p = await s.spawn(
-        SpawnSpec(owner: const SessionOwner('s1'), kind: ProcessKind.helper, exe: 'sleep', args: [nap]),
-      );
+      final p = await s.spawn(napSpec(owner: const SessionOwner('s1')));
+      expect(p.pid, isNotNull, reason: 'known as soon as spawn returns');
       final id = await p.landed;
+      expect(pgidOf(p.pid!), p.pid, reason: 'its own group');
+      expect(pgidOf(p.pid!), isNot(pgidOf(pid)));
       expect(id.pid, p.pid);
-      expect(pgidOf(id.pid), id.pid, reason: 'its own group');
-      expect(id.pgid, id.pid);
-      expect(pgidOf(id.pid), isNot(pgidOf(pid)), reason: 'not the app\'s group');
+      expect(id.leadsGroup, isTrue);
       expect(id.start, startOf(id.pid));
 
       final r = await s.runBounded(
         '/bin/sh',
-        ['-c', r'echo "$EVERYAI_APP|$EVERYAI_OWNER|$EVERYAI_SESSION"; echo "$$ $(ps -o pgid= -p $$)"', marker],
+        [
+          '-c',
+          'echo "\$EVERYAI_APP|\$EVERYAI_OWNER|\$EVERYAI_SESSION|\$$childEnvVar"; '
+              r'ps -o pid=,pgid=,sess=,tty= -p $$',
+          marker,
+        ],
         owner: const SessionOwner('s1'),
         timeout: const Duration(seconds: 10),
       );
-      expect(r, isA<Finished>());
       final lines = const LineSplitter().convert((r as Finished).stdout);
-      expect(lines.first, '${s.appTag}|session:s1|s1');
-      expect(s.appTag, '$pid:${startOf(pid)}');
-      final [shPid, shPgid] = lines[1].trim().split(RegExp(r'\s+'));
+      expect(lines.first, startsWith('${s.appTag}|session:s1|s1|'));
+      expect(s.tagsFor(const SessionOwner('s1')), {
+        appEnvVar: s.appTag,
+        ownerEnvVar: 'session:s1',
+        sessionTagEnvVar: 's1',
+      });
+      final [shPid, shPgid, _, tty] = lines[1].trim().split(RegExp(r'\s+'));
       expect(shPgid, shPid, reason: 'a one-shot leads its own group too');
+      expect(tty, anyOf('??', '?'), reason: 'no controlling terminal');
 
       expect(await p.stop(), isA<Ended>());
       expect(p.state, isA<ChildExited>());
       expect(running(id.pid), isFalse);
     });
 
+    test('a child reading /dev/tty gets an error at once instead of hanging', () async {
+      final r = await supervisor().runBounded('/bin/sh', [
+        '-c',
+        'cat /dev/tty',
+        marker,
+      ], timeout: const Duration(seconds: 5));
+      expect(r, isA<Finished>());
+      expect((r as Finished).code, isNot(0));
+    });
+
+    test(
+      'the program is looked up on PATH, never through a shell (exported functions and builtins mean nothing)',
+      () async {
+        final s = supervisor();
+        final a = await s.runBounded(
+          'sleep',
+          const ['0'],
+          env: const {'BASH_FUNC_sleep%%': '() { echo hijacked; }'},
+          timeout: const Duration(seconds: 5),
+        );
+        expect((a as Finished).code, 0);
+        expect(a.stdout, isEmpty);
+        final b = await s.runBounded('echo', const ['-n', 'x'], timeout: const Duration(seconds: 5));
+        expect((b as Finished).stdout, 'x', reason: '/bin/echo, not a builtin');
+      },
+    );
+
+    test('missing or not executable: a start failure, like Process.start', () async {
+      final s = supervisor();
+      final plain = File('${dir.path}/not-exec')..writeAsStringSync('#!/bin/sh\necho hi\n');
+      await expectLater(
+        s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: plain.path)),
+        throwsA(isA<ProcessException>().having((e) => e.errorCode, 'errorCode', 13)),
+      );
+      await expectLater(
+        s.spawn(const SpawnSpec(owner: AppOwner(), kind: ProcessKind.helper, exe: 'no-such-program-at-all')),
+        throwsA(isA<ProcessException>().having((e) => e.errorCode, 'errorCode', 2)),
+      );
+      expect(await s.runBounded(plain.path, const [], timeout: const Duration(seconds: 5)), isA<StartFailed>());
+      expect(s.children, isEmpty);
+    });
+
+    for (final via in [LaunchVia.helper, if (Platform.isMacOS) LaunchVia.perl]) {
+      test('${via.name}: the pid is the program, and a signal reads as a negative code', () async {
+        final s = supervisor(
+          hooks: SupervisorHooks(timings: fast, launch: via),
+        );
+        final p = await s.spawn(napSpec());
+        await p.landed;
+        expect(pgidOf(p.pid!), p.pid);
+        expect(_ps(['-o', 'command=', '-p', '${p.pid}']), '/bin/sleep $nap', reason: 'nothing in between');
+        expect(p.signal(ProcessSignal.sigterm), isTrue);
+        expect(await p.exitCode, -15);
+      });
+    }
+
+    test('without a launcher the child shares the app\'s group, explicitly, and is ended by its tree', () async {
+      final signals = <int>[];
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: fast,
+          launch: LaunchVia.shared,
+          signal: (p, sig) {
+            signals.add(p);
+            return Process.killPid(p, sig);
+          },
+        ),
+      );
+      final p = await s.spawn(sh('sleep $nap & wait'));
+      final id = await p.landed;
+      expect(id.group, SharedGroup(pgidOf(pid)));
+      expect(await p.stop(), isA<Ended>());
+      expect(signals.where((x) => x < 0), isEmpty, reason: 'never the app\'s group');
+    });
+  });
+
+  group('stopping', () {
     test('a child that ignores TERM, with a grandchild: the stop goes through Killing and ends both', () async {
       final s = supervisor();
       final p = await s.spawn(sh('trap "" TERM; sleep $nap & wait; sleep $nap'));
@@ -176,6 +295,32 @@ void main() {
       expect(s.children, isEmpty);
     });
 
+    test('a polite stop goes first; a child that takes it gets no signal', () async {
+      final signals = <int>[];
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: fast,
+          signal: (p, sig) {
+            signals.add(p);
+            return Process.killPid(p, sig);
+          },
+        ),
+      );
+      final p = await s.spawn(
+        SpawnSpec(
+          owner: const AppOwner(),
+          kind: ProcessKind.mcp,
+          exe: '/bin/sh',
+          args: ['-c', 'read x; exit 0', marker],
+          politeStop: PoliteStop((c) => (c as SupervisedProcess).stdin.close()),
+        ),
+      );
+      await p.landed;
+      expect(await p.stop(), isA<Ended>());
+      expect(await p.exitCode, 0);
+      expect(signals, isEmpty);
+    });
+
     test('a second stop joins the first; TERM goes out once', () async {
       final terms = <int>[];
       final s = supervisor(
@@ -187,28 +332,28 @@ void main() {
           },
         ),
       );
-      final p = await s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]));
+      final p = await s.spawn(napSpec());
       final id = await p.landed;
       final a = p.stop(), b = s.stop(p);
       expect(identical(a, b), isTrue);
       await a;
       expect(terms.where((t) => t == id.pid), hasLength(1));
-      expect(terms.where((t) => t == -id.pgid), hasLength(1));
+      expect(terms.where((t) => t == -id.pid), hasLength(1));
     });
 
-    test('a stop of a child still starting ends it once it lands', () async {
+    test('a stop of a child still starting ends it once it is started', () async {
       final s = supervisor();
-      final spawned = s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]));
+      final spawned = s.spawn(napSpec());
       expect(s.children.single.state, const ChildStarting());
-      final quit = await s.stopAll();
+      final stopped = s.children.single.stop();
       final p = await spawned;
-      expect(quit.entries.single.outcome, isA<Ended>());
+      expect(await stopped, isA<Ended>());
       expect(p.state, isA<ChildExited>());
       expect(running(p.pid!), isFalse);
     });
 
     test('stopOwner ends an orphan that left the group, found by its owner tag', () async {
-      // The orphan must show its environment: Linux shows every process's, macOS hides system binaries' (so the
+      // The orphan must show its environment: Linux shows every process's, macOS hides Apple binaries' (so the
       // Dart VM stands in for a user's program there).
       String exe;
       List<String> args;
@@ -234,23 +379,49 @@ void main() {
       final orphan = int.parse((r as Finished).stdout.trim());
       await eventually(() => _ps(['-o', 'ppid=', '-p', '$orphan']) == '1');
       expect(pgidOf(orphan), isNot(pgidOf(pid)));
-      expect(running(orphan), isTrue);
       final out = await s.stopOwner(owner);
       expect(out, isA<Ended>());
       expect((out as Ended).pids, contains(orphan));
       expect(running(orphan), isFalse);
     });
 
-    test('a failed scan is never "nothing left": ScanFailed, and the child is not Exited', () async {
+    test('an escapee that left with its own session and a hidden environment is ended or reported, never "Ended" '
+        'without it', () async {
+      final s = supervisor();
+      final p = await s.spawn(
+        sh(
+          '/usr/bin/perl -MPOSIX -e \'fork and exit; POSIX::setsid(); exec "sleep", "$nap"\'; '
+          'exec sleep 30.${pid}1',
+        ),
+      );
+      await p.landed;
+      await eventually(() => orphanNaps().isNotEmpty);
+      final escapee = orphanNaps().single;
+      final out = await p.stop();
+      switch (out) {
+        case Ended(:final pids):
+          expect(pids, contains(escapee));
+          expect(running(escapee), isFalse);
+        case Unaccounted(:final candidates):
+          expect(candidates, contains(escapee));
+          if (Platform.isLinux) fail('Linux reads every environment: the tag should have found it');
+        default:
+          fail('unexpected $out');
+      }
+      Process.killPid(escapee, ProcessSignal.sigkill);
+    });
+
+    test('a failed scan is never "nothing left": ScanFailed, NotClosed, and re-checked until it is gone', () async {
       var failing = false;
+      final real = ProcessSupervisor.create();
       final s = supervisor(
         hooks: SupervisorHooks(
           timings: const StopTimings(termGrace: Duration(milliseconds: 100), killWait: Duration(milliseconds: 100)),
-          scan: ({required env}) async => failing ? const ScanFailed('injected') : s0.scan(env: env),
+          scan: ({required env}) async => failing ? const ScanFailed('injected') : real.scan(env: env),
           signal: (_, _) => true, // signals "sent" but nothing happens
         ),
       );
-      final p = await s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]));
+      final p = await s.spawn(napSpec());
       final id = await p.landed;
       failing = true;
       final out = await p.stop();
@@ -259,8 +430,31 @@ void main() {
       expect(s.children, contains(p));
       expect(running(id.pid), isTrue);
       Process.killPid(id.pid, ProcessSignal.sigkill);
-      expect(await p.exitCode, isNot(0));
+      expect(await p.exitCode, -9);
       expect(p.state, isA<ChildExited>(), reason: 'its own exit future');
+    });
+
+    test('an adopted child not closed for want of a scan is re-checked once scans work again', () async {
+      var failing = false;
+      final real = ProcessSupervisor.create();
+      final s = supervisor(
+        hooks: SupervisorHooks(
+          timings: const StopTimings(termGrace: Duration(milliseconds: 100), killWait: Duration(milliseconds: 100)),
+          scan: ({required env}) async => failing ? const ScanFailed('injected') : real.scan(env: env),
+          signal: (_, _) => true,
+        ),
+      );
+      final raw = await Process.start('sleep', [nap]);
+      final c = s.adopt(raw.pid, const SpawnSpec(owner: AppOwner(), kind: ProcessKind.pty, exe: 'sleep'));
+      await c.landed;
+      failing = true;
+      expect(await c.stop(), isA<ScanFailed>());
+      expect(c.state, isA<ChildNotClosed>());
+      raw.kill(ProcessSignal.sigkill);
+      await raw.exitCode;
+      failing = false;
+      await c.ended.timeout(const Duration(seconds: 5));
+      expect(c.state, isA<ChildExited>());
     });
 
     test('an unkillable child is NotClosed, stays listed, and is seen gone once it is', () async {
@@ -270,7 +464,7 @@ void main() {
           signal: _ignore,
         ),
       );
-      final p = await s.spawn(SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]));
+      final p = await s.spawn(napSpec());
       final id = await p.landed;
       final out = await p.stop();
       expect(out, isA<Survived>());
@@ -303,27 +497,34 @@ void main() {
         stdin: 'hi\n',
         timeout: const Duration(seconds: 10),
       );
-      expect(r, isA<Finished>());
       final f = r as Finished;
-      expect((f.code, f.stdout, f.stderr), (3, 'got hi\n', 'err\n'));
-    });
-
-    test('a program that is not there is StartFailed', () async {
-      final r = await supervisor().runBounded('no-such-program-$pid', const [], timeout: const Duration(seconds: 5));
-      expect(r, isA<StartFailed>());
+      expect((f.code, f.stdout, f.stderr, f.leftRunning), (3, 'got hi\n', 'err\n', null));
+      expect(f.stdoutBytes, utf8.encode('got hi\n'));
     });
 
     test('a timeout kills the command and its child, verified', () async {
-      final s = supervisor();
-      final r = await s.runBounded('/bin/sh', [
+      final r = await supervisor().runBounded('/bin/sh', [
         '-c',
         'sleep $nap & sleep $nap',
         marker,
       ], timeout: const Duration(milliseconds: 400));
-      expect(r, isA<TimedOut>());
       final kill = (r as TimedOut).kill;
       expect(kill, isA<Ended>());
       expect((kill as Ended).pids.length, greaterThanOrEqualTo(3));
+      expect(leftovers(), isEmpty);
+    });
+
+    test('a program that exited while something it started holds its pipes: Finished, with that stopped', () async {
+      final sw = Stopwatch()..start();
+      final r = await supervisor().runBounded('/bin/sh', [
+        '-c',
+        'sleep $nap & echo started; exit 0',
+        marker,
+      ], timeout: const Duration(seconds: 20));
+      final f = r as Finished;
+      expect((f.code, f.stdout), (0, 'started\n'));
+      expect(f.leftRunning, isA<Ended>());
+      expect(sw.elapsed, lessThan(const Duration(seconds: 5)), reason: 'not the timeout');
       expect(leftovers(), isEmpty);
     });
 
@@ -343,42 +544,156 @@ void main() {
       expect(running(left.pid!), isFalse);
     });
 
+    test('50 MB of output with a cap: the cap is kept, the rest dropped, memory stays put', () async {
+      final before = ProcessInfo.currentRss;
+      final r = await supervisor().runBounded(
+        '/bin/sh',
+        ['-c', 'head -c 52428800 /dev/zero', marker],
+        maxOutputBytes: 1 << 20,
+        timeout: const Duration(seconds: 30),
+      );
+      final f = r as Finished;
+      expect(f.code, 0);
+      expect(f.stdoutBytes.length, 1 << 20);
+      expect(f.truncated, isTrue);
+      expect(ProcessInfo.currentRss - before, lessThan(100 << 20));
+    });
+
     test('a cancel stops it', () async {
       final cancel = Completer<void>();
       final r = supervisor().runBounded('sleep', [nap], timeout: const Duration(seconds: 30), cancel: cancel.future);
       await Future<void>.delayed(const Duration(milliseconds: 200));
       cancel.complete();
       final res = await r;
-      expect(res, isA<Cancelled>());
       expect((res as Cancelled).kill, isA<Ended>());
     });
   });
 
-  group('ledger, sweep, watchdog, quit', () {
-    test(
-      'the ledger records spawn, run, states and exit; stopAll writes quit.json and deletes a clean ledger',
-      () async {
-        final s = supervisor();
-        final p = await s.spawn(
-          SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]),
-        );
-        await p.landed;
-        final ledger = File('${await s.ledgerDirectory}/ledger-$pid.jsonl');
-        await p.stop();
-        final lines = ledger.readAsLinesSync().map(LedgerLine.decode).toList();
-        expect(lines.first, isA<LedgerApp>());
-        expect(lines.whereType<LedgerSpawn>().single.label, 'sleep');
-        expect(lines.whereType<LedgerRun>().single.identity.pid, p.pid);
-        expect(lines.whereType<LedgerState>().map((l) => l.state), contains('terming'));
-        expect(lines.whereType<LedgerExit>(), hasLength(1));
-        expect(LedgerFold.of(ledger.readAsLinesSync()).live, isEmpty);
+  group('the supervisor', () {
+    test('quitting: spawns and adoptions are refused, and a quit can\'t race a new ledger', () async {
+      final s = supervisor();
+      await s.spawn(napSpec());
+      final quit = s.stopAll();
+      await expectLater(s.spawn(napSpec()), throwsA(isA<SupervisorClosed>()));
+      expect(() => s.adopt(1, napSpec()), throwsA(isA<SupervisorClosed>()));
+      expect((await quit).clean, isTrue);
+      await expectLater(s.spawn(napSpec()), throwsA(isA<SupervisorClosed>()));
+      expect(identical(s.stopAll(), s.stopAll()), isFalse); // both the same finished report
+      expect(await s.stopAll(), same(await quit));
+      final files = Directory(await s.ledgerDirectory).listSync().map((e) => e.uri.pathSegments.last).toList();
+      expect(files, ['quit.json'], reason: 'the clean ledger and list are gone, and nothing was made again');
+    });
 
-        final q = await s.stopAll();
-        expect(q.clean, isTrue);
-        expect(File('${await s.ledgerDirectory}/quit.json').existsSync(), isTrue);
-        expect(ledger.existsSync(), isFalse);
-      },
-    );
+    test('children and counts are observable', () async {
+      final s = supervisor();
+      final seen = <int>[];
+      s.childrenListenable.addListener(() => seen.add(s.childrenListenable.value.length));
+      final p = await s.spawn(napSpec(owner: const SessionOwner('x')));
+      expect(s.liveCount(const SessionOwner('x')), 1);
+      await p.stop();
+      expect(s.liveCount(const SessionOwner('x')), 0);
+      expect(seen.last, 0);
+      expect(seen, contains(1));
+    });
+
+    test('the ledger is this run\'s own (pid and start time) and records launch, run, states and exit', () async {
+      final s = supervisor();
+      final p = await s.spawn(napSpec());
+      await p.landed;
+      final ledgerDir = await s.ledgerDirectory;
+      final ledger = File('$ledgerDir/ledger-$pid-${startOf(pid)}.jsonl');
+      await p.stop();
+      await eventually(() => ledger.existsSync() && ledger.readAsStringSync().contains('"t":"exit"'));
+      final lines = ledger.readAsLinesSync().map(LedgerLine.decode).toList();
+      expect(lines.first, isA<LedgerApp>());
+      expect(lines.whereType<LedgerSpawn>().single.label, 'sleep');
+      expect(lines.whereType<LedgerLaunch>().single.pid, p.pid);
+      expect(lines.whereType<LedgerRun>().single.identity.pid, p.pid);
+      expect(lines.whereType<LedgerState>().map((l) => l.state), contains('terming'));
+      expect(lines.whereType<LedgerExit>(), hasLength(1));
+      expect(LedgerFold.of(ledger.readAsLinesSync()).live, isEmpty);
+      expect((await s.stopAll()).clean, isTrue);
+      expect(File('$ledgerDir/quit.json').existsSync(), isTrue);
+      expect(ledger.existsSync(), isFalse);
+    });
+
+    test('a ledger left by a dead run with this pid is never appended to or taken back', () async {
+      final helper = supervisor();
+      final live = await helper.spawn(napSpec());
+      final liveId = await live.landed;
+      final d = '${dir.path}/stale';
+      Directory(d).createSync();
+      final stale = File('$d/ledger-$pid-Mon_Jan_1_00:00:00_2001.jsonl')
+        ..writeAsStringSync(
+          [
+            LedgerApp(pid: pid, start: 'Mon_Jan_1_00:00:00_2001'),
+            const LedgerSpawn(id: 1, exe: 'sleep', owner: 'app', kind: 'helper', label: 'old'),
+            LedgerRun(id: 1, identity: liveId),
+          ].map((l) => l.encode()).join(),
+        );
+      final legacy = File('$d/ledger-$pid.jsonl')..writeAsStringSync(stale.readAsStringSync());
+      final before = stale.readAsStringSync();
+      final s = supervisor(ledgerDir: d);
+      final mine = await s.spawn(napSpec());
+      await mine.landed;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(s.children.map((c) => c.pid), [mine.pid]);
+      expect(stale.readAsStringSync(), before);
+      expect(legacy.readAsStringSync(), before);
+    });
+
+    test('this run reopened (a hot restart) takes back what its ledger still runs', () async {
+      final d = '${dir.path}/same';
+      final first = supervisor(ledgerDir: d);
+      final p = await first.spawn(napSpec());
+      await p.landed;
+      await eventually(() => File('$d/ledger-$pid-${startOf(pid)}.jsonl').existsSync());
+      await Future<void>.delayed(const Duration(milliseconds: 100)); // the run line written
+      final again = supervisor(ledgerDir: d);
+      await again.ledgerDirectory;
+      expect(again.children.map((c) => c.pid), [p.pid]);
+      expect(await again.children.single.stop(), isA<Ended>());
+      await p.ended;
+    });
+
+    test('the sweep ends what a dead run listed, only where pid and start time (or launch time) match', () async {
+      final helper = supervisor();
+      final ours = await helper.spawn(napSpec());
+      final reused = await helper.spawn(napSpec());
+      final launchedAt = DateTime.now();
+      final early = await helper.spawn(napSpec());
+      final a = await ours.landed, b = await reused.landed;
+      await early.landed;
+      final gone = await Process.start('true', const []);
+      await gone.exitCode;
+      final s = supervisor();
+      final ledgerDir = await s.ledgerDirectory;
+      final dead = File('$ledgerDir/ledger-${gone.pid}-Thu_Jan_1_00:00:00_1970.jsonl')
+        ..writeAsStringSync(
+          [
+            LedgerApp(pid: gone.pid, start: 'Thu_Jan_1_00:00:00_1970'),
+            const LedgerSpawn(id: 1, exe: 'sleep', owner: 'app', kind: 'helper', label: 'ours'),
+            LedgerRun(id: 1, identity: a),
+            const LedgerSpawn(id: 2, exe: 'sleep', owner: 'app', kind: 'helper', label: 'reused'),
+            LedgerRun(
+              id: 2,
+              identity: ProcessIdentity(pid: b.pid, start: 'Mon_Jan_1_00:00:00_2001'),
+            ),
+            const LedgerSpawn(id: 3, exe: 'sleep', owner: 'app', kind: 'helper', label: 'early'),
+            LedgerLaunch(id: 3, pid: early.pid!, at: launchedAt),
+          ].map((l) => l.encode()).join(),
+        );
+      final report = await s.sweepPreviousRuns();
+      expect(report.failure, isNull);
+      expect(report.ended.map((e) => e.pid), unorderedEquals([a.pid, early.pid]));
+      expect(report.leftAlone.map((e) => e.pid), [b.pid]);
+      expect(report.survived, isEmpty);
+      expect(s.lastSweep.value, same(report));
+      expect(dead.existsSync(), isFalse);
+      expect(running(a.pid), isFalse);
+      expect(running(early.pid!), isFalse);
+      expect(running(b.pid), isTrue, reason: 'another start time: not ours');
+    });
 
     test('a supervisor that sweeps at start does so once, on its first use, and keeps the report', () async {
       final s = ProcessSupervisor.create(
@@ -389,93 +704,106 @@ void main() {
       made.add(s);
       expect(s.lastSweep.value, isNull);
       final raw = await Process.start('sleep', [nap]);
-      final c = s.adopt(
-        raw.pid,
-        const SpawnSpec(owner: AppOwner(), kind: ProcessKind.helper, exe: 'sleep'),
-        exitCode: raw.exitCode,
-      );
+      final c = s.adopt(raw.pid, napSpec(), exitCode: raw.exitCode);
       await c.landed;
       await eventually(() => s.lastSweep.value != null);
       expect(s.lastSweep.value!.failure, isNull);
-      expect(identical(s.sweepPreviousRuns(), s.sweepPreviousRuns()), isTrue);
+      expect(await s.sweepPreviousRuns(), same(s.lastSweep.value));
       expect(await c.stop(), isA<Ended>());
     });
 
-    test('the sweep ends what a dead run listed, only where pid and start time both match', () async {
-      final helper = supervisor();
-      SpawnSpec napSpec() => SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]);
-      final ours = await helper.spawn(napSpec());
-      final reused = await helper.spawn(napSpec());
-      final a = await ours.landed, b = await reused.landed;
-      // A run that has ended: a pid that is gone.
-      final gone = await Process.start('true', const []);
-      await gone.exitCode;
-      final s = supervisor();
-      final ledgerDir = await s.ledgerDirectory;
-      final dead = File('$ledgerDir/ledger-${gone.pid}.jsonl')
-        ..writeAsStringSync(
-          [
-            LedgerApp(pid: gone.pid, start: 'Thu_Jan_1_00:00:00_1970', pgid: gone.pid),
-            const LedgerSpawn(id: 1, exe: 'sleep', owner: 'app', kind: 'helper', label: 'ours'),
-            LedgerRun(id: 1, identity: a),
-            const LedgerSpawn(id: 2, exe: 'sleep', owner: 'app', kind: 'helper', label: 'reused'),
-            LedgerRun(
-              id: 2,
-              identity: ProcessIdentity(pid: b.pid, pgid: b.pgid, start: 'Mon_Jan_1_00:00:00_2001'),
-            ),
-          ].map((l) => l.encode()).join(),
-        );
-      final report = await s.sweepPreviousRuns();
-      expect(report.failure, isNull);
-      expect(report.ended.map((e) => e.pid), [a.pid]);
-      expect(report.leftAlone.map((e) => e.pid), [b.pid]);
-      expect(report.survived, isEmpty);
-      expect(s.lastSweep.value, same(report));
-      expect(dead.existsSync(), isFalse);
-      expect(running(a.pid), isFalse);
-      expect(running(b.pid), isTrue, reason: 'another start time: not ours');
-    });
+    test(
+      'the watchdog ends a listed group, an adopted child\'s whole tree, and nothing with another start time',
+      () async {
+        final s = supervisor();
+        final group = await s.spawn(sh('sleep $nap & wait'));
+        final stranger = await s.spawn(napSpec());
+        final g = await group.landed, st = await stranger.landed;
+        await eventually(() => _ps(['-A', '-o', 'pgid=']).split('\n').where((l) => l.trim() == '${g.pid}').length == 2);
+        // An adopted-like child in this process's group, with a child of its own the list doesn't name.
+        final shared = await Process.start('/bin/sh', ['-c', 'sleep $nap & wait', marker]);
+        await eventually(() => _ps(['-A', '-o', 'ppid=']).split('\n').any((l) => l.trim() == '${shared.pid}'));
+        final sharedId = ProcessIdentity(pid: shared.pid, start: startOf(shared.pid), group: SharedGroup(pgidOf(pid)));
+        // A stand-in app that dies in a second (not the test runner).
+        final app = await Process.start('sleep', ['1']);
+        final appStart = startOf(app.pid);
+        final list = File('${dir.path}/watch.list')
+          ..writeAsStringSync(
+            watchList([
+              (id: g, at: null),
+              (id: sharedId, at: null),
+              (id: ProcessIdentity(pid: st.pid, start: 'Mon_Jan_1_00:00:00_2001'), at: null),
+            ]),
+          );
+        final run = await Process.run('/bin/sh', [
+          '-c',
+          watchdogScript,
+          'everyai-watchdog',
+          '${app.pid}',
+          appStart,
+          list.path,
+          'nobody:none',
+          '0.2',
+          '0.3',
+          '${dir.path}/wd.pid',
+        ]);
+        expect(run.exitCode, 0, reason: '${run.stderr}');
+        await group.ended.timeout(const Duration(seconds: 5));
+        expect(_ps(['-A', '-o', 'pgid=']).split('\n').where((l) => l.trim() == '${g.pid}'), isEmpty);
+        expect(await shared.exitCode.timeout(const Duration(seconds: 5)), isNot(0));
+        expect(running(st.pid), isTrue);
+        expect(list.existsSync(), isFalse);
+        expect(File('${dir.path}/wd.pid').existsSync(), isFalse);
+      },
+    );
 
-    test('the watchdog ends a listed group once the app dies, and leaves a pid with another start time', () async {
-      final s = supervisor();
-      final group = await s.spawn(sh('sleep $nap & wait'));
-      final stranger = await s.spawn(
-        SpawnSpec(owner: const AppOwner(), kind: ProcessKind.helper, exe: 'sleep', args: [nap]),
-      );
-      final g = await group.landed, st = await stranger.landed;
-      await eventually(() => _ps(['-A', '-o', 'pgid=']).split('\n').where((l) => l.trim() == '${g.pgid}').length == 2);
-      // A stand-in app that dies in a second (not the test runner).
-      final app = await Process.start('sleep', ['1']);
-      final appStart = startOf(app.pid);
+    test('the watchdog matches a process listed before its start time was read by when it started', () async {
+      final raw = await Process.start('sleep', [nap]);
+      final app = await Process.start('sleep', ['0.5']);
       final list = File('${dir.path}/watch.list')
-        ..writeAsStringSync(
-          watchList([
-            g,
-            ProcessIdentity(pid: st.pid, pgid: st.pgid, start: 'Mon_Jan_1_00:00:00_2001'),
-          ], appPgid: pgidOf(pid)),
-        );
+        ..writeAsStringSync(watchList([(id: ProcessIdentity(pid: raw.pid, start: unknownStart), at: DateTime.now())]));
       final run = await Process.run('/bin/sh', [
         '-c',
         watchdogScript,
         'everyai-watchdog',
         '${app.pid}',
-        appStart,
+        startOf(app.pid),
         list.path,
         'nobody:none',
+        '0.1',
         '0.2',
-        '0.3',
+        '',
       ]);
       expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(await app.exitCode, 0);
-      await group.ended.timeout(const Duration(seconds: 5));
-      expect(_ps(['-A', '-o', 'pgid=']).split('\n').where((l) => l.trim() == '${g.pgid}'), isEmpty);
-      expect(running(st.pid), isTrue);
-      expect(list.existsSync(), isFalse);
+      expect(await raw.exitCode.timeout(const Duration(seconds: 5)), isNot(0));
+    });
+
+    test('spawn overhead against plain Process.start (50 × /usr/bin/true)', () async {
+      final s = supervisor();
+      Future<Duration> time(Future<int> Function() run) async {
+        final sw = Stopwatch()..start();
+        for (var i = 0; i < 50; i++) {
+          await run();
+        }
+        return sw.elapsed;
+      }
+
+      await Process.start('/usr/bin/true', const []).then((p) => p.exitCode); // warm up
+      final plain = await time(() => Process.start('/usr/bin/true', const []).then((p) => p.exitCode));
+      final supervised = await time(
+        () => s
+            .spawn(const SpawnSpec(owner: AppOwner(), kind: ProcessKind.oneShot, exe: '/usr/bin/true'))
+            .then((p) => p.exitCode),
+      );
+      final extra = (supervised - plain).inMicroseconds / 50 / 1000;
+      // ignore: avoid_print
+      print(
+        'spawn: plain ${(plain.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, supervised '
+        '${(supervised.inMicroseconds / 50 / 1000).toStringAsFixed(2)} ms, extra ${extra.toStringAsFixed(2)} ms each',
+      );
+      expect(extra, lessThan(10));
     });
   });
 }
-
-/// Real scans, for hooks that fail on purpose later.
-final s0 = ProcessSupervisor.create(hooks: const SupervisorHooks());
 
 bool _ignore(int pid, ProcessSignal signal) => true;
