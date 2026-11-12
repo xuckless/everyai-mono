@@ -7,6 +7,9 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../../../core/process/supervisor.dart';
 import '../git/git_service.dart';
 
 /// The desktop window helper for this computer, as the command that runs it: macOS `everyai-ax` (bundled, or a dev
@@ -102,19 +105,33 @@ Future<void> _compileWindows(String source, String out) async {
   final src = '$out.cs';
   File(src).writeAsStringSync(source);
   try {
-    final r = await Process.run('$fw\\csc.exe', [
-      '/nologo',
-      '/target:exe',
-      '/optimize+',
-      '/out:$out',
-      '/r:System.Drawing.dll',
-      '/r:$fw\\WPF\\UIAutomationClient.dll',
-      '/r:$fw\\WPF\\UIAutomationTypes.dll',
-      '/r:$fw\\WPF\\WindowsBase.dll',
-      src,
-    ]);
-    if (r.exitCode != 0 || !File(out).existsSync()) {
-      throw StateError('compiling it failed: ${'${r.stdout}${r.stderr}'.trim()}');
+    final r = await ProcessSupervisor.instance.runBounded(
+      '$fw\\csc.exe',
+      [
+        '/nologo',
+        '/target:exe',
+        '/optimize+',
+        '/out:$out',
+        '/r:System.Drawing.dll',
+        '/r:$fw\\WPF\\UIAutomationClient.dll',
+        '/r:$fw\\WPF\\UIAutomationTypes.dll',
+        '/r:$fw\\WPF\\WindowsBase.dll',
+        src,
+      ],
+      timeout: const Duration(minutes: 2),
+      owner: const ProbeOwner('desktop-helper'),
+      label: 'compile the Windows window helper',
+    );
+    switch (r) {
+      case Finished(:final code, :final stdout, :final stderr) when code != 0 || !File(out).existsSync():
+        throw StateError('compiling it failed: ${'$stdout$stderr'.trim()}');
+      case Finished():
+        break;
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        if (File(out).existsSync()) File(out).deleteSync();
+        throw StateError('compiling it took over 2 minutes (${kill is Ended ? 'stopped' : 'NOT closed: $kill'})');
+      case StartFailed(:final error):
+        throw StateError('the compiler could not start: $error');
     }
   } finally {
     try {
@@ -129,14 +146,27 @@ Future<void> _compileWindows(String source, String out) async {
 Future<Map<int, int>> windowsParents() async {
   final cmd = await desktopHelper();
   if (cmd == null) return const {};
-  try {
-    final r = await Process.run(cmd.first, [...cmd.skip(1), 'procs']).timeout(const Duration(seconds: 10));
-    if (r.exitCode != 0) return const {};
-    return {
-      for (final p in (jsonDecode('${r.stdout}') as List).whereType<Map<String, Object?>>())
-        (p['pid'] as num).toInt(): (p['ppid'] as num).toInt(),
-    };
-  } on Object {
-    return const {};
+  final r = await ProcessSupervisor.instance.runBounded(
+    cmd.first,
+    [...cmd.skip(1), 'procs'],
+    timeout: const Duration(seconds: 10),
+    owner: const ProbeOwner('desktop-helper'),
+    stdoutEncoding: utf8,
+    label: 'window helper procs',
+  );
+  switch (r) {
+    case Finished(:final code, :final stdout) when code == 0:
+      try {
+        return {
+          for (final p in (jsonDecode(stdout) as List).whereType<Map<String, Object?>>())
+            (p['pid'] as num).toInt(): (p['ppid'] as num).toInt(),
+        };
+      } on Object catch (e) {
+        debugPrint('The window helper\'s process list did not parse: $e');
+        return const {};
+      }
+    case Finished() || TimedOut() || Cancelled() || StartFailed():
+      debugPrint('The window helper could not list processes: $r');
+      return const {};
   }
 }

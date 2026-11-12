@@ -11,6 +11,8 @@ import 'device_screen.dart';
 import 'real_input.dart';
 import 'frames.dart';
 import 'live_session.dart';
+import 'supervised_stream_io.dart';
+import '../../../core/process/supervisor.dart';
 
 /// `everyai-ax` on macOS (EVERYAI_AX_HELPER, the app bundle's Resources, or a dev build in `frontend/.tools/`).
 /// Other systems have their own helper with the same commands ([desktopHelper]); this is null there.
@@ -48,24 +50,34 @@ Future<Object?> axHelper(
   Duration timeout = const Duration(seconds: 30),
 }) async {
   final cmd = await _helperCommand([...args, if (text != null) '--text-stdin']);
-  final p = await Process.start(cmd.first, cmd.sublist(1), environment: display == null ? null : {'DISPLAY': display});
-  final out = p.stdout.transform(utf8.decoder).join();
-  final err = p.stderr.transform(utf8.decoder).join();
-  if (text != null) p.stdin.add(utf8.encode(text));
-  await p.stdin.close().catchError((Object _) {});
-  final code = await p.exitCode.timeout(
-    timeout,
-    onTimeout: () {
-      p.kill();
-      throw TimeoutException('the window helper took longer than ${timeout.inSeconds} s');
-    },
+  final r = await ProcessSupervisor.instance.runBounded(
+    cmd.first,
+    cmd.sublist(1),
+    timeout: timeout,
+    owner: const ProbeOwner('desktop-helper'),
+    env: display == null ? const {} : {'DISPLAY': display},
+    stdinBytes: text == null ? null : utf8.encode(text),
+    stdoutEncoding: utf8,
+    stderrEncoding: utf8,
+    // Never the text: it may be a saved password.
+    label: 'window helper ${args.isEmpty ? '' : args.first}',
   );
-  if (code != 0) {
-    final why = (await err).trim().replaceFirst(RegExp(r'^error:\s*'), '');
-    throw AppError(why.isEmpty ? 'the window helper failed (exit $code)' : why);
+  switch (r) {
+    case Finished(:final code, :final stdout, :final stderr):
+      if (code != 0) {
+        final why = stderr.trim().replaceFirst(RegExp(r'^error:\s*'), '');
+        throw AppError(why.isEmpty ? 'the window helper failed (exit $code)' : why);
+      }
+      final o = stdout.trim();
+      return o.isEmpty ? null : jsonDecode(o);
+    case TimedOut(:final kill) || Cancelled(:final kill):
+      throw TimeoutException(
+        'the window helper took longer than ${timeout.inSeconds} s and was '
+        '${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}',
+      );
+    case StartFailed(:final error):
+      throw AppError("the window helper couldn't start: $error");
   }
-  final o = (await out).trim();
-  return o.isEmpty ? null : jsonDecode(o);
 }
 
 /// One on-screen window of a process, as the helper lists it (points, screen coordinates).
@@ -620,42 +632,32 @@ final class DesktopWindow implements DeviceScreen {
     }
   }
 
-  /// The window as JPEG frames for the Preview, while listened to.
-  Stream<Uint8List> stream({int fps = 10, double scale = 0.5}) {
-    Process? p;
-    late final StreamController<Uint8List> out;
-    out = StreamController<Uint8List>(
-      onListen: () async {
-        try {
-          final w = await place();
-          final cmd = await _helperCommand([
-            'stream',
-            '--window',
-            '${w.id}',
-            '--fps',
-            '$fps',
-            '--scale',
-            '$scale',
-            if (nested) '--nested',
-          ]);
-          p = await Process.start(
-            cmd.first,
-            cmd.sublist(1),
-            environment: display == null ? null : {'DISPLAY': display!},
-          );
-          unawaited(p!.stderr.drain<void>());
-          await p!.stdout.transform(MjpegParts()).pipe(out);
-        } on Object catch (e) {
-          if (!out.isClosed) {
-            out.addError(e);
-            await out.close();
-          }
-        }
-      },
-      onCancel: () => p?.kill(),
+  /// The window as JPEG frames for the Preview, while listened to: the helper's `stream`, a supervised child
+  /// stopped (verified) when the listener cancels, even mid-start.
+  Stream<Uint8List> stream({int fps = 10, double scale = 0.5}) => supervisedFrames('Window stream ($pid)', () async {
+    final w = await place();
+    final cmd = await _helperCommand([
+      'stream',
+      '--window',
+      '${w.id}',
+      '--fps',
+      '$fps',
+      '--scale',
+      '$scale',
+      if (nested) '--nested',
+    ]);
+    return ProcessSupervisor.instance.spawn(
+      SpawnSpec(
+        owner: const AppOwner(),
+        kind: ProcessKind.stream,
+        exe: cmd.first,
+        args: cmd.sublist(1),
+        env: display == null ? const {} : {'DISPLAY': display!},
+        label: 'Window stream ($pid)',
+        detail: 'window ${w.id}',
+      ),
     );
-    return out.stream;
-  }
+  }, MjpegParts());
 
   /// The user's click in the Preview (window points): pressed through accessibility when the element there has a
   /// press action, else a real click when the user allows real input (it brings the window to the front).

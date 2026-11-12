@@ -28,6 +28,24 @@ void main() {
     expect(states.last.phase, DownloadPhase.failed);
   });
 
+  test('a pull that goes quiet fails as stalled and ends its request', () async {
+    final http = FakeLocalHttp();
+    final states = <DownloadState>[];
+    final done = Completer<void>();
+    pullModel(
+      http,
+      defaultOllamaRoot,
+      'q',
+      stallAfter: const Duration(milliseconds: 80),
+    ).listen(states.add, onDone: done.complete);
+    await pumpEventQueue();
+    http.pulls['q']!.add('{"status":"pulling abc","total":10,"completed":1}');
+    await done.future.timeout(const Duration(seconds: 2));
+    expect(states.last.phase, DownloadPhase.failed);
+    expect(states.last.error, startsWith('stalled'));
+    expect(http.pulls['q']!.hasListener, isFalse);
+  });
+
   test('downloads run one at a time; cancel moves on; delete calls Ollama', () async {
     final http = FakeLocalHttp({'DELETE 127.0.0.1:11434/api/delete': json('{}')});
     final c = ProviderContainer(

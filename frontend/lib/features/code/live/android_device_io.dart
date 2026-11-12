@@ -1,12 +1,13 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:xml/xml.dart';
 
+import '../../../core/process/supervisor.dart';
 import 'adb_io.dart';
 import 'app_view.dart';
 import 'device_screen.dart';
@@ -55,6 +56,10 @@ abstract final class AndroidDevices {
   static final _drivers = <String, AndroidDevice>{};
   static final _avds = <String, String>{};
 
+  /// Emulators EveryAI booted, by virtual device name: supervised children (they end with the app, or with
+  /// [stopEmulators]); the serial once it is known.
+  static final _booted = <String, ({SupervisedProcess child, String? serial})>{};
+
   /// The devices ready to drive, as last read (see [refresh]).
   static List<AdbDevice> get ready => _ready;
 
@@ -102,15 +107,27 @@ abstract final class AndroidDevices {
   static Future<List<String>> avds() async {
     final emu = AndroidSdk.emulator;
     if (emu == null) return const [];
-    final r = await Process.run(emu, ['-list-avds']);
+    final r = await ProcessSupervisor.instance.runBounded(
+      emu,
+      const ['-list-avds'],
+      timeout: const Duration(seconds: 15),
+      owner: const ProbeOwner('android'),
+      stdoutEncoding: utf8,
+    );
+    final out = switch (r) {
+      Finished(:final stdout) => stdout,
+      TimedOut() || Cancelled() || StartFailed() => throw AppError("The emulator didn't list its devices: $r"),
+    };
     return [
-      for (final l in '${r.stdout}'.split('\n'))
+      for (final l in out.split('\n'))
         if (l.trim().isNotEmpty && !l.startsWith('INFO')) l.trim(),
     ];
   }
 
-  /// Starts virtual device [name] headless (or finds it running) and waits until Android is up.
-  static Future<AdbDevice> boot(String name) async {
+  /// Starts virtual device [name] headless (or finds it running) and waits until Android is up. The emulator is a
+  /// child of the process supervisor owned by [owner]: it ends with the app (or [stopEmulators]); one that isn't up
+  /// within 4 minutes is stopped (verified).
+  static Future<AdbDevice> boot(String name, {ProcessOwner owner = const AppOwner()}) async {
     String norm(String s) => s.toLowerCase().replaceAll(RegExp('[_ ]+'), ' ').trim();
     final running = (await list()).where((d) => d.ready && (norm(d.name) == norm(name) || d.serial == name));
     if (running.firstOrNull case final d?) return d;
@@ -123,20 +140,39 @@ abstract final class AndroidDevices {
       );
     }
     final before = {for (final d in await list()) d.serial};
-    await Process.start(emu, [
-      '-avd',
-      avd,
-      '-no-window',
-      '-no-audio',
-      '-no-boot-anim',
-      '-no-snapshot-save',
-    ], mode: ProcessStartMode.detached);
+    final SupervisedProcess child;
+    try {
+      child = await ProcessSupervisor.instance.spawn(
+        SpawnSpec(
+          owner: owner,
+          kind: ProcessKind.device,
+          exe: emu,
+          args: ['-avd', avd, '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot-save'],
+          label: 'Android emulator ($avd)',
+          detail: 'avd $avd',
+          // The emulator's own goodbye (it saves nothing: -no-snapshot-save); SIGTERM follows if it doesn't end.
+          politeStop: PoliteStop((_) => _emuKill(avd), grace: const Duration(seconds: 5)),
+        ),
+      );
+    } on Object catch (e) {
+      throw AppError("The emulator didn't start: $e");
+    }
+    _booted[avd] = (child: child, serial: null);
+    // Its console output isn't read, but a full pipe would stall it.
+    unawaited(child.stdout.drain<void>().catchError((Object e) => debugPrint('emulator ($avd) stdout: $e')));
+    unawaited(child.stderr.drain<void>().catchError((Object e) => debugPrint('emulator ($avd) stderr: $e')));
+    unawaited(
+      child.exitCode.then((_) {
+        if (identical(_booted[avd]?.child, child)) _booted.remove(avd);
+      }),
+    );
     final until = DateTime.now().add(const Duration(minutes: 4));
-    while (DateTime.now().isBefore(until)) {
+    while (DateTime.now().isBefore(until) && child.state.live) {
       await Future<void>.delayed(const Duration(seconds: 2));
       for (final d in await list()) {
         if (before.contains(d.serial) || !d.emulator || !d.ready) continue;
         if (d.avd != null && norm(d.avd!) != norm(avd)) continue;
+        _booted[avd] = (child: child, serial: d.serial);
         final up = await AndroidSdk.shell(d.serial, ['getprop', 'sys.boot_completed']).catchError((Object _) => '');
         if (up.trim() == '1') {
           _readAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -145,17 +181,46 @@ abstract final class AndroidDevices {
         }
       }
     }
-    throw AppError('$avd did not finish starting in 4 minutes.');
+    // Not up in time (or it ended): it doesn't go on booting in the background.
+    final outcome = await _stopBooted(avd);
+    throw AppError(
+      '$avd did not finish starting in 4 minutes; it was ${outcome is Ended ? 'stopped' : 'NOT closed ($outcome)'}.',
+    );
   }
+
+  /// `adb emu kill` for the emulator EveryAI booted as [avd], once its serial is known.
+  static Future<void> _emuKill(String avd) async {
+    final serial = _booted[avd]?.serial;
+    if (serial == null) return; // Not on adb yet: SIGTERM ends it.
+    await AndroidSdk.run(['emu', 'kill'], serial: serial, timeout: const Duration(seconds: 5));
+  }
+
+  static Future<KillOutcome> _stopBooted(String avd) async {
+    final b = _booted[avd];
+    if (b == null) return const Ended([]);
+    final outcome = await b.child.stop();
+    if (outcome is Ended) {
+      if (identical(_booted[avd], b)) _booted.remove(avd);
+    } else {
+      debugPrint('NOT CLOSED: Android emulator ($avd): $outcome');
+    }
+    return outcome;
+  }
+
+  /// The emulators EveryAI booted (virtual device → serial, null until adb lists it).
+  static Map<String, String?> get booted => {for (final e in _booted.entries) e.key: e.value.serial};
+
+  /// Stops every emulator EveryAI booted (verified): phase 3 calls this at session delete and quit.
+  static Future<KillOutcome> stopEmulators() async =>
+      KillOutcome.merge(await Future.wait([for (final avd in _booted.keys.toList()) _stopBooted(avd)]));
 
   static AndroidDevice driver(String serial) => _drivers.putIfAbsent(serial, () => AndroidDevice(serial));
 
-  /// Closes the scrcpy sessions (app quit).
-  static Future<void> stopAll() async {
-    for (final d in _drivers.values) {
-      await d.closeScrcpy();
-    }
-  }
+  /// Closes the scrcpy sessions and stops the emulators EveryAI booted (app quit): the merged outcome.
+  static Future<KillOutcome> stopAll() async => KillOutcome.merge([
+    ...await Future.wait([for (final d in _drivers.values) d.closeScrcpy()]),
+    await stopEmulators(),
+  ]);
 }
 
 /// An Android device or emulator, driven through adb: uiautomator's tree (pixels), `input` taps, swipes, keys and
@@ -220,9 +285,19 @@ final class AndroidDevice implements DeviceScreen {
         .whenComplete(() => _opening = null);
   }
 
-  Future<void> closeScrcpy() async {
-    await _scrcpy?.close();
+  /// Ends the scrcpy session (one still opening is ended once it is open): the stop's outcome.
+  Future<KillOutcome> closeScrcpy() async {
+    final opening = _opening;
+    if (opening != null) {
+      try {
+        await opening;
+      } on Object {
+        // It didn't open: nothing to end (its own failure path stopped what it started).
+      }
+    }
+    final c = _scrcpy;
     _scrcpy = null;
+    return c == null ? const Ended([]) : c.close();
   }
 
   @override

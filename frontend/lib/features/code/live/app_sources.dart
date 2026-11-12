@@ -5,6 +5,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../../../core/process/supervisor.dart';
 import '../harness/everyai/browser_io.dart';
 import '../shells/shell_log.dart';
 import '../shells/shell_registry.dart';
@@ -93,15 +96,47 @@ abstract final class AppSources {
   }
 
   /// [ep] (an Android mention) as `android:<serial>` of a ready device no rival of [sessions] holds.
-  /// Whether process [pid] still runs (Windows has no signal to ask with: the window list answers there).
+  /// Whether process [pid] still runs, from the process supervisor's last table (read again at most every 2 s, in
+  /// the background; [changes] fires when an answer changes). A pid is the process first seen with it: one with
+  /// another start time later is another program. Nothing is signalled. Before the first table, true.
   static bool _alive(int pid) {
     if (pid <= 0) return false;
-    if (Platform.isWindows) return true;
-    try {
-      return Process.killPid(pid, ProcessSignal.sigcont);
-    } on Object {
-      return false;
-    }
+    _refreshTable();
+    final answer = _aliveIn(_table, pid);
+    _answers[pid] = answer;
+    return answer;
+  }
+
+  static bool _aliveIn(ProcessList? table, int pid) {
+    if (table == null) return true;
+    final row = table.rows[pid];
+    if (row == null || row.zombie) return false;
+    return _starts.putIfAbsent(pid, () => row.start) == row.start;
+  }
+
+  static ProcessList? _table;
+  static var _tableAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static Future<void>? _reading;
+  static final _starts = <int, String>{};
+  static final _answers = <int, bool>{};
+
+  static void _refreshTable() {
+    if (_reading != null || DateTime.now().difference(_tableAt) < const Duration(seconds: 2)) return;
+    _tableAt = DateTime.now();
+    _reading = ProcessSupervisor.instance
+        .scan()
+        .then((scan) {
+          switch (scan) {
+            case ScanFailed(:final why):
+              debugPrint('App sources: the process table could not be read ($why); desktop apps stay as they were.');
+            case Listed(:final table):
+              _table = table;
+              final changed = _answers.entries.any((e) => _aliveIn(table, e.key) != e.value);
+              _starts.removeWhere((p, _) => !table.rows.containsKey(p));
+              if (changed) _changes.add(null);
+          }
+        })
+        .whenComplete(() => _reading = null);
   }
 
   static AppEndpoint? _readyAndroid(AppEndpoint ep, List<String> sessions) {

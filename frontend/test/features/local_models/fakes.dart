@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:every_ai/core/process/process_model.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/features/local_models/data/local_system.dart';
 import 'package:every_ai/features/local_models/domain/fm.dart';
 import 'package:every_ai/features/local_models/domain/hardware.dart';
+import 'package:every_ai/features/local_models/domain/local_server.dart';
 
 /// Answers by `METHOD path` (port included in the key as `:port/path` when [byPort]), else nothing answers.
 final class FakeLocalHttp implements LocalHttp {
@@ -87,6 +89,9 @@ final class FakeLocalSystem implements LocalSystem {
   /// What [stopListener] answers (null: it stopped).
   String? listenerStopProblem;
 
+  /// What [stopOwned] answers (null: it ended).
+  ServerStopResult? ownedStopResult;
+
   /// Called on each launch (a test makes the server answer).
   void Function(String id, List<String> args)? onLaunch;
 
@@ -117,6 +122,7 @@ final class FakeLocalSystem implements LocalSystem {
     Map<String, String> env = const {},
     bool shell = false,
     String? logPath,
+    int? port,
   }) async {
     if (id == 'ollama') ollamaStarts++;
     launches.add(id);
@@ -130,26 +136,34 @@ final class FakeLocalSystem implements LocalSystem {
   @override
   bool owns(String id) => launched[id] != null && !launched[id]!.isCompleted;
   @override
-  Future<String?> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
+  int? ownedPort(String id) => owns(id) && id == 'fm' ? fmPort : null;
+  @override
+  Future<ServerStopResult> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async {
+    if (ownedStopResult case final r? when r is! ServerStopEnded) return r;
     final c = launched.remove(id);
     if (c != null && !c.isCompleted) c.complete(0);
-    return null;
+    return const ServerStopEnded();
   }
 
   @override
-  Future<String?> stopListener(int port, {Duration grace = const Duration(seconds: 5)}) async {
+  Future<ServerStopResult> stopListener(
+    LocalServer server, {
+    required int port,
+    Duration grace = const Duration(seconds: 5),
+  }) async {
     stoppedPorts.add(port);
-    return listenerStopProblem;
+    return listenerStopProblem == null ? const ServerStopEnded() : ServerStopRefused(listenerStopProblem!);
   }
 
   @override
   Future<int?> freePort() async => fmPort;
   @override
-  Future<void> stopAllOwned() async {
+  Future<KillOutcome> stopAllOwned() async {
     stops++;
     for (final id in launched.keys.toList()) {
       await stopOwned(id);
     }
+    return const Ended([]);
   }
 
   @override

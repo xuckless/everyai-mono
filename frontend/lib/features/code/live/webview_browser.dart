@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import '../../../core/process/supervisor.dart';
 import '../harness/everyai/browser_io.dart' show maySharePageProcess, pageContextAtJs;
 import 'browser_jar.dart';
 import 'browser_page.dart';
@@ -30,8 +31,12 @@ String webviewTempRoot([String? root]) => root ?? '${Directory.systemTemp.path}/
 
 const _ownerFile = '.everyai-owner';
 
-/// Marks [dir] as this app run's (its process id), so a sweep by another run leaves it alone.
-Future<void> claimWebviewFolder(Directory dir) => File('${dir.path}/$_ownerFile').writeAsString('$pid');
+/// Marks [dir] as this app run's (its process id and start time, `pid:start`), so a sweep by another run leaves
+/// it alone.
+Future<void> claimWebviewFolder(Directory dir) {
+  final tag = ProcessSupervisor.instance.appTag;
+  return File('${dir.path}/$_ownerFile').writeAsString(tag.isEmpty ? '$pid' : tag);
+}
 
 /// Deletes the `session-*` folders under [root] that no running app owns: left by a run that crashed or was killed
 /// (their session cookies would stay on disk). A folder is kept while its owner's process runs ([alive]), and a
@@ -44,16 +49,22 @@ Future<int> sweepWebviewFolders({
 }) async {
   final base = Directory(webviewTempRoot(root));
   if (!base.existsSync()) return 0;
-  final isAlive = alive ?? _pidAlive;
+  final bool Function(String owner) isAlive;
+  if (alive != null) {
+    isAlive = (owner) => switch (parseAppTag(owner)?.pid ?? int.tryParse(owner)) {
+      final p? => alive(p),
+      null => false,
+    };
+  } else {
+    final scan = await ProcessSupervisor.instance.scan();
+    isAlive = (owner) => _ownerAlive(owner, scan);
+  }
   var gone = 0;
   for (final d in base.listSync().whereType<Directory>()) {
     if (!d.uri.pathSegments.where((p) => p.isNotEmpty).last.startsWith('session-')) continue;
     final owner = File('${d.path}/$_ownerFile');
     final keep = owner.existsSync()
-        ? switch (int.tryParse(owner.readAsStringSync().trim())) {
-            final p? => isAlive(p),
-            null => false,
-          }
+        ? isAlive(owner.readAsStringSync().trim())
         : DateTime.now().difference(d.statSync().modified) < grace;
     if (keep) continue;
     try {
@@ -66,18 +77,17 @@ Future<int> sweepWebviewFolders({
   return gone;
 }
 
-bool _pidAlive(int p) {
+/// Whether the run named by a folder's owner record (`pid:start`, or an older bare pid) still runs, by [scan]. A
+/// table that couldn't be read keeps the folder (can't tell).
+bool _ownerAlive(String owner, ProcessScan scan) {
+  final tag = parseAppTag(owner);
+  final p = tag?.pid ?? int.tryParse(owner);
+  if (p == null) return false;
   if (p == pid) return true;
-  try {
-    if (Platform.isWindows) {
-      final r = Process.runSync('tasklist', ['/FI', 'PID eq $p', '/NH']);
-      return '${r.stdout}'.contains(' $p ');
-    }
-    return Process.runSync('kill', ['-0', '$p']).exitCode == 0;
-  } on Object {
-    // Can't tell: keep it.
-    return true;
-  }
+  return switch (scan) {
+    ScanFailed() => true,
+    Listed(:final table) => tag == null ? table.rows[p] != null && !table.rows[p]!.zombie : table.aliveAt(p, tag.start),
+  };
 }
 
 /// One tab of a [WebviewBrowser]: a native webview of its own (the plugin's), the session's page or one a page of

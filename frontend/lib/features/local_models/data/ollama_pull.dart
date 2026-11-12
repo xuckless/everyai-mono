@@ -44,6 +44,10 @@ final class DownloadState {
   );
 }
 
+/// How long a pull may go without a line from Ollama before it fails as stalled (a layer's progress comes several
+/// times a second, verifying a big one well within this).
+const pullStallTimeout = Duration(minutes: 2);
+
 /// One line of Ollama's `/api/pull` stream: `{status, digest?, total?, completed?}`, `{status: "success"}` at the
 /// end, or `{error}`. Layers report one by one, so the bytes shown are the current layer's.
 DownloadState applyPullLine(DownloadState s, String line) {
@@ -67,26 +71,42 @@ DownloadState applyPullLine(DownloadState s, String line) {
 
 /// Pulls [tag] from the Ollama server at [ollamaRoot] (`http://127.0.0.1:11434`), reporting each step. Ollama keeps
 /// the layers it already has, so pulling again after a cancel picks up where it stopped. Cancelling the subscription
-/// ends the request at once (not an `async*`, which would wait for the next line first).
-Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag) {
+/// ends the request at once (not an `async*`, which would wait for the next line first). A pull that sends no line
+/// for [stallAfter] fails as stalled (the request is ended; Download again resumes it).
+Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag, {Duration stallAfter = pullStallTimeout}) {
   late final StreamController<DownloadState> out;
   StreamSubscription<String>? lines;
+  Timer? stall;
   var s = DownloadState(tag: tag, phase: DownloadPhase.running, status: 'Starting');
   void finish(DownloadState last) {
+    stall?.cancel();
     if (out.isClosed) return;
     out.add(last);
     unawaited(lines?.cancel());
     out.close();
   }
 
+  void watch() {
+    stall?.cancel();
+    stall = Timer(
+      stallAfter,
+      () => finish(
+        s.copyWith(phase: DownloadPhase.failed, error: 'stalled: Ollama sent nothing for ${stallAfter.inSeconds} s'),
+      ),
+    );
+  }
+
   out = StreamController<DownloadState>(
     onListen: () {
       out.add(s);
+      watch();
       lines = http
           .postLines(ollamaRoot.replace(path: '/api/pull'), {'model': tag, 'stream': true})
           .listen(
             (line) {
-              if (line.trim().isEmpty || out.isClosed) return;
+              if (out.isClosed) return;
+              watch();
+              if (line.trim().isEmpty) return;
               s = applyPullLine(s, line);
               if (s.phase == DownloadPhase.failed || s.phase == DownloadPhase.done) {
                 finish(s);
@@ -102,7 +122,10 @@ Stream<DownloadState> pullModel(LocalHttp http, Uri ollamaRoot, String tag) {
             ),
           );
     },
-    onCancel: () => lines?.cancel(),
+    onCancel: () {
+      stall?.cancel();
+      return lines?.cancel();
+    },
   );
   return out.stream;
 }

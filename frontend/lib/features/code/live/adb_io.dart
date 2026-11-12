@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../../core/process/supervisor.dart';
 import 'app_view.dart';
 
 /// The Android SDK's tools on this computer: adb and the emulator, from ANDROID_HOME / ANDROID_SDK_ROOT, the usual
@@ -67,26 +68,32 @@ abstract final class AndroidSdk {
     String? serial,
     Duration timeout = const Duration(seconds: 60),
   }) async {
-    final p = await Process.start(_need, [
-      if (serial != null) ...['-s', serial],
-      ...args,
-    ]);
-    final out = BytesBuilder(copy: false);
-    final err = StringBuffer();
-    final done = Future.wait([p.stdout.forEach(out.add), p.stderr.transform(utf8.decoder).forEach(err.write)]);
-    final code = await p.exitCode.timeout(
-      timeout,
-      onTimeout: () {
-        p.kill();
-        return -1;
-      },
+    final r = await ProcessSupervisor.instance.runBounded(
+      _need,
+      [
+        if (serial != null) ...['-s', serial],
+        ...args,
+      ],
+      timeout: timeout,
+      owner: const ProbeOwner('adb'),
+      stderrEncoding: utf8,
+      label: 'adb ${args.take(3).join(' ')}',
     );
-    await done;
-    if (code != 0) {
-      final why = '$err'.trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
-      throw AppError('adb ${args.first} failed: $why');
+    switch (r) {
+      case Finished(:final code, :final stderr, :final stdoutBytes):
+        if (code != 0) {
+          final why = stderr.trim().split('\n').where((l) => l.trim().isNotEmpty).lastOrNull ?? 'exit $code';
+          throw AppError('adb ${args.first} failed: $why');
+        }
+        return stdoutBytes;
+      case TimedOut(:final kill) || Cancelled(:final kill):
+        throw AppError(
+          'adb ${args.first} took longer than ${timeout.inSeconds} s and was '
+          '${kill is Ended ? 'stopped' : 'NOT closed ($kill)'}',
+        );
+      case StartFailed(:final error):
+        throw AppError('adb ${args.first} could not start: $error');
     }
-    return out.takeBytes();
   }
 
   /// [args] as one `adb shell` command line, each quoted for the device's shell.

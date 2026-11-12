@@ -3,10 +3,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/preferences.dart';
+import '../../core/process/process_model.dart' show Ended, KillOutcome, ScanFailed;
 import '../code/gateway_key.dart' show secretStoreProvider;
 import 'data/local_http.dart';
 import 'data/local_system.dart';
@@ -30,10 +32,15 @@ export 'domain/server_lifecycle.dart';
 final localHttpProvider = Provider<LocalHttp>((ref) => const RealLocalHttp());
 
 /// This computer (hardware, Ollama and `fm` programs, servers we start); tests override it. Servers the app started
-/// end with the container.
+/// end with the container (what didn't end is logged as not closed; the process supervisor keeps them listed).
 final localSystemProvider = Provider<LocalSystem>((ref) {
   final system = createLocalSystem();
-  ref.onDispose(() => unawaited(system.stopAllOwned()));
+  ref.onDispose(() {
+    system.stopAllOwned().then(
+      (o) => o is Ended ? null : debugPrint('NOT CLOSED: local servers at dispose: $o'),
+      onError: (Object e) => debugPrint('NOT CLOSED: local servers at dispose: the stop failed: $e'),
+    );
+  });
   return system;
 });
 
@@ -102,14 +109,23 @@ final class ManualServers extends Notifier<List<ManualServer>> {
   /// Ids an [add] still under way has taken.
   final _reserved = <String>{};
 
-  Future<void> remove(String id) async {
+  /// Removes the server [id]. One EveryAI started is stopped first (checked ended); when it can't be, it isn't
+  /// removed and the answer says why. Null when it was removed.
+  Future<String?> remove(String id) async {
     final server = state.where((s) => s.id == id).firstOrNull;
-    if (server == null) return;
+    if (server == null) return null;
+    final system = ref.read(localSystemProvider);
+    if (system.owns(id)) {
+      // Its row's phase follows: a server the scan no longer lists is seen down.
+      final problem = (await system.stopOwned(id)).problem;
+      if (problem != null) return "It is still running, so it wasn't removed: $problem";
+    }
     if (server.hasKey) await ref.read(secretStoreProvider).delete(server.keyStoreName);
     _save([
       for (final s in state)
         if (s.id != id) s,
     ]);
+    return null;
   }
 
   void _save(List<ManualServer> list) {
@@ -129,12 +145,13 @@ final ollamaPathProvider = FutureProvider<String?>((ref) => ref.watch(localSyste
 /// Where LM Studio's `lms` is (null: it isn't installed).
 final lmsPathProvider = FutureProvider<String?>((ref) => ref.watch(localSystemProvider).lmsPath());
 
-/// The port of the `fm serve` EveryAI started this run, null while there's none.
+/// The port of the `fm serve` EveryAI started, null while there's none: read back from the process supervisor's
+/// registry (a run reopened after a hot restart finds its own `fm serve` and port there).
 final fmPortProvider = NotifierProvider<FmPort, int?>(FmPort.new);
 
 final class FmPort extends Notifier<int?> {
   @override
-  int? build() => null;
+  int? build() => ref.read(localSystemProvider).ownedPort('fm');
   void set(int? port) => state = port;
 }
 
@@ -233,13 +250,21 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   /// Apple's server starts by itself (it's the default chat model) unless the user stopped it (prefs).
   static const fmAutostartKey = 'models.fm.autostart';
 
+  /// '1' while LM Studio's server runs because EveryAI asked `lms server start` (it isn't our child process, so the
+  /// process ledger can't hold it; a relaunch still knows, and quit stops it).
+  static const lmsOursKey = 'models.lmstudio.started_by_everyai';
+
   LocalSystem get _system => ref.read(localSystemProvider);
   LocalHttp get _http => ref.read(localHttpProvider);
 
   final _actions = <String, Future<String?>>{};
 
-  /// LM Studio's server isn't our child process: whether EveryAI started it with `lms server start`.
-  var _lmsOurs = false;
+  /// The start a stop called off (the stop waits for it, to say what became of what it launched).
+  final _actionsBefore = <String, Future<String?>>{};
+
+  /// Whether EveryAI started LM Studio's server with `lms server start` ([lmsOursKey]).
+  bool get _lmsOurs => ref.read(preferencesProvider)[lmsOursKey] == '1';
+  set _lmsOurs(bool v) => ref.read(preferencesProvider)[lmsOursKey] = v ? '1' : null;
 
   /// Apple's server was started (or tried) by itself once this run.
   var _fmTried = false;
@@ -265,12 +290,18 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   ServerPhase phaseOf(LocalServer server) =>
       state[server.id] ?? (server.running ? ServerRunning(_ownerOf(server.id)) : const ServerStopped());
 
+  /// Who started [id]: EveryAI when the process supervisor lists its process (or LM Studio's server was started
+  /// through `lms`), else someone else.
   ServerOwner _ownerOf(String id) =>
       _system.owns(id) || (id == 'lmstudio' && _lmsOurs) ? ServerOwner.everyai : ServerOwner.outside;
 
   void _observe(List<LocalServer> servers) {
     for (final s in servers) {
       _apply(s.id, s.running ? SeenUp(_ownerOf(s.id)) : const SeenDown());
+      // A server not closed whose process the supervisor no longer lists has ended after all.
+      if (state[s.id] case ServerNotClosed(owner: ServerOwner.everyai) when !_system.owns(s.id)) {
+        _apply(s.id, const ProcessGone());
+      }
     }
     // A server the scan no longer finds at all (one started elsewhere, now gone).
     for (final id in state.keys.toList()) {
@@ -283,13 +314,17 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     }
   }
 
+  /// Moves [id]'s machine by [e]; a refused move is recorded and asserts ([applyServerEvent]). Actions the user
+  /// asks for check [nextPhase] first, so a click while busy is an answer, not a refusal.
   bool _apply(String id, ServerEvent e) {
     final from = state[id] ?? const ServerStopped();
-    final to = nextPhase(from, e);
+    final to = applyServerEvent(id, from, e);
     if (to == null) return false;
     if (to != from || !state.containsKey(id)) state = {...state, id: to};
     return true;
   }
+
+  ServerPhase _current(String id) => state[id] ?? const ServerStopped();
 
   /// Starts [server]: null when it runs, else why not. A start already running for it is joined.
   Future<String?> start(LocalServer server) {
@@ -308,9 +343,11 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     final running = _actions[server.id];
     // A stop asked while a start runs: the start's own outcome is dropped (Starting → Stopping).
     if (running != null && state[server.id] is! ServerStarting) return running;
+    if (running != null) _actionsBefore[server.id] = running;
     late final Future<String?> f;
     f = _stop(server).whenComplete(() {
       if (identical(_actions[server.id], f)) _actions.remove(server.id);
+      _actionsBefore.remove(server.id);
     });
     return _actions[server.id] = f;
   }
@@ -323,10 +360,18 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       (s.manual && (s.startCommand ?? '').trim().isNotEmpty);
 
   Future<String?> _start(LocalServer server) async {
-    if (!_apply(server.id, const StartAsked())) return 'It is busy.';
+    switch (_current(server.id)) {
+      case ServerNotClosed(:final reason):
+        return 'Its last stop did not close it ($reason). Stop it again first.';
+      case final p when nextPhase(p, const StartAsked()) == null:
+        return 'It is busy.';
+      default:
+        _apply(server.id, const StartAsked());
+    }
     final reason = await _launch(server);
     if (reason != null) {
-      _apply(server.id, StartFailed(reason));
+      // A stop that called it off owns the phase now.
+      if (state[server.id] is ServerStarting) _apply(server.id, StartFailed(reason));
       return reason;
     }
     await ref.read(localServersProvider.notifier).refresh();
@@ -354,18 +399,19 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
           const ['serve'],
           env: {'OLLAMA_HOST': '127.0.0.1:$port'},
           logPath: logDir == null ? null : '$logDir/ollama.log',
+          port: port,
         );
       case LocalServerKind.fm:
         final port = await _system.freePort();
         if (port == null) return 'No free port for it.';
         if (_calledOff(server.id)) return null;
-        launched = await _system.launch(server.id, fmExecutable, [
-          'serve',
-          '--host',
-          '127.0.0.1',
-          '--port',
-          '$port',
-        ], logPath: logDir == null ? null : '$logDir/fm.log');
+        launched = await _system.launch(
+          server.id,
+          fmExecutable,
+          ['serve', '--host', '127.0.0.1', '--port', '$port'],
+          logPath: logDir == null ? null : '$logDir/fm.log',
+          port: port,
+        );
         if (launched != null) {
           ref.read(fmPortProvider.notifier).set(port);
           ref.read(preferencesProvider)[fmAutostartKey] = null;
@@ -379,8 +425,12 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
         if (r == null || r.code != 0) return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
         _lmsOurs = true;
         if (_calledOff(server.id)) {
-          await _system.run(lms, const ['server', 'stop']);
-          _lmsOurs = false;
+          final stopped = await _system.run(lms, const ['server', 'stop']);
+          if (stopped != null && stopped.code == 0) {
+            _lmsOurs = false;
+          } else {
+            debugPrint('NOT CLOSED: LM Studio server (a start called off): ${stopped?.out.trim() ?? 'lms failed'}');
+          }
           return null;
         }
       case _ when server.manual && (server.startCommand ?? '').trim().isNotEmpty:
@@ -390,6 +440,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
           const [],
           shell: true,
           logPath: logDir == null ? null : '$logDir/${server.id.replaceAll(':', '-')}.log',
+          port: Uri.tryParse(server.baseUrl)?.port,
         );
       case _:
         return "EveryAI can't start ${server.label}: start it the way you usually do.";
@@ -397,9 +448,10 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     if (server.kind != LocalServerKind.lmstudio && launched == null) {
       return _system.launchProblem ?? "Couldn't start it.";
     }
-    // A stop that came while it launched found nothing of ours to stop: this start ends it.
+    // A stop that came while it launched found nothing of ours to stop: this start ends it (what didn't end is the
+    // stop's to show: it waits for this start).
     if (launched != null && _calledOff(server.id)) {
-      await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+      _calledOffStop = await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
       return null;
     }
     // Ready when it answers; an early exit ends the wait with the reason.
@@ -408,9 +460,10 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       unawaited(
         launched.exited.then((code) {
           exitCode = code;
-          // A server that ends later (crash, killed elsewhere) is seen down at once.
-          if (ref.mounted) {
-            _apply(server.id, const SeenDown());
+          // A server that ends later (crash, killed elsewhere) is seen gone at once, once the supervisor no longer
+          // lists it (what it started may still run: then it stays until that ends).
+          if (ref.mounted && !_system.owns(server.id)) {
+            _apply(server.id, const ProcessGone());
             if (server.kind == LocalServerKind.fm) ref.read(fmPortProvider.notifier).set(null);
           }
         }),
@@ -422,7 +475,7 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       if (exitCode != null) return 'It stopped right after starting (exit $exitCode). See its log in $logDir.';
       if (_calledOff(server.id)) {
         // Called off by a stop: what this start launched ends too (the stop may have missed it).
-        if (launched != null) await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+        if (launched != null) _calledOffStop = await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
         return null;
       }
       if (await _answers(server, port)) {
@@ -431,9 +484,12 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
       }
       await Future<void>.delayed(const Duration(milliseconds: 300));
     }
-    await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
-    return "It didn't answer within 30 seconds.";
+    final ended = await _system.stopOwned(server.id, grace: const Duration(seconds: 2));
+    return "It didn't answer within 30 seconds.${ended.problem == null ? '' : ' ${ended.problem}'}";
   }
+
+  /// What a start called off by a stop did to what it launched (the stop reports it).
+  ServerStopResult? _calledOffStop;
 
   Future<bool> _answers(LocalServer server, int? port) async {
     if (port == null || port == 0) return false;
@@ -447,23 +503,36 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
   }
 
   Future<String?> _stop(LocalServer server) async {
-    final wasStarting = state[server.id] is ServerStarting;
-    if (!_apply(server.id, const StopAsked())) return 'It is not running.';
-    String? reason;
+    final from = _current(server.id) is ServerStopped && server.running ? phaseOf(server) : _current(server.id);
+    final wasStarting = from is ServerStarting;
+    if (nextPhase(from, const StopAsked()) == null) return 'It is not running.';
+    if (!state.containsKey(server.id)) state = {...state, server.id: from};
+    _apply(server.id, const StopAsked());
+    ServerStopResult result;
     if (_system.owns(server.id)) {
-      reason = await _system.stopOwned(server.id);
+      result = await _system.stopOwned(server.id);
     } else if (wasStarting && server.kind != LocalServerKind.lmstudio) {
       // Nothing launched yet: the start sees it was called off and launches nothing (or ends what it just
-      // launched). What listens on the port isn't the start's, so it is left alone.
-      reason = null;
+      // launched, and says how that went). What listens on the port isn't the start's, so it is left alone.
+      _calledOffStop = null;
+      await (_actionsBefore[server.id] ?? Future<String?>.value());
+      result = _calledOffStop ?? const ServerStopEnded();
+      _calledOffStop = null;
     } else if (server.kind == LocalServerKind.lmstudio && await ref.read(lmsPathProvider.future) != null) {
       final r = await _system.run((await ref.read(lmsPathProvider.future))!, const ['server', 'stop']);
-      reason = r == null || r.code != 0 ? "LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}" : null;
-      if (reason == null) _lmsOurs = false;
+      result = r == null || r.code != 0
+          ? ServerStopRefused("LM Studio didn't stop its server: ${r?.out.trim() ?? 'lms failed'}")
+          : const ServerStopEnded();
+      if (result is ServerStopEnded) _lmsOurs = false;
     } else {
-      final port = Uri.parse(server.baseUrl).port;
-      reason = port <= 0 ? 'It has no port.' : await _system.stopListener(port);
+      final port = server.kind == LocalServerKind.fm ? ref.read(fmPortProvider) ?? 0 : Uri.parse(server.baseUrl).port;
+      result = await _system.stopListener(server, port: port);
     }
+    if (result case ServerStopNotClosed(:final problem)) {
+      _apply(server.id, StopNotClosed(problem));
+      return problem;
+    }
+    var reason = result.problem;
     if (reason == null) {
       final port = server.kind == LocalServerKind.fm ? ref.read(fmPortProvider) : Uri.parse(server.baseUrl).port;
       final until = DateTime.now().add(const Duration(seconds: 5));
@@ -489,14 +558,22 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
     return null;
   }
 
-  /// Quit: every server EveryAI started ends (servers the user started are left running).
-  Future<void> stopOwned() async {
-    await _system.stopAllOwned();
+  /// Quit: every server EveryAI started ends (servers the user started are left running). The merged outcome of
+  /// the stops (LM Studio's server, stopped through `lms`, is a [ScanFailed] with its words when that fails).
+  Future<KillOutcome> stopOwned() async {
+    final outcomes = [await _system.stopAllOwned()];
     if (_lmsOurs) {
       final lms = await ref.read(lmsPathProvider.future);
-      if (lms != null) await _system.run(lms, const ['server', 'stop']);
-      _lmsOurs = false;
+      final r = lms == null ? null : await _system.run(lms, const ['server', 'stop']);
+      if (r != null && r.code == 0) {
+        _lmsOurs = false;
+      } else {
+        outcomes.add(ScanFailed("LM Studio's server (started by EveryAI) didn't stop: ${r?.out.trim() ?? 'no lms'}"));
+      }
     }
+    final merged = KillOutcome.merge(outcomes);
+    if (merged is! Ended) debugPrint('NOT CLOSED: local model servers at quit: $merged');
+    return merged;
   }
 }
 

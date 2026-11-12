@@ -4,12 +4,13 @@ import 'dart:async';
 
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, defaultTargetPlatform, kIsWeb, visibleForTesting;
 
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
+import '../../../core/process/process_model.dart';
 import '../harness/everyai/browser_io.dart';
 import 'browser_jar.dart';
 import 'login_wall.dart';
@@ -105,7 +106,12 @@ abstract final class LiveBrowsers {
   /// At app start, before any session's browser is made; a folder another running app owns is kept.
   static void sweepLeftovers() {
     if (kIsWeb || !Platform.isWindows) return;
-    unawaited(sweepWebviewFolders().catchError((Object _) => 0));
+    unawaited(
+      sweepWebviewFolders().catchError((Object e) {
+        debugPrint('WebView2 folders left by an earlier run could not be swept: $e');
+        return 0;
+      }),
+    );
   }
 
   /// Every session's browser this run.
@@ -138,22 +144,30 @@ abstract final class LiveBrowsers {
     await b.close();
   }
 
-  /// Stops every browser (the app quits).
+  /// Stops every browser (the app quits); what didn't close is logged ([stopAllBrowsers] returns it).
   static Future<void> stopAll() async {
+    final outcome = await stopAllBrowsers();
+    if (outcome is! Ended) debugPrint('NOT CLOSED: browsers at quit: $outcome');
+  }
+
+  /// Stops every browser and every profile's Chrome: the merged outcome of the Chrome stops (phase 3's quit and
+  /// delete call this).
+  static Future<KillOutcome> stopAllBrowsers() async {
     final all = [..._bySession.values];
     _bySession.clear();
     // Each jar is read once (the quit has a few seconds): its saved logins get it, close() saves it, then Chrome.
-    Future<void> stop(BrowserPage b) async {
+    Future<KillOutcome> stop(BrowserPage b) async {
       final jar = b.jarHome == null ? null : await b.captureJar().catchError((Object _) => emptyJar);
       if (jar != null) await _writeBack(b, jar: jar);
       await b.close(captured: jar != null);
       // Chrome itself stops with its profile's last page.
-      if (b case final HeadlessBrowser chrome) await chrome.host.stop();
+      if (b case final HeadlessBrowser chrome) return chrome.host.stop();
+      return const Ended([]);
     }
 
-    await Future.wait([for (final b in all) stop(b)]);
+    final pages = await Future.wait([for (final b in all) stop(b)]);
     // Profiles opened outside a session's page (sign-in, an agent's own browser) too.
-    await ChromeHost.stopAll();
+    return KillOutcome.merge([...pages, await ChromeHost.stopAll()]);
   }
 }
 

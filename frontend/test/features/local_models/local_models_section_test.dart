@@ -6,6 +6,7 @@ import 'package:every_ai/core/theme/every_theme.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/core/local_backend/local_backend.dart';
+import 'package:every_ai/core/process/process_model.dart';
 import 'package:every_ai/core/local_backend/local_backend_providers.dart';
 import 'package:every_ai/features/local_models/local_model_bridge.dart' show localDetectionProvider;
 import 'package:every_ai/features/local_models/local_models_providers.dart';
@@ -63,9 +64,9 @@ final class _NoBackend implements LocalBackend {
   @override
   bool get running => false;
   @override
-  Future<void> stop() async {}
+  Future<KillOutcome> stop() async => const Ended([]);
   @override
-  Future<void> close({Duration unloadWithin = const Duration(seconds: 4)}) async {}
+  Future<KillOutcome> close({Duration unloadWithin = const Duration(seconds: 4)}) async => const Ended([]);
 }
 
 void main() {

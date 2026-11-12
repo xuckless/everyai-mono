@@ -1,5 +1,7 @@
 import 'package:every_ai/core/local_backend/local_backend.dart';
 import 'package:every_ai/core/preferences.dart';
+import 'package:every_ai/core/process/process_model.dart' show Ended, KillOutcome, ScanFailed, Survived;
+import 'package:every_ai/features/local_models/data/local_system.dart';
 import 'package:every_ai/features/local_models/data/local_http.dart';
 import 'package:every_ai/features/code/gateway_key.dart';
 
@@ -52,6 +54,27 @@ void main() {
       );
       expect(nextPhase(stopped, const SeenUp(ServerOwner.outside)), theirs);
       expect(nextPhase(theirs, const SeenDown()), stopped);
+    });
+
+    test('a stop that signalled but did not end it is NotClosed until a retry or its seen end', () {
+      const stopping = ServerStopping(ServerOwner.everyai);
+      const notClosed = ServerNotClosed(ServerOwner.everyai, 'pid 5 survived');
+      expect(nextPhase(stopping, const StopNotClosed('pid 5 survived')), notClosed);
+      // A scan that no longer gets an answer doesn't make it closed.
+      expect(nextPhase(notClosed, const SeenDown()), notClosed);
+      expect(nextPhase(notClosed, const SeenUp(ServerOwner.everyai)), notClosed);
+      expect(nextPhase(notClosed, const StartAsked()), isNull);
+      expect(nextPhase(notClosed, const StopAsked()), stopping);
+      expect(nextPhase(notClosed, const ProcessGone()), stopped);
+      expect(nextPhase(ours, const ProcessGone()), stopped);
+    });
+
+    test('a refused move is recorded (and asserts in debug)', () {
+      assertOnRefusedServerTransition = false;
+      addTearDown(() => assertOnRefusedServerTransition = true);
+      refusedServerTransitions.clear();
+      expect(applyServerEvent('x', stopped, const StopDone()), isNull);
+      expect(refusedServerTransitions.single.server, 'x');
     });
 
     test('impossible events are refused', () {
@@ -210,6 +233,46 @@ void main() {
       expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
     });
 
+    test('a stop of our server that leaves it running ends NotClosed, and Stop again retries', () async {
+      final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
+      final (c, _, http, _) = await setUpContainer(system: system);
+      system.onLaunch = (_, _) => http.replies.addAll({
+        'GET 127.0.0.1:11434/api/version': json('{"version":"1"}'),
+        'GET 127.0.0.1:11434/api/tags': json('{"models":[]}'),
+      });
+      final ollama = c.read(localServersProvider).value!.single;
+      final lifecycles = c.read(serverLifecyclesProvider.notifier);
+      expect(await lifecycles.start(ollama), isNull);
+      system.ownedStopResult = const ServerStopNotClosed(Survived([4242], 'still running after SIGKILL'));
+      expect(await lifecycles.stop(ollama), contains('Not closed'));
+      expect(c.read(serverLifecyclesProvider)['ollama'], isA<ServerNotClosed>());
+      // A start is refused while it isn't closed.
+      expect(await lifecycles.start(ollama), contains('did not close'));
+      system.ownedStopResult = null;
+      http.replies.clear();
+      expect(await lifecycles.stop(ollama), isNull);
+      expect(c.read(serverLifecyclesProvider)['ollama'], const ServerStopped());
+    });
+
+    test('removing a running manual server stops it first; one that does not stop stays', () async {
+      final system = FakeLocalSystem();
+      final (c, _, http, _) = await setUpContainer(system: system);
+      final added = await c
+          .read(manualServersProvider.notifier)
+          .add(baseUrl: 'http://127.0.0.1:8080/v1', startCommand: 'llama-server -m /m.gguf --port 8080');
+      system.onLaunch = (_, _) => http.replies['GET 127.0.0.1:8080/v1/models'] = json('{"data":[]}');
+      final server = (await c.read(localServersProvider.future)).firstWhere((s) => s.id == added!.id);
+      expect(await c.read(serverLifecyclesProvider.notifier).start(server), isNull);
+      await c.read(localServersProvider.notifier).refresh();
+      system.ownedStopResult = const ServerStopNotClosed(Survived([7], 'still running after SIGKILL'));
+      expect(await c.read(manualServersProvider.notifier).remove(server.id), contains("wasn't removed"));
+      expect(c.read(manualServersProvider).map((s) => s.id), [server.id]);
+      system.ownedStopResult = null;
+      expect(await c.read(manualServersProvider.notifier).remove(server.id), isNull);
+      expect(system.owns(server.id), isFalse);
+      expect(c.read(manualServersProvider), isEmpty);
+    });
+
     test('quit stops only what EveryAI started', () async {
       final system = FakeLocalSystem(ollama: '/usr/bin/ollama');
       final (c, _, http, _) = await setUpContainer(system: system);
@@ -225,18 +288,66 @@ void main() {
   group('quit', () {
     test('a bundled server that hangs still lets the model servers stop', () async {
       var stopped = false;
-      await localShutdown(
-        closeBackend: () => Completer<void>().future,
-        stopServers: () async => stopped = true,
+      final outcome = await localShutdown(
+        closeBackend: () => Completer<KillOutcome>().future,
+        stopServers: () async {
+          stopped = true;
+          return const Ended([1]);
+        },
         closeWithin: const Duration(milliseconds: 50),
       );
       expect(stopped, isTrue);
+      // The hang is an outcome, not dropped.
+      expect(outcome, isA<ScanFailed>().having((o) => o.why, 'why', contains('did not finish')));
     });
 
     test('a bundled server that fails still lets the model servers stop', () async {
       var stopped = false;
-      await localShutdown(closeBackend: () async => throw StateError('gone'), stopServers: () async => stopped = true);
+      final outcome = await localShutdown(
+        closeBackend: () async => throw StateError('gone'),
+        stopServers: () async {
+          stopped = true;
+          return const Ended([]);
+        },
+      );
       expect(stopped, isTrue);
+      expect(outcome, isA<ScanFailed>());
+    });
+
+    test('a clean quit is Ended with what both steps ended', () async {
+      final outcome = await localShutdown(
+        closeBackend: () async => const Ended([1]),
+        stopServers: () async => const Ended([2]),
+      );
+      expect(outcome, isA<Ended>().having((o) => o.pids, 'pids', [1, 2]));
+    });
+  });
+
+  group('listener checks', () {
+    LocalServer server(LocalServerKind kind, {String url = 'http://127.0.0.1:11434/v1', String? start}) =>
+        LocalServer(id: kind.name, kind: kind, label: kind.label, baseUrl: url, startCommand: start);
+
+    test('loopback addresses only', () {
+      expect(isLoopbackUrl('http://127.0.0.1:1/v1'), isTrue);
+      expect(isLoopbackUrl('http://localhost:1/v1'), isTrue);
+      expect(isLoopbackUrl('http://[::1]:1/v1'), isTrue);
+      expect(isLoopbackUrl('http://192.168.1.4:11434/v1'), isFalse);
+      expect(isLoopbackUrl('http://gpu-box.local:8000/v1'), isFalse);
+    });
+
+    test("a listener counts only when it is the server's kind of program", () {
+      expect(listenerMatches(server(LocalServerKind.ollama), '/usr/local/bin/ollama serve'), isTrue);
+      expect(listenerMatches(server(LocalServerKind.ollama), '/usr/bin/python3 -m http.server 11434'), isFalse);
+      expect(
+        listenerMatches(server(LocalServerKind.lmstudio), '/Applications/LM Studio.app/Contents/MacOS/LM Studio'),
+        isTrue,
+      );
+      expect(listenerMatches(server(LocalServerKind.llamacpp), '/opt/llama.cpp/build/bin/llama-server -m x'), isTrue);
+      final manual = server(LocalServerKind.custom, start: 'CUDA=1 exec /opt/bin/my-server --port 9000');
+      expect(startCommandProgram('CUDA=1 exec /opt/bin/my-server --port 9000'), 'my-server');
+      expect(listenerMatches(manual, '/opt/bin/my-server --port 9000'), isTrue);
+      expect(listenerMatches(manual, '/usr/bin/node other.js'), isFalse);
+      expect(listenerMatches(server(LocalServerKind.custom), '/opt/bin/my-server'), isFalse);
     });
   });
 

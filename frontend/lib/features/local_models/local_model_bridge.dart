@@ -3,11 +3,13 @@
 import 'dart:async';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/local_backend/local_backend_providers.dart';
 import '../../core/net/api_error.dart';
+import '../../core/process/process_model.dart';
 
 import '../../core/platform/platform_kind.dart';
 import '../models/domain/local_routes.dart';
@@ -121,8 +123,8 @@ final chatNeedsModelProvider = Provider<bool>((ref) {
 /// servers are stopped after it either way. The shell listens to it from app
 /// start.
 final localShutdownProvider = Provider<void>((ref) {
-  Future<void>? shutdown;
-  Future<void> stopAll() => shutdown ??= localShutdown(
+  Future<KillOutcome>? shutdown;
+  Future<KillOutcome> stopAll() => shutdown ??= localShutdown(
     closeBackend: () => ref.read(localBackendProvider).close(unloadWithin: const Duration(milliseconds: 2500)),
     stopServers: () => ref.read(serverLifecyclesProvider.notifier).stopOwned(),
   );
@@ -131,7 +133,11 @@ final localShutdownProvider = Provider<void>((ref) {
       await stopAll();
       return AppExitResponse.exit;
     },
-    onDetach: () => unawaited(stopAll()),
+    onDetach: () {
+      // The engine is going away; the outcome is logged by localShutdown (and the supervisor's quit list holds what
+      // is left).
+      stopAll().ignore();
+    },
   );
   ref.onDispose(lifecycle.dispose);
 });
@@ -143,23 +149,30 @@ const localBackendCloseBudget = Duration(seconds: 4);
 const localServersStopBudget = Duration(seconds: 4);
 
 /// Quit's two steps, each in its own budget: a bundled server that takes long (or hangs) never keeps the servers
-/// EveryAI started from being stopped. Errors in either step don't stop the other.
-Future<void> localShutdown({
-  required Future<void> Function() closeBackend,
-  required Future<void> Function() stopServers,
+/// EveryAI started from being stopped. A step that fails, or isn't done within its budget, is an outcome (a
+/// [ScanFailed] saying so, logged as not closed), never dropped; the merged outcome of both is returned. A step past
+/// its budget keeps running (the process supervisor's own quit ends what it started).
+Future<KillOutcome> localShutdown({
+  required Future<KillOutcome> Function() closeBackend,
+  required Future<KillOutcome> Function() stopServers,
   Duration closeWithin = localBackendCloseBudget,
   Duration stopWithin = localServersStopBudget,
 }) async {
-  try {
-    await closeBackend().timeout(closeWithin);
-  } on Object {
-    // Timed out or failed: its own close still ends it in the background; the servers go next regardless.
+  Future<KillOutcome> step(String what, Future<KillOutcome> Function() run, Duration within) async {
+    try {
+      return await run().timeout(within);
+    } on TimeoutException {
+      return ScanFailed('$what did not finish within ${within.inMilliseconds} ms');
+    } on Object catch (e) {
+      return ScanFailed('$what failed: $e');
+    }
   }
-  try {
-    await stopServers().timeout(stopWithin);
-  } on Object {
-    // Nothing more to do at quit.
-  }
+
+  final backend = await step('closing the bundled server', closeBackend, closeWithin);
+  final servers = await step('stopping the local model servers', stopServers, stopWithin);
+  final merged = KillOutcome.merge([backend, servers]);
+  if (merged is! Ended) debugPrint('NOT CLOSED: local models at quit: $merged');
+  return merged;
 }
 
 /// Each local model's load state, as the bundled server tracks it (by

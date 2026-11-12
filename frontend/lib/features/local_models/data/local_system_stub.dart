@@ -1,7 +1,9 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
+import '../../../core/process/process_model.dart';
 import '../domain/fm.dart';
 import '../domain/hardware.dart';
+import '../domain/local_server.dart';
 import 'local_system.dart';
 
 LocalSystem createLocalSystem() => const _NoLocalSystem();
@@ -9,6 +11,7 @@ LocalSystem createLocalSystem() => const _NoLocalSystem();
 /// The web and phones: no local servers here.
 final class _NoLocalSystem implements LocalSystem {
   const _NoLocalSystem();
+  static const _why = 'Local servers run on desktops only.';
   @override
   HostOs get os => HostOs.other;
   @override
@@ -29,20 +32,27 @@ final class _NoLocalSystem implements LocalSystem {
     Map<String, String> env = const {},
     bool shell = false,
     String? logPath,
+    int? port,
   }) async => null;
   @override
-  String? get launchProblem => 'Local servers run on desktops only.';
+  String? get launchProblem => _why;
   @override
   bool owns(String id) => false;
   @override
-  Future<String?> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async => null;
+  int? ownedPort(String id) => null;
   @override
-  Future<String?> stopListener(int port, {Duration grace = const Duration(seconds: 5)}) async =>
-      'Local servers run on desktops only.';
+  Future<ServerStopResult> stopOwned(String id, {Duration grace = const Duration(seconds: 5)}) async =>
+      const ServerStopEnded();
+  @override
+  Future<ServerStopResult> stopListener(
+    LocalServer server, {
+    required int port,
+    Duration grace = const Duration(seconds: 5),
+  }) async => const ServerStopRefused(_why);
   @override
   Future<int?> freePort() async => null;
   @override
-  Future<void> stopAllOwned() async {}
+  Future<KillOutcome> stopAllOwned() async => const Ended([]);
   @override
   Future<String?> logDir() async => null;
 }
