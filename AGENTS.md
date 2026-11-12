@@ -1614,6 +1614,27 @@ their **native feel**. OpenRouter is plumbing, not the product; billing is parke
   swept at start (`sweepWebviewFolders`); the Preview's driver bar shows whenever the browser runs; the macOS bridge
   runs no script in non-session webviews and drops hover on a locked view. Rig 31/33 (the two hover steps couldn't
   move the pointer: another window covered the point).
+- **Process supervisor, phase 1 (2026-11-12; branch `feat/process-supervisor`).** Owner's rules and the phase plan:
+  the process audit (every process EveryAI starts is owned, its shown state is true, not closed fails loudly).
+  `core/process/`: `ProcessSupervisor.instance` (`supervisor.dart`, io in `supervisor_io.dart`, web stub);
+  `spawn(SpawnSpec{owner app|session|probe, kind, exe, args, env, cwd, label})` puts every child in a process group
+  of its own (Linux: `setsid` execs it in place; macOS has no setsid: a small `/bin/bash` holder with `set -m` runs
+  it as a background job, which bash puts in a group it leads, writes the job's pid to `<ledger>/jobs/`, and relays
+  its status, 128+n for a signal; checked with `ps -o pgid=` in the tests) with env `EVERYAI_APP=<pid>:<lstart
+  token>` and `EVERYAI_OWNER`; `adopt(pid, spec, exitCode:)` for flutter_pty's. Sealed `ChildState`
+  (`child_state.dart`: starting → running(id) → terming → killing → exited(ExitCode|SeenGone) | notClosed, plus
+  startFailed) through `nextChildState` (refusals assert, `refusedChildTransitions`). `stop`/`stopOwner`/`killTree`
+  → `KillOutcome` Ended | Survived | ScanFailed: TERM group + tree (+ owner-tagged, env where the OS shows it),
+  wait (ends early), KILL, re-scan by pid + start time; a group is signalled only once its leader's start matches
+  (or the child has been followed since its start). `ProcessScan` Listed | ScanFailed (`ps -A … lstart`, `ps -E` /
+  `/proc/*/environ` for tags). `runBounded` → Finished | TimedOut | Cancelled | StartFailed. What a child's group
+  leaves running after it exits is adopted ("(left running)"). Ledger `processes/ledger-<pid>.jsonl` (app support;
+  `<tmp>/everyai-processes-test` under flutter test), watchdog list `watch-<pid>.list`; `sweepPreviousRuns()` runs
+  once at the supervisor's first use (`lastSweep` keeps the report for a later notice); the watchdog script kills
+  listed groups by leader start time and `EVERYAI_APP`-tagged processes; `stopAll()` writes `quit.json`.
+  `ChildProcesses` is a shim over it; `killTree` delegates (`killTreeVerified` returns the outcome). Raw-spawn
+  guard `test/core/process/raw_spawn_guard_test.dart` (allowlist of today's 53 files; shrinks per phase). Windows:
+  compile-safe only (no groups; `taskkill /T /F` then a CIM check). Not migrated: every other spawner (phase 2).
 ## Next steps
 Updated 2026-11-07. The owner's working lists are the TODO files (gitignored); the task board is the GitHub Project.
 1. **Live testing** (the biggest gap): one real turn per outside driver (Claude Code, Codex, OpenCode, Gemini/ACP),

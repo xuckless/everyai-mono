@@ -7,8 +7,10 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 
+import '../../../../core/process/supervisor.dart'
+    show Ended, KillOutcome, Listed, ProcessSupervisor, ScanFailed, Survived;
 import '../../panes/pty.dart' show ShellPty;
 import '../../live/desktop_helper_io.dart' show windowsParents;
 import '../../live/nested_display_io.dart';
@@ -748,44 +750,49 @@ Map<String, String> withNestedDisplay(Map<String, String> env, Map<String, Strin
 /// Runs a program and waits for it; [killTree] uses it for `taskkill`.
 typedef KillRunner = Future<ProcessResult> Function(String executable, List<String> arguments);
 
-/// Signals [pid] and every process below it: TERM, then KILL for whatever
-/// is left a moment later. On Windows ([windows], this host by default)
-/// `taskkill /T /F` ends the tree: signals don't exist there, and
-/// `Process.killPid` ends one process only. That is what VS Code and
-/// tree-kill do; a Job Object would also catch processes whose parent has
-/// already exited, but needs FFI handles in every spawner.
+/// Ends [pid] and every process below it, through the supervisor's verified kill ([killTreeVerified]): TERM,
+/// up to [termWait] for them to go, KILL for whatever is left, then a check by pid + start time. On Windows
+/// ([windows], this host by default) `taskkill /T /F` ends the tree: signals don't exist there, and
+/// `Process.killPid` ends one process only. That is what VS Code and tree-kill do; a Job Object would also catch
+/// processes whose parent has already exited, but needs FFI handles in every spawner.
 ///
-/// Only for a process that is still running: Windows soon gives a dead
-/// process's pid to another one, and `/T` would end that one's tree.
-/// [termWait] is how long TERM has before KILL.
+/// Only for a process that is still running: Windows soon gives a dead process's pid to another one, and `/T`
+/// would end that one's tree.
 Future<void> killTree(
   int pid, {
   bool? windows,
   KillRunner run = Process.run,
   Duration termWait = const Duration(milliseconds: 600),
 }) async {
-  if (windows ?? Platform.isWindows) {
-    // By its full path, so a taskkill.exe in the project can't stand in.
-    final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
-    try {
-      final res = await run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
-      // 128: no such process, so nothing for the fallback either.
-      if (res.exitCode == 0 || res.exitCode == 128) return;
-    } on Object {
-      // No taskkill: at least the process itself.
-    }
-    Process.killPid(pid);
-    return;
+  await killTreeVerified(pid, windows: windows, run: run, termWait: termWait);
+}
+
+/// [killTree], with what it did: ended (checked gone), survived, or not checkable (the table couldn't be read).
+Future<KillOutcome> killTreeVerified(
+  int pid, {
+  bool? windows,
+  KillRunner run = Process.run,
+  Duration termWait = const Duration(milliseconds: 600),
+}) async {
+  if (!(windows ?? Platform.isWindows)) return ProcessSupervisor.instance.killTree(pid, termWait: termWait);
+  // By its full path, so a taskkill.exe in the project can't stand in.
+  final root = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+  var ran = false;
+  try {
+    final res = await run('$root\\System32\\taskkill.exe', ['/PID', '$pid', '/T', '/F']);
+    // 128: no such process, so nothing for the fallback either.
+    ran = res.exitCode == 0 || res.exitCode == 128;
+  } on Object catch (e) {
+    debugPrint('taskkill for $pid did not run: $e');
   }
-  final pids = await _descendants(pid);
-  final all = [pid, ...pids];
-  for (final p in all.reversed) {
-    Process.killPid(p, ProcessSignal.sigterm);
-  }
-  await Future<void>.delayed(termWait);
-  for (final p in all.reversed) {
-    Process.killPid(p, ProcessSignal.sigkill);
-  }
+  if (!Platform.isWindows) return const ScanFailed('taskkill was asked for on a host that is not Windows');
+  // No taskkill: at least the process itself.
+  if (!ran) Process.killPid(pid);
+  return switch (await ProcessSupervisor.instance.scan()) {
+    final ScanFailed f => f,
+    Listed(:final table) when table.rows.containsKey(pid) => Survived([pid], 'still running after taskkill /F'),
+    Listed() => Ended([pid]),
+  };
 }
 
 /// [root]'s descendants now (children first found, then theirs), for a caller that must end them after [root]
