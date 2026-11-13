@@ -1193,6 +1193,14 @@ final class EveryAISession
     return KillOutcome.merge([shells, lsp]);
   }
 
+  /// Runs one tool call the way the loop runs an approved one (its MCP servers connected first), with no model:
+  /// the live process rig (tool/live_apps/process_rig.dart) drives the tools through this.
+  @visibleForTesting
+  Future<ToolOutput> runToolDirectly(String name, Map<String, Object?> args) async {
+    await _ensureMcp();
+    return _execute(LlmToolCall(id: _newId(), name: name, arguments: jsonEncode(args)), Completer<void>().future);
+  }
+
   // ------------------------------------------------------------------ loop
 
   /// [_outgoing] (plus [extra]) with Claude thinking whose earlier

@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/preferences.dart';
 import '../../core/process/process_model.dart' show Ended, KillOutcome, ScanFailed;
+import '../../core/process/supervisor.dart' show LaunchFailed;
 import '../code/gateway_key.dart' show secretStoreProvider;
 import 'data/local_http.dart';
 import 'data/local_system.dart';
@@ -446,14 +447,27 @@ final class ServerLifecycles extends Notifier<Map<String, ServerPhase>> {
         if (lms == null) return "LM Studio's `lms` command isn't installed.";
         if (_calledOff(server.id)) return null;
         final port = Uri.parse(server.baseUrl).port;
-        // `lms server start` may first launch LM Studio's daemon, which takes a while on a cold start.
-        final r = await _system.run(lms, ['server', 'start', '--port', '$port'], timeout: lmsStartTimeout);
-        if (r == null || r.code != 0) {
-          // A timeout (or an odd exit) doesn't prove it didn't start: the port decides. It wasn't running before
-          // (Start is offered only then), so a server that answers now is the one this start brought up.
-          if (r == null || !await _answers(server, port)) {
-            return "LM Studio didn't start its server: ${r?.out.trim() ?? 'lms failed'}";
+        // `lms server start` may launch LM Studio's daemon, which is the user's own app: it is started untagged and
+        // detached (no cleanup of ours can reach it), and the port says whether it came up.
+        final started = await _system.launchDetached(lms, ['server', 'start', '--port', '$port']);
+        if (started is LaunchFailed) return "LM Studio didn't start its server: ${started.error}";
+        final until = DateTime.now().add(lmsStartTimeout);
+        var up = false;
+        while (true) {
+          if (await _answers(server, port)) {
+            up = true;
+            break;
           }
+          if (_calledOff(server.id) || !DateTime.now().isBefore(until)) break;
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+        }
+        if (!up) {
+          if (_calledOff(server.id)) {
+            // Called off before it answered: ask it to stop in case it comes up (ownership was never set).
+            await _system.run(lms, const ['server', 'stop'], duringQuit: true);
+            return null;
+          }
+          return "LM Studio didn't start its server: it didn't answer within ${lmsStartTimeout.inSeconds} s.";
         }
         _setLmsOurs(true);
         if (_calledOff(server.id)) {

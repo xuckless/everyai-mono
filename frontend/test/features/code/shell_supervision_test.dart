@@ -10,6 +10,7 @@ import 'package:every_ai/core/process/supervisor.dart';
 import 'package:every_ai/features/code/harness/everyai/llm.dart';
 import 'package:every_ai/features/code/harness/everyai/shell_io.dart';
 import 'package:every_ai/features/code/harness/everyai/tools_io.dart';
+import 'package:every_ai/features/code/live/nested_display_io.dart';
 import 'package:every_ai/features/code/shells/shell_registry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -53,7 +54,9 @@ void main() {
     // Outside each test's folder: a supervisor still checking a not-closed child keeps writing its ledger.
     ledgers = Directory.systemTemp.createTempSync('shell-sup-ledgers');
   });
-  tearDownAll(() {
+  tearDownAll(() async {
+    // Linux with Xvfb installed: the session's commands opened a display of its own (the app ends it on Stop).
+    await NestedDisplays.stopOf('sup-test');
     ShellEnv.debugUse(null);
     ledgers.deleteSync(recursive: true);
   });

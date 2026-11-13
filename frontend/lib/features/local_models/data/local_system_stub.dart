@@ -1,6 +1,7 @@
 // Copyright 2026 xuckless and Syed Ali. Licensed under FSL-1.1-ALv2; see LICENCE.md and NOTICE.
 
 import '../../../core/process/process_model.dart';
+import '../../../core/process/supervisor.dart' show DetachedLaunch, LaunchFailed;
 import '../domain/fm.dart';
 import '../domain/hardware.dart';
 import '../domain/local_server.dart';
@@ -29,6 +30,9 @@ final class _NoLocalSystem implements LocalSystem {
     bool duringQuit = false,
     Duration timeout = const Duration(seconds: 10),
   }) async => null;
+  @override
+  Future<DetachedLaunch> launchDetached(String exe, List<String> args) async =>
+      const LaunchFailed('not supported here');
   @override
   Future<LaunchedServer?> launch(
     String id,

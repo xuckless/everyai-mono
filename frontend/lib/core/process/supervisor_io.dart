@@ -623,18 +623,76 @@ class _Record implements SupervisedChild {
 }
 
 final class _Spawned extends _Record implements SupervisedProcess {
-  _Spawned(super.sup, super.id, super.spec) : super(waitsOnExit: true);
+  _Spawned(super.sup, super.id, super.spec, this._caller) : super(waitsOnExit: true);
 
   late final Process _process;
 
+  /// The zone that asked for the spawn: [stdin]'s futures answer there.
+  final Zone _caller;
+
   @override
-  IOSink get stdin => _process.stdin;
+  // ignore: close_sinks (the process's own stdin, closed by its users or with the process)
+  late final IOSink stdin = _CallerSink(_process.stdin, _caller);
   @override
   Stream<List<int>> get stdout => _process.stdout;
   @override
   Stream<List<int>> get stderr => _process.stderr;
   @override
   Future<int> get exitCode => _process.exitCode;
+}
+
+/// A child's stdin for the zone that spawned it. The process is started in the root zone, so its sink's futures
+/// belong to the root error zone: an error there (a write after the child died fails with EPIPE) is uncaught in the
+/// root zone whatever handler a caller in another error zone (a test, a guarded zone) adds, and ends the isolate.
+/// Here the sink is used from the root zone and its futures are answered in [_zone]. A failed `done` nobody
+/// listens for is not reported: the child's end is its state, not its input's.
+final class _CallerSink implements IOSink {
+  _CallerSink(this._raw, this._zone) {
+    _done = _hand(() => _raw.done)..ignore();
+  }
+
+  final IOSink _raw;
+  final Zone _zone;
+  late final Future<void> _done;
+
+  Future<T> _hand<T>(Future<T> Function() f) {
+    if (identical(_zone, Zone.root)) return f();
+    final answer = _zone.run(Completer<T>.new);
+    Zone.root.run(
+      () => f().then<void>(
+        (v) => _zone.run(() => answer.complete(v)),
+        onError: (Object e, StackTrace s) => _zone.run(() => answer.completeError(e, s)),
+      ),
+    );
+    return answer.future;
+  }
+
+  void _root(void Function() f) => identical(Zone.current, Zone.root) ? f() : Zone.root.run(f);
+
+  @override
+  Encoding get encoding => _raw.encoding;
+  @override
+  set encoding(Encoding e) => _raw.encoding = e;
+  @override
+  Future<void> get done => _done;
+  @override
+  void add(List<int> data) => _root(() => _raw.add(data));
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) => _root(() => _raw.addError(error, stackTrace));
+  @override
+  Future<void> addStream(Stream<List<int>> stream) => _hand(() => _raw.addStream(stream));
+  @override
+  Future<void> flush() => _hand(_raw.flush);
+  @override
+  Future<void> close() => _hand(_raw.close);
+  @override
+  void write(Object? object) => _root(() => _raw.write(object));
+  @override
+  void writeAll(Iterable<Object?> objects, [String separator = '']) => _root(() => _raw.writeAll(objects, separator));
+  @override
+  void writeCharCode(int charCode) => _root(() => _raw.writeCharCode(charCode));
+  @override
+  void writeln([Object? object = '']) => _root(() => _raw.writeln(object));
 }
 
 /// A child's tree in the ledger: written, or changed since (written at the next chance, at most every 3 s).
@@ -966,11 +1024,14 @@ final class _Supervisor extends ProcessSupervisor {
   }
 
   @override
-  Future<SupervisedProcess> spawn(SpawnSpec spec) => _inRoot(() => _spawn(spec, duringQuit: false));
+  Future<SupervisedProcess> spawn(SpawnSpec spec) {
+    final caller = Zone.current;
+    return _inRoot(() => _spawn(spec, duringQuit: false, caller: caller));
+  }
 
-  Future<SupervisedProcess> _spawn(SpawnSpec spec, {required bool duringQuit}) async {
+  Future<SupervisedProcess> _spawn(SpawnSpec spec, {required bool duringQuit, Zone? caller}) async {
     _refuseWhenClosed('spawn ${spec.label}', duringQuit: duringQuit);
-    final r = _Spawned(this, ++_ids, spec);
+    final r = _Spawned(this, ++_ids, spec, caller ?? Zone.root);
     _list[r.id] = r;
     final first = _files.watchState == _WatchFile.none;
     try {

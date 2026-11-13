@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/process/supervisor.dart';
+import '../../code/domain/local_ports.dart' show parseSsListen;
 import '../../code/drivers/acp/acp_files.dart' show whichCommand;
 import '../domain/fm.dart';
 import '../domain/hardware.dart';
@@ -136,6 +137,10 @@ final class IoLocalSystem implements LocalSystem {
 
   @override
   String? get launchProblem => _launchProblem;
+
+  @override
+  Future<DetachedLaunch> launchDetached(String exe, List<String> args) =>
+      _sup.launchDetached(exe, args, label: 'local server (started detached)');
 
   @override
   Future<LaunchedServer?> launch(
@@ -324,10 +329,18 @@ final class IoLocalSystem implements LocalSystem {
     } else {
       final lsof = File('/usr/sbin/lsof').existsSync() ? '/usr/sbin/lsof' : 'lsof';
       final r = await _run(lsof, ['-nP', '-iTCP:$port', '-sTCP:LISTEN', '-t']);
-      if (r == null) return const _ListenerUnknown("lsof didn't run");
-      // lsof exits 1 when nothing matches.
-      if (r.code != 0 && r.out.trim().isEmpty) return const _NoListener();
-      pid = int.tryParse(r.out.trim().split('\n').first.trim());
+      if (r == null && Platform.isLinux) {
+        // Linux without lsof: ss (iproute2) tells the same.
+        final ss = await _run('ss', const ['-Hltnp']);
+        if (ss == null || ss.code != 0) return const _ListenerUnknown('neither lsof nor ss ran');
+        pid = parseSsListen(ss.out).where((l) => l.port == port).firstOrNull?.pid;
+      } else if (r == null) {
+        return const _ListenerUnknown("lsof didn't run");
+      } else {
+        // lsof exits 1 when nothing matches.
+        if (r.code != 0 && r.out.trim().isEmpty) return const _NoListener();
+        pid = int.tryParse(r.out.trim().split('\n').first.trim());
+      }
     }
     if (pid == null) return const _NoListener();
     switch (await _sup.scan()) {
